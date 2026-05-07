@@ -1,0 +1,280 @@
+local Class = {}
+
+setmetatable(Class, {
+    __call = function(self)
+        self.__call = getmetatable(self).__call
+        self.__index = self
+        return setmetatable({}, self)
+    end
+})
+
+function Class:new()
+    return self()
+end
+
+DuiBrowser = Class()
+
+DuiBrowser.initQueue = {}
+DuiBrowser.pool = {}
+DuiBrowser.renderTargets = {}
+DuiBrowser.scaleforms = {}
+
+function DuiBrowser:createNamedRendertargetForModel(model, name)
+    local handle = 0
+    if not IsNamedRendertargetRegistered(name) then
+        RegisterNamedRendertarget(name, 0)
+    end
+    if not IsNamedRendertargetLinked(model) then
+        LinkNamedRendertarget(model)
+    end
+    if IsNamedRendertargetRegistered(name) then
+        handle = GetNamedRendertargetRenderId(name)
+    end
+    return handle
+end
+
+function DuiBrowser:waitForConnection()
+    self.initDone = false
+    DuiBrowser.initQueue[self.mediaPlayerHandle] = self
+    local timeout = GetGameTimer() + (self.timeout or Config.dui.timeout or 30000)
+
+    while not DuiBrowser.initQueue[self.mediaPlayerHandle].initDone and GetGameTimer() < timeout do
+        self:sendMessage({type = "DuiBrowser:init", handle = self.mediaPlayerHandle})
+        Citizen.Wait(500)
+    end
+
+    DuiBrowser.initQueue[self.mediaPlayerHandle] = nil
+    if self.initDone then
+        return true
+    else
+        print(("^1[7-pmms] Failed to initialize DUI browser for handle %s within timeout^7"):format(tostring(self.mediaPlayerHandle)))
+        return false
+    end
+end
+
+function DuiBrowser:createTexture()
+    if self.txdName then return end
+    self.txdName = "pmms_txd_" .. tostring(self.mediaPlayerHandle)
+    self.txnName = "video"
+    self.txd = CreateRuntimeTxd(self.txdName)
+    self.txn = CreateRuntimeTextureFromDuiHandle(self.txd, self.txnName, self.duiHandle)
+end
+
+function DuiBrowser:new(mediaPlayerHandle, model, renderTarget, scaleform, url, options, w, h, timeout)
+    local self = Class.new(self)
+
+    if DuiBrowser.initQueue[mediaPlayerHandle] then
+        return DuiBrowser.initQueue[mediaPlayerHandle]
+    end
+
+    self.mediaPlayerHandle = mediaPlayerHandle
+    self.model = model
+    self.renderTarget = renderTarget
+    self.scaleform = scaleform
+    self.duiUrl = url
+    self.options = options
+    self.w = w or Config.dui.screenWidth
+    self.h = h or Config.dui.screenHeight
+    self.timeout = timeout
+
+    local thisResource = GetCurrentResourceName()
+    local fullUrl = self.duiUrl
+    if not string.find(fullUrl, "[?]") then
+        fullUrl = fullUrl .. "?resourceName=" .. thisResource
+    else
+        fullUrl = fullUrl .. "&resourceName=" .. thisResource
+    end
+
+    self.duiObject = CreateDui(fullUrl, math.floor(self.w), math.floor(self.h))
+    self.duiHandle = GetDuiHandle(self.duiObject)
+
+    if self.renderTarget or self.scaleform then
+        self:createTexture()
+    end
+
+    if self:waitForConnection() then
+        DuiBrowser.pool[self.mediaPlayerHandle] = self
+        return self
+    else
+        if self.duiObject then
+            DestroyDui(self.duiObject)
+        end
+        return nil
+    end
+end
+
+function DuiBrowser:enableRenderTarget(entity, name)
+    self.renderTarget = name
+    self.entity = entity
+    if not DuiBrowser.renderTargets[name] then
+        DuiBrowser.renderTargets[name] = { browsers = {} }
+    end
+    DuiBrowser.renderTargets[name].browsers[self] = true
+    self.renderTargetHandle = self:createNamedRendertargetForModel(GetEntityModel(entity), name)
+end
+
+function DuiBrowser:disableRenderTarget()
+    if self.renderTarget then
+        DuiBrowser.renderTargets[self.renderTarget].browsers[self] = nil
+        self.renderTarget = nil
+        self.renderTargetHandle = nil
+    end
+end
+
+function DuiBrowser:enableScaleform(name, entity)
+    self.sfName = name
+    self.entity = entity
+    self.sfHandle = RequestScaleformMovie(name)
+    if not DuiBrowser.scaleforms[name] then
+        DuiBrowser.scaleforms[name] = { browsers = {} }
+    end
+    DuiBrowser.scaleforms[name].browsers[self] = true
+end
+
+function DuiBrowser:disableScaleform()
+    if self.sfName then
+        DuiBrowser.scaleforms[self.sfName].browsers[self] = nil
+        SetScaleformMovieAsNoLongerNeeded(self.sfHandle)
+        self.sfName = nil
+        self.sfHandle = nil
+    end
+end
+
+function DuiBrowser:renderFrame(drawSprite)
+    if self.renderTarget and self.renderTargetHandle then
+        SetTextRenderId(self.renderTargetHandle)
+        Set_2dLayer(4)
+        SetScriptGfxDrawBehindPausemenu(1)
+        DrawRect(0.5, 0.5, 1.0, 1.0, 0, 0, 0, 255)
+        if drawSprite and self.txdName then
+            DrawSprite(self.txdName, self.txnName, 0.5, 0.5, 1.0, 1.0, 0.0, 255, 255, 255, 255)
+        end
+        SetTextRenderId(GetDefaultScriptRendertargetRenderId())
+        SetScriptGfxDrawBehindPausemenu(0)
+    elseif self.sfHandle and HasScaleformMovieLoaded(self.sfHandle) then
+        if drawSprite and self.txdName then
+            BeginScaleformMovieMethod(self.sfHandle, "SET_TEXTURE")
+            ScaleformMovieMethodAddParamTextureNameString(self.txdName)
+            ScaleformMovieMethodAddParamTextureNameString(self.txnName)
+            ScaleformMovieMethodAddParamInt(0)
+            ScaleformMovieMethodAddParamInt(0)
+            ScaleformMovieMethodAddParamInt(math.floor(self.w))
+            ScaleformMovieMethodAddParamInt(math.floor(self.h))
+            EndScaleformMovieMethod()
+        end
+
+        local pos = self.scaleform and (self.scaleform.finalPosition or self.scaleform.position) or nil
+        local rot = self.scaleform and (self.scaleform.finalRotation or self.scaleform.rotation) or nil
+        local scl = self.scaleform and self.scaleform.scale or vector3(1.0, 1.0, 1.0)
+
+        if pos and rot and scl then
+            DrawScaleformMovie_3dSolid(self.sfHandle, pos, rot, 2.0, 2.0, 1.0, scl, 2)
+        end
+    end
+end
+
+function DuiBrowser:sendMessage(data)
+    if self.duiObject then
+        SendDuiMessage(self.duiObject, json.encode(data))
+    end
+end
+
+function DuiBrowser:destroy()
+    self:disableRenderTarget()
+    self:disableScaleform()
+    DuiBrowser.pool[self.mediaPlayerHandle] = nil
+    if self.duiObject then
+        DestroyDui(self.duiObject)
+        self.duiObject = nil
+    end
+end
+
+Citizen.CreateThread(function()
+    while true do
+        local wait = 500
+        if next(DuiBrowser.pool) then
+            wait = 0
+            for _, browser in pairs(DuiBrowser.pool) do
+                browser:renderFrame(true)
+            end
+        end
+        Citizen.Wait(wait)
+    end
+end)
+
+RegisterNUICallback("DuiBrowser:initDone", function(data, cb)
+    if DuiBrowser.initQueue[data.handle] then
+        DuiBrowser.initQueue[data.handle].initDone = true
+    end
+    PMMSDebug("dui", "DUI browser init completed", {
+        handle = data and data.handle or nil,
+    })
+    cb({})
+end)
+
+RegisterNUICallback("duiStartup", function(data, cb)
+    PMMSDebug("dui", "DUI startup config requested", {
+        handle = data and data.handle or nil,
+    })
+    cb({
+        isRDR = false,
+        audioVisualizations = Config.audioVisualizations or {},
+        currentServerEndpoint = GetCurrentServerEndpoint(),
+        defaultTransitionSeconds = tonumber(Config.defaultTransitionSeconds) or 5.0,
+        maxTransitionSeconds = tonumber(Config.maxTransitionSeconds) or 15.0,
+        rangeCurveExponent = tonumber(Config.rangeCurveExponent) or 1.6,
+        startupTimeoutMs = math.max(8000, math.min(30000, tonumber(Config.dui.timeout) or 30000)),
+        debug = Config.debug,
+    })
+end)
+
+RegisterNUICallback("pmmsDuiStartupReady", function(data, cb)
+    PMMSDebug("dui", "DUI startup ready callback", {
+        handle = data and data.handle or nil,
+        attemptId = data and data.attemptId or nil,
+        playbackToken = data and data.playbackToken or nil,
+        title = data and data.metadata and data.metadata.title or nil,
+        duration = data and data.metadata and data.metadata.duration or nil,
+    })
+    if data and data.handle and data.attemptId then
+        TriggerServerEvent("pmms:startupReady", data.handle, data.attemptId, data.metadata or {}, data.playbackToken)
+    end
+    cb({})
+end)
+
+RegisterNUICallback("pmmsDuiStartupError", function(data, cb)
+    if data and data.handle and data.attemptId then
+        local handled = HandleLocalMediaPlayerError(data.handle, data.attemptId, data.message, data.url, data.playbackToken)
+        PMMSDebug("dui", "DUI startup error callback", {
+            handle = data and data.handle or nil,
+            attemptId = data and data.attemptId or nil,
+            playbackToken = data and data.playbackToken or nil,
+            url = data and data.url or nil,
+            message = data and data.message or nil,
+            handled = handled,
+        })
+        if handled ~= false then
+            print("^1[7-pmms] DUI Startup Error for handle " .. tostring(data and data.handle or "?") .. ": " .. tostring(data and data.message or "?") .. "^7")
+            TriggerServerEvent("pmms:startupError", data.handle, data.attemptId, data.url, data.message, data.playbackToken)
+        end
+    end
+    cb({})
+end)
+
+RegisterNUICallback("pmmsDuiLocalError", function(data, cb)
+    print("^1[7-pmms] DUI Local Playback Error for handle " .. tostring(data and data.handle or "?") .. ": " .. tostring(data and data.message or "?") .. "^7")
+    if data and data.handle then
+        local handled = HandleLocalMediaPlayerError(data.handle, nil, data.message, data.url, data.playbackToken)
+        PMMSDebug("dui", "DUI local playback error callback", {
+            handle = data and data.handle or nil,
+            playbackToken = data and data.playbackToken or nil,
+            url = data and data.url or nil,
+            message = data and data.message or nil,
+            handled = handled,
+        })
+        if handled ~= false then
+            TriggerServerEvent("pmms:localPlaybackError", data.handle, data.url, data.message, data.playbackToken)
+        end
+    end
+    cb({})
+end)

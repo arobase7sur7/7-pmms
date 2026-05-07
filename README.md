@@ -1,251 +1,236 @@
-# pmms - FiveM/RedM synchronized media player
+# 7-pmms
 
-pmms (Poodle's MultiMedia System) allows players to play music/video from entities such as phonographs, radios or TVs.
+`7-pmms` is a synchronized in-world media player for FiveM. It supports shared playback on props, saved world positions, scaleforms, and compatible vehicles, with server-authoritative playback state, per-device runtime sessions, playlists, favorites, queueing, history, social sharing, and configurable permissions.
 
-# Features
+This project started from PMMS by kibook and has been heavily reworked.
 
-- NUI-based, using [MediaElement.js](https://www.mediaelementjs.com/) to support HTML5 media, HLS, YouTube, and more.
+## Features
 
-- Synchronized between players.
+- Shared audio and video playback across clients.
+- Device discovery for supported props, saved positions, scaleforms, and compatible vehicles.
+- Queue, autoplay, loop modes, manual previous/next, and per-device temporary playback history.
+- Runtime device sessions that keep settings, range, queue, history, and lock state alive after playback stops, then reset automatically after an idle timeout.
+- Audible nearby visibility, so a device can stay in the nearby list while it is still actually hearable from its configured range.
+- Playlist library with favorites, shared playlists, friend requests, and player suggestions backed by SQL.
+- Secure direct-link validation for a conservative set of browser-playable media formats.
+- Resolver caching, inflight dedupe, bounded provider concurrency, and controlled retry behavior.
+- Admin persistence for model defaults and saved world-position defaults.
 
-- Multiple entities can play different things at the same time.
+## Playback Model
 
-- Dynamic sound attenuation based on whether the player and entity are in the same interior room.
+The resource is built around server-authoritative shared state.
 
-- Optional immersive filter can be applied to any audio.
+- The server owns active device playback, queue state, history state, runtime settings, reset timers, lock state, and playlist persistence.
+- Clients render the current authoritative state and may use short-lived optimistic overlays for UI responsiveness.
+- Manual `previous` and `next` switch immediately.
+- Automatic progression can still use transition timing, but playback remains single-source per device. The DUI does not keep two live sources running for the same handle during a handoff.
 
-- Play video on a TV screen or scaleform with DUI (FiveM), or on a screen displayed above the entity (RedM).
+## Runtime Device Sessions
 
-- Play audio inside or outside of vehicles.
+Devices do not reset immediately when playback stops.
 
-- Permissions system and ability to lock entities so only certain players can control them.
+- `Config.deviceIdleResetSeconds` controls the idle reset window.
+- The default reset window is `300` seconds.
+- During the idle window, runtime settings remain active, including range, volume, attenuation, mute state, transition setting, queue, history, and session lock state.
+- The UI exposes the pending reset countdown.
+- Starting playback again before the timer expires cancels the pending reset and keeps the session alive.
+- When the timer expires, the temporary session is cleared and the device returns to its configured defaults.
 
-- Configure default entities which are spawned and play music/video automatically.
+Runtime sessions are temporary. They are not durable persistence across resource restarts or full server restarts.
 
-- Audio visualizations via [Wave.js](https://foobar404.github.io/Wave.js/#/).
+## Nearby Visibility
 
-# Examples
+Nearby discovery still uses `Config.maxDiscoveryDistance`, but active audibility can extend visibility for a specific device.
 
-| | | |
-|-|-|-|
-|[![Attenuation Example](https://i.imgur.com/BTkglVYm.jpg)](https://imgur.com/BTkglVY)| [![Phonograph Filter](https://i.imgur.com/L8sWpOCm.jpg)](https://imgur.com/L8sWpOC) | [![Video](https://i.imgur.com/2jRYlSem.jpg)](https://imgur.com/2jRYlSe) |
-|[![FiveM basic audio](https://i.imgur.com/CofS0VPm.jpg)](https://imgur.com/CofS0VP)|[![FiveM DUI example](https://i.imgur.com/ndZwPvDm.jpg)](https://imgur.com/ndZwPvD)|[![DUI render target proximity](https://i.imgur.com/m2KddI6m.jpg)](https://imgur.com/m2KddI6)|
-|[![Audio Visualizations](https://i.imgur.com/4E42m4tm.jpg)](https://imgur.com/4E42m4t)|[![Vehicle modes](https://i.imgur.com/gkx5oRym.jpg)](https://imgur.com/gkx5oRy)|[![Scaleform adjustment](https://i.imgur.com/AcAiGzzm.jpg)](https://imgur.com/AcAiGzz)|
+- If a player can still hear a device because they are inside that device's effective range, that device remains visible in the nearby list.
+- This is device-specific and does not increase the global discovery radius.
+- When playback stops, becomes inaudible, or the runtime session resets, visibility returns to normal nearby rules.
 
-# Dependencies
+## Queue, History, and Manual Controls
 
-- [httpmanager](https://github.com/kibook/httpmanager)
+- Queue and history are separate.
+- Confirmed playback is written into per-device runtime history.
+- History survives until the device session resets.
+- Manual `previous` reads from that runtime history.
+- Manual `previous` and `next` bypass transition timing.
+- Automatic end-of-track progression can still use the configured transition length.
 
-# Installing
+## Direct Links
 
-1. Install all [dependencies](#dependencies).
+Direct links are accepted only when they are both safe and realistically playable by the DUI/browser stack.
 
-2. Place the files from this repository in a new folder in your resources directory.
+Supported direct-link extensions:
 
-   Example: `resources/[local]/pmms`
-   
-   > **NOTE**
-   > 
-   > The name of the resource **must** be in all lowercase in order for it to function properly. This is due to how [NUI callbacks](https://docs.fivem.net/docs/scripting-manual/nui-development/nui-callbacks/) work.
+- `mp3`
+- `mp4`
+- `m4v`
+- `webm`
+- `ogg`
+- `ogv`
+- `oga`
+- `wav`
 
-3. Add the following in server.cfg:
-   ```
-   exec @pmms/permissions.cfg
-   start pmms
-   ```
+Direct-link validation rules:
 
-# Permissions
+- HTTPS only when `Config.directLinks.requireHttps = true`
+- absolute URL required
+- no embedded credentials
+- no malformed or suspicious URLs
+- no webpage-style or extensionless URLs in the direct-link path
+- no redirects or non-media probe responses
+- no unsupported formats such as `mov`, `flv`, `mpeg`, `mid`, or `midi`
 
-The default permissions allow members of `group.admin` full access to pmms, while other players will only be able to perform basic interactions with media players and only be able to play preset songs (those defined in `Config.presets` in [config.lua](config.lua)).
+Provider page URLs without file-like media extensions stay on the resolver path instead of being treated as direct links.
 
-To allow all players to be able to play custom URLs, in [permissions.cfg](permissions.cfg), uncomment or add the following line:
+## Requirements
 
-```
-add_ace builtin.everyone pmms.customUrl allow
-```
+- FiveM server with `fx_version "cerulean"` and GTA V
+- `oxmysql`
+- outbound HTTP access for search, resolver fallback, and direct-link probing
 
-Even with this ace, URLs will be restricted to those allowed by `Config.allowedUrls`, which includes generally safe sites such as YouTube. To allow players to use URLs from other sites, you can either add the appropriate pattern to `Config.allowedUrls`, or uncomment or add the following line to remove the restriction entirely:
+Optional integrations:
 
-```
-add_ace builtin.everyone pmms.anyUrl allow
-```
+- `qb-target`
+- `ox_target`
+- a local `yt-dlp` install for local extractor fallback
 
-Keep in mind that media played with pmms is loaded individually by all players, meaning each player will be accessing the URL from their own connection. Therefore, allowing any player to play a random URL can present some risk of exposing players' IP addresses to an attacker playing something from their own web server and logging the connections.
+## NUI Development
 
-# Commands
+The in-game interface is authored in `nui/` as a React + TypeScript app and built with Vite into the FiveM runtime files in `ui/`.
 
-> **Note**
-> 
-> The command names can be customized. These are the defaults.
+- `npm run dev` starts a local preview with mocked FiveM data.
+- `npm run check` runs TypeScript validation.
+- `npm run build` regenerates `ui/index.html`, `ui/app.js`, and `ui/style.css`.
 
-| Command                | Description                                       |
-|------------------------|---------------------------------------------------|
-| `/pmms`                | Open the media player control panel.              |
-| `/pmms_play [url] ...` | Play music/video on the nearest media player.     |
-| `/pmms_pause`          | Pause playback on the nearest media player.       |
-| `/pmms_stop`           | Stop playback on the nearest media player.        |
-| `/pmms_status`         | Show the status of the nearest media player.      |
-| `/pmms_presets`        | List presets.                                     |
-| `/pmms_vol [volume]`   | Set a personal base volume for all media players. |
-| `/pmms_fix`            | Reset your client, which may fix certain issues.  |
-| `/pmms_ctl`            | Advanced media player control.                    |
-| `/pmms_add`            | Add or modify a media player model preset.        |
-| `/pmms_refresh_perms`  | Refresh permissions for all clients.              |
+FiveM still loads `ui/index.html`; the Node toolchain is only for building the browser assets.
 
-# Exports
+## Installation
 
-## Server-side
+1. Place `7-pmms` in your server `resources` directory.
+2. Import `pmms.sql` into your database.
+3. Add `ensure oxmysql` before this resource in `server.cfg`.
+4. Add `exec @7-pmms/config/permissions.cfg` to `server.cfg`.
+5. Add `ensure 7-pmms` to `server.cfg`.
 
-### startByNetworkId
+## Configuration
 
-```lua
-handle = exports.pmms:startByNetworkId(netId, options)
-```
+Main configuration lives in `config/config.lua`.
 
-Starts playing something on a networked media player entity, using its network ID.
+Important options:
 
-#### Media player options
+- `Config.maxDiscoveryDistance`
+- `Config.defaultRange`
+- `Config.maxRange`
+- `Config.deviceIdleResetSeconds`
+- `Config.defaultTransitionSeconds`
+- `Config.maxTransitionSeconds`
+- `Config.directLinks`
+- `Config.resolver`
+- `Config.searchSources`
+- `Config.playlists`
+- `Config.targeting`
 
-`options` is a table of options for the new media player.
+Important resolver defaults:
 
-| Option           | Description                                                                             |
-|------------------|-----------------------------------------------------------------------------------------|
-| `url`            | The URL of the media to play.                                                           |
-| `title`          | The title of the media to display.                                                      |
-| `volume`         | The volume of the new media player. Default: 100.                                       |
-| `offset`         | The time to start the media at in seconds. Default: 0.                                  |
-| `duration`       | The duration of the media. `nil`, `false` or `0` will treat the media as a live stream. |
-| `loop`           | Whether to loop the media. Requires a duration.                                         |
-| `filter`         | Whether to apply the immersive filter to the media player.                              |
-| `locked`         | Whether to lock the media player.                                                       |
-| `video`          | Whether to display NUI video (RedM only).                                               |
-| `videoSize`      | The size of the NUI video screen (RedM only).                                           |
-| `muted`          | Whether the media player is muted by default.                                           |
-| `attenuation`    | The attenuation multipliers for the media player.                                       |
-| `diffRoomVolume` | Difference between the base volume in the same room and a different room.               |
-| `range`          | The range of the media player.                                                          |
-| `visualization`  | The audio visualization to apply to the media player.                                   |
+- `Config.resolver.allowAudioFallback = true`
+- `Config.resolver.allowEmbedFallback = false`
+- `Config.resolver.warnOnFallback = false`
+- `Config.resolver.retryOnPlaybackError = true`
+- `Config.resolver.retryAttempts = 1`
 
-### startByCoords
+The default resolver chain treats only ad-free direct streams as successful playback sources: local `yt-dlp`, configured extractor HTTP endpoints, optional Cobalt API endpoints, Invidious, Piped, then audio-only fallback. Embedded YouTube fallback is opt-in with `allowEmbedFallback = true`; when no ad-free source is found, playback fails cleanly instead of staying in a fallback loading state.
 
-```lua
-handle = exports.pmms:startByCoords(x, y, z, options)
-```
+If your server runtime cannot spawn `yt-dlp`, configure `Config.resolver.cobalt.endpoints` with a self-hosted or trusted private Cobalt API root. Protected instances can use `Config.resolver.cobalt.apiKey`, which is sent as `Authorization: Api-Key <key>` by default. A YouTube Data API key alone cannot provide direct playable media streams; scripts that “just work” with YouTube usually rely on embedded playback, a downloader service, or a local extractor.
 
-Starts playing something on a non-networked media player entity, using its coordinates on the world map.
+Debug logging is controlled by `Config.debug`. Set `Config.debug.enabled = true`, then enable the categories you need, such as `player`, `resolver`, `favorites`, `dui`, or `nui`; set `all = true` only when you want very noisy diagnostics.
 
-For `options`, refer to [Media player options](#media-player-options).
+The bundled search UI supports the configured sources in `Config.searchSources`. The default configuration includes YouTube, SoundCloud, and Twitch.
 
-### startScaleform
+## Persistent vs Temporary State
 
-```lua
-handle = exports.pmms:startScaleform(scaleform, options)
-```
+There are two different kinds of device state:
 
-Starts playing something on a standalone scaleform screen.
+- persistent defaults: model defaults and saved world-position defaults
+- temporary runtime state: live playback, queue, history, session locks, and per-device overrides that last until idle reset
 
-For `options`, refer to [Media player options](#media-player-options).
+Persistent defaults are stored in:
 
-#### Scaleform options
+- `models.json`
+- `defaultMediaPlayers.json`
 
-`scaleform` is a table of options for the scaleform screen.
+## Permissions
 
-| Option     | Description                                                    |
-|------------|----------------------------------------------------------------|
-| `name`     | The name of the scaleform (.gfx filename minus extension).     |
-| `position` | A `vector3` for the coordinates of the top-left of the screen. |
-| `rotation` | A `vector3` for the orientation of the screen.                 |
-| `scale`    | A `vector3` for the scale of the screen.                       |
+The default ACE rules live in `config/permissions.cfg`.
 
-### stop
+Common ACE permissions:
 
-```lua
-exports.pmms:stop(handle)
-```
+- `pmms.interact`
+- `pmms.anyEntity`
+- `pmms.customUrl`
+- `pmms.anyUrl`
+- `pmms.manage`
 
-Stops a media player and removes its handle.
+Review the bundled defaults before using them in production.
 
-### pause
+## Commands
 
-```lua
-exports.pmms:pause(handle)
-```
+With the default command settings:
 
-Pause or resume a media player.
+- `/pmms`
+- `/pmms_play`
+- `/pmms_pause`
+- `/pmms_stop`
+- `/pmms_status`
+- `/pmms_presets`
+- `/pmms_vol`
+- `/pmms_fix`
+- `/pmms_ctl`
+- `/pmms_add`
+- `/pmms_refresh_perms`
 
-### lock
+These names depend on `Config.commandPrefix` and `Config.commandSeparator`.
 
-```lua
-exports.pmms:lock(handle)
-```
+## Exports
 
-Locks an active media player so that only privileged users can interact with it.
+Media exports:
 
-### unlock
+- `exports["7-pmms"]:startByNetworkId(handle, options)`
+- `exports["7-pmms"]:startByCoords(x, y, z, options)`
+- `exports["7-pmms"]:startScaleform(scaleform, options)`
+- `exports["7-pmms"]:stop(handle)`
+- `exports["7-pmms"]:pause(handle)`
+- `exports["7-pmms"]:lock(handle)`
+- `exports["7-pmms"]:unlock(handle)`
+- `exports["7-pmms"]:mute(handle)`
+- `exports["7-pmms"]:unmute(handle)`
+- `exports["7-pmms"]:getMediaPlayerInfo(handle)`
+- `exports["7-pmms"]:getAllMediaPlayers()`
 
-```lua
-exports.pmms:unlock(handle)
-```
+Persistence exports:
 
-Unlocks an active media player so anyone can interact with it.
+- `exports["7-pmms"]:addModel(model, data)`
+- `exports["7-pmms"]:addModelPermanently(model, data)`
+- `exports["7-pmms"]:addEntity(coords, data)`
+- `exports["7-pmms"]:addEntityPermanently(coords, data)`
+- `exports["7-pmms"]:removeModel(model)`
+- `exports["7-pmms"]:removeModelPermanently(model)`
+- `exports["7-pmms"]:removeEntity(coords)`
+- `exports["7-pmms"]:removeEntityPermanently(coords)`
 
-### mute
+Search and resolver exports:
 
-```lua
-exports.pmms:mute(handle)
-```
+- `exports["7-pmms"]:SearchYouTube(query, callback)`
+- `exports["7-pmms"]:SearchMedia(query, source, callback)`
+- `exports["7-pmms"]:resolvePlaybackOptions(options, resolverOptions, callback)`
 
-Mutes an active media player.
+## Limitations
 
-### unmute
+- Runtime sessions are temporary and are cleared on idle reset.
+- Direct-link support is limited to formats that are reliably playable by the DUI/browser pipeline.
+- Search and resolution still depend on outbound HTTP access and third-party endpoints.
+- YouTube and Twitch playback quality depends on your configured resolver sources and extractor availability.
 
-```lua
-exports.pmms:unmute(handle)
-```
+## Credits
 
-Unmutes an active media player.
-
-## Client-side
-
-### enableEntity
-
-```lua
-exports.pmms:enableEntity(entity)
-```
-
-Allows the player to use a particular entity if they do not have the `pmms.anyEntity` ace.
-
-
-### disableEntity
-
-```lua
-exports.pmms:disableEntity(entity)
-```
-
-Disables the use of this entity for a player without the `pmms.anyEntity` ace.
-
-
-### createMediaPlayer
-
-```lua
-entity = exports.pmms:createMediaPlayer(options)
-```
-
-Creates a new networked entity which the player can use as a media player.
-
-#### createMediaPlayer options
-
-| Option     | Description                                                              |
-|------------|--------------------------------------------------------------------------|
-| `model`    | The entity model to use. If omitted, `Config.defaultModel` will be used. |
-| `position` | A vector3 for the coordinates where the entity will be spawned.          |
-| `rotation` | A vector3 for the orientation of the entity.                             |
-
-
-### deleteMediaPlayer
-
-```lua
-exports.pmms:deleteMediaPlayer(entity)
-```
-
-Deletes an entity created by [createMediaPlayer](#createmediaplayer).
+- Original PMMS concept and base work: kibook
+- Rework and expansion: arobase7sur7
