@@ -163,12 +163,14 @@ local contentTypes = {
 }
 
 local function getContentType(path)
+    path = tostring(path or ""):gsub("[?#].*$", "")
     local ext = path:match("%.(%w+)$")
     return contentTypes[ext] or "application/octet-stream"
 end
 
 SetHttpHandler(function(req, res)
     local path = req.path or "/"
+    path = path:gsub("[?#].*$", "")
     if path == "" then
         path = "/"
     end
@@ -182,15 +184,22 @@ SetHttpHandler(function(req, res)
     local filePath = nil
     local isDuiRequest = false
 
+    local duiRuntimeOverrides = {
+        ["index.html"] = "http/dui_runtime/index.html",
+        ["style.css"] = "http/dui_runtime/style.css",
+        ["script.js"] = "http/dui_runtime/script.js",
+        ["hls.min.js"] = "http/dui_runtime/hls.min.js",
+    }
+
     if path == "/dui" or path == "/dui/" then
-        filePath = "http/dui/index.html"
+        filePath = duiRuntimeOverrides["index.html"]
         isDuiRequest = true
     elseif path:sub(1, 5) == "/dui/" then
         local relativePath = path:sub(6)
         if relativePath == "" then
             relativePath = "index.html"
         end
-        filePath = "http/dui/" .. relativePath
+        filePath = duiRuntimeOverrides[relativePath] or ("http/dui_runtime/" .. relativePath)
         isDuiRequest = true
     elseif path:sub(1, 7) == "/media/" then
         local relativePath = path:sub(8)
@@ -207,13 +216,18 @@ SetHttpHandler(function(req, res)
 
     local content = LoadResourceFile(thisResource, filePath)
 
-    if not content and isDuiRequest then
-        filePath = "http/dui/index.html"
-        content = LoadResourceFile(thisResource, filePath)
-    end
-
     if content then
-        res.writeHead(200, { ["Content-Type"] = getContentType(filePath) })
+        local headers = { ["Content-Type"] = getContentType(filePath) }
+        if isDuiRequest then
+            if Config.dui and Config.dui.cacheRuntimeAssets == false then
+                headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                headers["Pragma"] = "no-cache"
+                headers["Expires"] = "0"
+            else
+                headers["Cache-Control"] = "public, max-age=3600"
+            end
+        end
+        res.writeHead(200, headers)
         res.send(content)
     else
         res.writeHead(404, { ["Content-Type"] = "text/plain" })

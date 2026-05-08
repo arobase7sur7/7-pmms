@@ -1,4 +1,4 @@
-local function ensureColumn(tableName, columnName, definition)
+local function ensureColumn(tableName, columnName, definition, done)
     MySQL.scalar([[
         SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
@@ -6,11 +6,40 @@ local function ensureColumn(tableName, columnName, definition)
           AND COLUMN_NAME = ?
     ]], { tableName, columnName }, function(exists)
         if tonumber(exists) and tonumber(exists) > 0 then
+            if done then
+                done()
+            end
             return
         end
 
         MySQL.query(("ALTER TABLE `%s` ADD COLUMN `%s` %s"):format(tableName, columnName, definition), {}, function()
             print(("^2[7-pmms] Added missing column %s.%s.^7"):format(tableName, columnName))
+            if done then
+                done()
+            end
+        end)
+    end)
+end
+
+local function ensureIndex(tableName, indexName, definition, done)
+    MySQL.scalar([[
+        SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND INDEX_NAME = ?
+    ]], { tableName, indexName }, function(exists)
+        if tonumber(exists) and tonumber(exists) > 0 then
+            if done then
+                done()
+            end
+            return
+        end
+
+        MySQL.query(("ALTER TABLE `%s` ADD %s"):format(tableName, definition), {}, function()
+            print(("^2[7-pmms] Added missing index %s.%s.^7"):format(tableName, indexName))
+            if done then
+                done()
+            end
         end)
     end)
 end
@@ -32,7 +61,11 @@ local function ensureTable(tableName, createSql)
 end
 
 local function ensureSchemas()
-    ensureColumn("pmms_playlists", "is_favorite", "TINYINT(1) NOT NULL DEFAULT 0")
+    ensureColumn("pmms_playlists", "is_favorite", "TINYINT(1) NOT NULL DEFAULT 0", function()
+        ensureIndex("pmms_playlists", "unique_pmms_playlist_owner_id", "UNIQUE KEY `unique_pmms_playlist_owner_id` (`owner_license`, `id`)", function()
+            ensureIndex("pmms_playlists", "idx_pmms_playlists_owner_favorite", "INDEX `idx_pmms_playlists_owner_favorite` (`owner_license`, `is_favorite`, `created_at`)")
+        end)
+    end)
     ensureTable("pmms_known_players", [[
         CREATE TABLE IF NOT EXISTS `pmms_known_players` (
           `license` varchar(64) NOT NULL,

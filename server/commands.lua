@@ -101,6 +101,60 @@ RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "refresh_perm
     TriggerClientEvent("pmms:refreshPermissions", -1)
 end, true)
 
+local function printProviderStats(source)
+    if source ~= 0 and not IsPlayerAceAllowed(source, "pmms.manage") then
+        TriggerClientEvent("pmms:error", source, "You do not have permission for this command")
+        return
+    end
+
+    if type(GetResolverProviderStatsSummary) ~= "function" then
+        local message = "[7-pmms] Provider stats are unavailable."
+        if source == 0 then print(message) else TriggerClientEvent("pmms:notify", source, { title = "7-PMMS", text = "Provider stats are unavailable." }) end
+        return
+    end
+
+    local summary = GetResolverProviderStatsSummary(10)
+    local header = ("[7-pmms] Provider ranking: %d successful auto starts / %d attempts (threshold %d starts, %d samples/provider)"):format(
+        summary.totalCompletedAutoPlays or 0,
+        summary.totalAttempts or 0,
+        summary.minCompletedPlays or 0,
+        summary.minProviderSamples or 0
+    )
+    print(header)
+
+    local lines = { header }
+    for index, row in ipairs(summary.rows or {}) do
+        local line = ("%d. %s score %.1f | %d/%d success (%.0f%%) | avg %.0fms%s"):format(
+            index,
+            row.provider,
+            row.score or 0,
+            row.successes or 0,
+            row.attempts or 0,
+            (row.successRate or 0) * 100,
+            row.avgStartupMs or 0,
+            row.adaptive and "" or " | warming up"
+        )
+        print("[7-pmms] " .. line)
+        lines[#lines + 1] = line
+    end
+
+    if source ~= 0 then
+        TriggerClientEvent("pmms:notify", source, {
+            title = "Provider Ranking",
+            text = table.concat(lines, "\n"),
+            duration = 9000,
+        })
+    end
+end
+
+RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "providers", function(source)
+    printProviderStats(source)
+end, false)
+
+RegisterCommand("pmmsproviders", function(source)
+    printProviderStats(source)
+end, false)
+
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "ctl", function(source, args)
     if #args < 1 then
         print("Usage:")

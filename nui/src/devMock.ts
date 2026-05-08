@@ -292,9 +292,10 @@ export function installDevMock() {
   post({
     type: 'showUi',
     searchSources: {
-      youtube: 'YouTube',
-      soundcloud: 'SoundCloud',
-      twitch: 'Twitch'
+      youtube: { label: 'YouTube', enabled: true, placeholder: 'Search YouTube...' },
+      soundcloud: { label: 'SoundCloud', enabled: true, placeholder: 'Search SoundCloud...' },
+      twitch: { label: 'Twitch', enabled: true, placeholder: 'Enter Twitch Username...' },
+      direct: { label: 'Direct', enabled: true, placeholder: 'Paste a direct media URL...' }
     },
     defaultSearchSource: 'youtube',
     selectedHandle: 43,

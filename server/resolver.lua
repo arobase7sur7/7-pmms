@@ -68,6 +68,258 @@ local function getParallelInstancesPerProvider()
     return math.max(1, tonumber(resolverConfig.parallelInstancesPerProvider) or 2)
 end
 
+local providerStats = nil
+local providerStatsSavePending = false
+
+local function getAdaptiveProviderConfig()
+    local adaptive = resolverConfig.adaptiveProviderRanking
+    if type(adaptive) ~= "table" then
+        adaptive = {}
+    end
+    return {
+        enabled = adaptive.enabled ~= false,
+        minCompletedPlays = math.max(0, tonumber(adaptive.minCompletedPlays) or 8),
+        minProviderSamples = math.max(1, tonumber(adaptive.minProviderSamples) or 2),
+        dataFile = type(adaptive.dataFile) == "string" and adaptive.dataFile ~= "" and adaptive.dataFile or "data/provider_stats.json",
+        saveDebounceMs = math.max(500, tonumber(adaptive.saveDebounceMs) or 5000),
+    }
+end
+
+local function loadProviderStats()
+    if providerStats then
+        return providerStats
+    end
+
+    providerStats = {
+        version = 1,
+        totalAttempts = 0,
+        totalCompletedAutoPlays = 0,
+        providers = {},
+    }
+
+    local cfg = getAdaptiveProviderConfig()
+    local raw = LoadResourceFile(GetCurrentResourceName(), cfg.dataFile)
+    if type(raw) == "string" and raw ~= "" then
+        local ok, decoded = pcall(json.decode, raw)
+        if ok and type(decoded) == "table" then
+            providerStats.totalAttempts = tonumber(decoded.totalAttempts) or 0
+            providerStats.totalCompletedAutoPlays = tonumber(decoded.totalCompletedAutoPlays) or 0
+            providerStats.providers = type(decoded.providers) == "table" and decoded.providers or {}
+        end
+    end
+
+    return providerStats
+end
+
+local function scheduleProviderStatsSave()
+    local cfg = getAdaptiveProviderConfig()
+    if cfg.enabled ~= true or providerStatsSavePending then
+        return
+    end
+
+    providerStatsSavePending = true
+    CreateThread(function()
+        Wait(cfg.saveDebounceMs)
+        providerStatsSavePending = false
+
+        local stats = loadProviderStats()
+        local ok, encoded = pcall(json.encode, stats)
+        if not ok or type(encoded) ~= "string" then
+            return
+        end
+
+        local saved = SaveResourceFile(GetCurrentResourceName(), cfg.dataFile, encoded, -1)
+        if saved ~= true then
+            PMMSDebug("resolver", "provider stats save failed", {
+                dataFile = cfg.dataFile,
+            })
+        end
+    end)
+end
+
+local function getProviderStatsEntry(provider)
+    local stats = loadProviderStats()
+    stats.providers[provider] = type(stats.providers[provider]) == "table" and stats.providers[provider] or {}
+    local entry = stats.providers[provider]
+    entry.attempts = tonumber(entry.attempts) or 0
+    entry.successes = tonumber(entry.successes) or 0
+    entry.failures = tonumber(entry.failures) or 0
+    entry.avgStartupMs = tonumber(entry.avgStartupMs) or nil
+    entry.instances = type(entry.instances) == "table" and entry.instances or {}
+    return entry
+end
+
+local function getProviderScore(entry)
+    local attempts = math.max(1, tonumber(entry and entry.attempts) or 0)
+    local successes = tonumber(entry and entry.successes) or 0
+    local successRate = successes / attempts
+    local avgStartupMs = tonumber(entry and entry.avgStartupMs) or 30000
+    local lastFailureAt = tonumber(entry and entry.lastFailureAt)
+    local lastSuccessAt = tonumber(entry and entry.lastSuccessAt)
+    local failurePenalty = 0
+
+    if lastFailureAt and (not lastSuccessAt or lastFailureAt > lastSuccessAt) then
+        failurePenalty = 12
+    end
+
+    return (successRate * 100)
+        - (math.min(avgStartupMs, 30000) / 250)
+        + (math.log(successes + 1) * 4)
+        - failurePenalty
+end
+
+local function canAdaptProvider(provider)
+    return type(provider) == "string" and provider ~= "" and provider ~= "embed"
+end
+
+local function getAdaptiveProviderOrder(configured)
+    local cfg = getAdaptiveProviderConfig()
+    if cfg.enabled ~= true then
+        return configured
+    end
+
+    local stats = loadProviderStats()
+    if (tonumber(stats.totalCompletedAutoPlays) or 0) < cfg.minCompletedPlays then
+        return configured
+    end
+
+    local ranked = {}
+    for index, provider in ipairs(configured or {}) do
+        local entry = stats.providers and stats.providers[provider] or nil
+        local attempts = tonumber(entry and entry.attempts) or 0
+        ranked[#ranked + 1] = {
+            provider = provider,
+            originalIndex = index,
+            adaptive = canAdaptProvider(provider) and attempts >= cfg.minProviderSamples,
+            score = getProviderScore(entry or {}),
+        }
+    end
+
+    table.sort(ranked, function(a, b)
+        if a.adaptive ~= b.adaptive then
+            return a.adaptive == true
+        end
+        if a.adaptive and b.adaptive and math.abs(a.score - b.score) > 0.001 then
+            return a.score > b.score
+        end
+        return a.originalIndex < b.originalIndex
+    end)
+
+    local ordered = {}
+    for _, item in ipairs(ranked) do
+        ordered[#ordered + 1] = item.provider
+    end
+
+    PMMSDebug("resolver", "adaptive provider order applied", {
+        providerOrder = table.concat(ordered, " > "),
+        totalCompletedAutoPlays = stats.totalCompletedAutoPlays,
+    })
+    return ordered
+end
+
+function RecordResolverProviderPlayback(provider, instance, outcome, startupMs, reason)
+    local cfg = getAdaptiveProviderConfig()
+    if cfg.enabled ~= true or not canAdaptProvider(provider) then
+        return
+    end
+
+    local stats = loadProviderStats()
+    local entry = getProviderStatsEntry(provider)
+    local now = os.time()
+    local isSuccess = outcome == "success"
+    local durationMs = math.max(0, tonumber(startupMs) or 0)
+
+    stats.totalAttempts = (tonumber(stats.totalAttempts) or 0) + 1
+    entry.attempts = entry.attempts + 1
+    entry.lastReason = reason
+    entry.lastInstance = instance
+
+    if isSuccess then
+        entry.successes = entry.successes + 1
+        entry.lastSuccessAt = now
+        stats.totalCompletedAutoPlays = (tonumber(stats.totalCompletedAutoPlays) or 0) + 1
+        if durationMs > 0 then
+            if entry.avgStartupMs then
+                entry.avgStartupMs = ((entry.avgStartupMs * (entry.successes - 1)) + durationMs) / entry.successes
+            else
+                entry.avgStartupMs = durationMs
+            end
+        end
+    else
+        entry.failures = entry.failures + 1
+        entry.lastFailureAt = now
+    end
+
+    if type(instance) == "string" and instance ~= "" then
+        entry.instances[instance] = type(entry.instances[instance]) == "table" and entry.instances[instance] or {
+            attempts = 0,
+            successes = 0,
+            failures = 0,
+        }
+        local inst = entry.instances[instance]
+        inst.attempts = (tonumber(inst.attempts) or 0) + 1
+        if isSuccess then
+            inst.successes = (tonumber(inst.successes) or 0) + 1
+            inst.lastSuccessAt = now
+        else
+            inst.failures = (tonumber(inst.failures) or 0) + 1
+            inst.lastFailureAt = now
+        end
+    end
+
+    PMMSDebug("resolver", "provider playback stat recorded", {
+        provider = provider,
+        instance = instance,
+        outcome = outcome,
+        startupMs = durationMs,
+        attempts = entry.attempts,
+        successes = entry.successes,
+        failures = entry.failures,
+    })
+
+    scheduleProviderStatsSave()
+end
+
+function GetResolverProviderStatsSummary(limit)
+    local cfg = getAdaptiveProviderConfig()
+    local stats = loadProviderStats()
+    local rows = {}
+    for provider, entry in pairs(stats.providers or {}) do
+        local attempts = tonumber(entry.attempts) or 0
+        local successes = tonumber(entry.successes) or 0
+        rows[#rows + 1] = {
+            provider = provider,
+            attempts = attempts,
+            successes = successes,
+            failures = tonumber(entry.failures) or 0,
+            successRate = attempts > 0 and (successes / attempts) or 0,
+            avgStartupMs = tonumber(entry.avgStartupMs) or 0,
+            score = getProviderScore(entry),
+            adaptive = attempts >= cfg.minProviderSamples,
+        }
+    end
+    table.sort(rows, function(a, b)
+        if math.abs(a.score - b.score) > 0.001 then
+            return a.score > b.score
+        end
+        return a.provider < b.provider
+    end)
+
+    local maxRows = math.max(1, tonumber(limit) or #rows)
+    local trimmed = {}
+    for index = 1, math.min(maxRows, #rows) do
+        trimmed[index] = rows[index]
+    end
+    return {
+        enabled = cfg.enabled,
+        minCompletedPlays = cfg.minCompletedPlays,
+        minProviderSamples = cfg.minProviderSamples,
+        totalAttempts = tonumber(stats.totalAttempts) or 0,
+        totalCompletedAutoPlays = tonumber(stats.totalCompletedAutoPlays) or 0,
+        rows = trimmed,
+    }
+end
+
 local function getExtractorConfig()
     local extractor = resolverConfig.extractor
     if type(extractor) ~= "table" then
@@ -122,6 +374,14 @@ local function getExtractorMaxAttempts()
     return math.max(1, tonumber(extractorConfig.maxAttemptsPerProvider) or 2)
 end
 
+local function getRequestTimeoutMs()
+    local timeout = tonumber(resolverConfig.timeoutMs)
+    if timeout and timeout > 0 then
+        return math.floor(timeout)
+    end
+    return 6000
+end
+
 local ytDlpProbeState = {
     checkedAt = 0,
     available = false,
@@ -162,7 +422,7 @@ local function isEmbedFallbackAllowed(resolverOptions)
 end
 
 local function performGet(url, callback)
-    local timeout = tonumber(resolverConfig.timeoutMs)
+    local timeout = getRequestTimeoutMs()
     local requestOptions = nil
     if timeout and timeout > 0 then
         requestOptions = { timeout = math.floor(timeout) }
@@ -215,6 +475,29 @@ local function trimTrailingSlash(url)
         return nil
     end
     return (url:gsub("/+$", ""))
+end
+
+local function redactUrlForDebug(url)
+    if type(url) ~= "string" then
+        return url
+    end
+
+    local redacted = url
+    local queryStart = redacted:find("?", 1, true)
+    if queryStart then
+        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
+    end
+
+    local hashStart = redacted:find("#", 1, true)
+    if hashStart then
+        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
+    end
+
+    if #redacted > 180 then
+        redacted = redacted:sub(1, 177) .. "..."
+    end
+
+    return redacted
 end
 
 local function pushUnique(target, seen, url)
@@ -312,6 +595,7 @@ local function buildResolveInflightKey(options, resolverOptions)
     local avoidResolvedUrl = resolverOptions and resolverOptions.avoidResolvedUrl or ""
     local avoidProvider = resolverOptions and resolverOptions.avoidProvider or ""
     local avoidInstance = resolverOptions and resolverOptions.avoidInstance or ""
+    local forceProvider = resolverOptions and resolverOptions.forceProvider or ""
     local allowFallback = resolverOptions and resolverOptions.allowFallback == false and "0" or "1"
     local allowAudioFallback = isAudioFallbackAllowed(resolverOptions) and "1" or "0"
     local allowEmbedFallback = isEmbedFallbackAllowed(resolverOptions) and "1" or "0"
@@ -325,6 +609,7 @@ local function buildResolveInflightKey(options, resolverOptions)
         tostring(allowAudioFallback),
         tostring(allowEmbedFallback),
         tostring(audioFallbackAttempted),
+        tostring(forceProvider),
         tostring(avoidProvider),
         tostring(avoidInstance),
         tostring(avoidResolvedUrl),
@@ -359,6 +644,11 @@ local function getYtDlpCommandCandidates()
         addCommandCandidate(commands, seen, extractorConfig.ytDlpCommand)
     end
 
+    addCommandCandidate(commands, seen, extractorConfig.ytDlpPath)
+    addCommandCandidate(commands, seen, extractorConfig.ytDlpBinary)
+    addCommandCandidate(commands, seen, resolverConfig.ytDlpPath)
+    addCommandCandidate(commands, seen, resolverConfig.ytDlpBinary)
+
     addCommandCandidate(commands, seen, "yt-dlp")
     addCommandCandidate(commands, seen, "python -m yt_dlp")
     addCommandCandidate(commands, seen, "py -m yt_dlp")
@@ -387,14 +677,41 @@ local function shellQuote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+local function classifySpawnFailure(reason)
+    local text = tostring(reason or ""):lower()
+    if text == "" then
+        return "spawn_failed"
+    end
+
+    if text:find("not supported", 1, true)
+        or text:find("unsupported", 1, true)
+        or text:find("disabled", 1, true)
+        or text:find("permission denied", 1, true)
+        or text:find("access is denied", 1, true) then
+        return "io_popen_unavailable"
+    end
+
+    if text:find("no such file", 1, true)
+        or text:find("cannot find", 1, true)
+        or text:find("not recognized", 1, true)
+        or text:find("not found", 1, true) then
+        return "command_not_found"
+    end
+
+    return "spawn_failed"
+end
+
 local function runCommand(command)
     if type(io) ~= "table" or type(io.popen) ~= "function" then
         return false, nil, "io_popen_unavailable"
     end
 
-    local ok, handle = pcall(io.popen, command)
-    if not ok or not handle then
-        return false, nil, "spawn_failed"
+    local ok, handle, popenReason = pcall(io.popen, command)
+    if not ok then
+        return false, nil, classifySpawnFailure(handle)
+    end
+    if not handle then
+        return false, nil, classifySpawnFailure(popenReason)
     end
 
     local readOk, output = pcall(handle.read, handle, "*a")
@@ -426,10 +743,22 @@ local function runCommand(command)
     end
 
     if type(exitCode) == "number" and exitCode ~= 0 then
+        if exitCode == 124 then
+            return false, output or "", "timed_out"
+        end
         return false, output or "", ("exit_code_%d"):format(exitCode)
     end
 
     return true, output or "", nil
+end
+
+local function wrapCommandWithTimeout(command, timeoutMs)
+    if isWindowsRuntime() then
+        return command
+    end
+
+    local seconds = math.max(3, math.ceil((tonumber(timeoutMs) or getExtractorTimeoutMs()) / 1000) + 1)
+    return ("timeout %ds %s"):format(seconds, command)
 end
 
 local function detectYtDlpProbeError(output, reason)
@@ -459,6 +788,45 @@ local function detectYtDlpProbeError(output, reason)
     end
 
     return nil
+end
+
+local function extractProbeReason(attempt)
+    local reason = tostring(attempt or ""):match(":([^:]+)$")
+    reason = trimString(reason or attempt)
+    return reason or "unknown"
+end
+
+local function summarizeYtDlpPreflightReason(reason)
+    local raw = trimString(reason)
+    if not raw then
+        return "local yt-dlp is unavailable."
+    end
+
+    local total = 0
+    local counts = {}
+    for attempt in raw:gmatch("[^,]+") do
+        local probeReason = extractProbeReason(attempt)
+        total = total + 1
+        counts[probeReason] = (counts[probeReason] or 0) + 1
+    end
+
+    if total > 0 and counts.io_popen_unavailable == total then
+        return "local yt-dlp cannot be used because this FXServer Lua runtime cannot spawn external commands."
+    end
+
+    if total > 0 and counts.spawn_failed == total then
+        return "local yt-dlp probe could not spawn any candidate command from the FXServer environment."
+    end
+
+    if counts.command_not_found or counts.python_module_missing then
+        return "local yt-dlp was not found in the FXServer environment."
+    end
+
+    if counts.timed_out then
+        return "local yt-dlp probe timed out."
+    end
+
+    return ("local yt-dlp is unavailable (%s)."):format(raw)
 end
 
 local function classifyHttpFailure(statusCode)
@@ -625,7 +993,7 @@ local function getConfiguredProviderOrder()
 end
 
 local function getYtDlpProbeCommand(command)
-    return ("%s --version 2>&1"):format(command)
+    return wrapCommandWithTimeout(("%s --version 2>&1"):format(command), 5000)
 end
 
 local function ensureYtDlpAvailability(now)
@@ -679,6 +1047,125 @@ local function preferMetadataValue(value)
     return nil
 end
 
+local function normalizeLanguageCode(value)
+    if value == nil then
+        return nil
+    end
+
+    local normalized = tostring(value):gsub("_", "-"):lower():match("^%s*(.-)%s*$")
+    if normalized == "" then
+        return nil
+    end
+    return normalized
+end
+
+local function getAudioLanguagePriority()
+    local configured = resolverConfig.audioLanguagePriority
+    local priority = {}
+    if type(configured) == "table" then
+        for _, value in ipairs(configured) do
+            local normalized = normalizeLanguageCode(value)
+            if normalized then
+                priority[#priority + 1] = normalized
+            end
+        end
+    end
+
+    if #priority == 0 then
+        priority = { "original", "en", "en-us", "und" }
+    end
+    return priority
+end
+
+local function collectLanguageValues(target, values)
+    values = values or {}
+    if type(target) ~= "table" then
+        return values
+    end
+
+    local fields = {
+        "language",
+        "lang",
+        "audioLanguage",
+        "audioLocale",
+        "languageCode",
+        "format_note",
+        "format",
+        "name",
+        "label",
+        "title",
+        "audioTrackId",
+        "audioTrackName",
+        "audioTrackType",
+    }
+
+    for _, key in ipairs(fields) do
+        local normalized = normalizeLanguageCode(target[key])
+        if normalized then
+            values[#values + 1] = normalized
+        end
+    end
+
+    if type(target.audioTrack) == "table" then
+        collectLanguageValues(target.audioTrack, values)
+    end
+    if type(target.audioTracks) == "table" then
+        for _, track in ipairs(target.audioTracks) do
+            collectLanguageValues(track, values)
+        end
+    end
+
+    return values
+end
+
+local function audioLanguageScore(target)
+    if type(target) ~= "table" then
+        return 0
+    end
+
+    local values = collectLanguageValues(target, {})
+    local score = 0
+    if target.default == true or target.isDefault == true then
+        score = score + 180
+    end
+
+    local joined = table.concat(values, " ")
+    if joined:find("original", 1, true)
+        or joined:find("default", 1, true)
+        or joined:find("main", 1, true) then
+        score = score + 900
+    end
+
+    local priority = getAudioLanguagePriority()
+    for priorityIndex, wanted in ipairs(priority) do
+        for _, value in ipairs(values) do
+            if wanted == "original"
+                and (
+                    value:find("original", 1, true)
+                    or value:find("default", 1, true)
+                    or value:find("main", 1, true)
+                ) then
+                score = score + math.max(0, 800 - ((priorityIndex - 1) * 35))
+                break
+            end
+
+            if value == wanted
+                or value:sub(1, #wanted + 1) == (wanted .. "-")
+                or wanted:sub(1, #value + 1) == (value .. "-") then
+                score = score + math.max(0, 700 - ((priorityIndex - 1) * 35))
+                break
+            end
+        end
+    end
+
+    local preference = tonumber(target.language_preference or target.preference)
+    if preference then
+        score = score + math.max(-200, math.min(200, preference))
+    end
+
+    return score
+end
+
 local function scoreYtDlpFormat(format)
     if type(format) ~= "table" then
         return -999999
@@ -694,7 +1181,7 @@ local function scoreYtDlpFormat(format)
     local height = tonumber(format.height) or 0
     local bitrate = tonumber(format.tbr) or tonumber(format.abr) or tonumber(format.vbr) or 0
 
-    score = score + (height / 15) + (bitrate / 100)
+    score = score + audioLanguageScore(format) + (height / 15) + (bitrate / 100)
 
     if protocol:find("m3u8", 1, true) then
         score = score - 120
@@ -757,8 +1244,9 @@ end
 
 local function buildYtDlpCommand(url)
     local timeoutSeconds = math.max(3, math.floor(getExtractorTimeoutMs() / 1000))
-    return ("%s --no-playlist --no-warnings --skip-download --dump-single-json --socket-timeout %d -- %s 2>&1")
+    local command = ("%s --no-playlist --no-warnings --skip-download --dump-single-json --socket-timeout %d -- %s 2>&1")
         :format(resolveYtDlpCommand(), timeoutSeconds, shellQuote(url))
+    return wrapCommandWithTimeout(command, getExtractorTimeoutMs() + 1000)
 end
 
 local function resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, callback)
@@ -1135,7 +1623,7 @@ local function resolveFromCobalt(url, wantVideo, avoidResolvedUrl, avoidInstance
             normalized.instance = endpoint
             PMMSDebug("resolver", "cobalt endpoint resolved media", {
                 endpoint = endpoint,
-                playableUrl = normalized.playableUrl,
+                playableUrl = redactUrlForDebug(normalized.playableUrl),
                 video = normalized.video,
             })
             callback(normalized, nil, makeTraceEntry("cobalt", "success", "resolved", { instance = endpoint }))
@@ -1170,6 +1658,25 @@ markInstanceHealthy = function(provider, baseUrl)
     if providerFailures then
         providerFailures[baseUrl] = nil
     end
+end
+
+function SuppressResolverInstance(provider, baseUrl, reason)
+    if type(baseUrl) ~= "string" or baseUrl == "" then
+        return false
+    end
+
+    local normalizedProvider = type(provider) == "string" and provider or ""
+    if normalizedProvider == "embed" or normalizedProvider == "yt_dlp_local" then
+        return false
+    end
+
+    local normalizedBaseUrl = trimTrailingSlash(baseUrl)
+    if not normalizedBaseUrl then
+        return false
+    end
+
+    markInstanceFailure(normalizedProvider, normalizedBaseUrl, reason or "client_playback_failed")
+    return true
 end
 
 isInstanceSuppressed = function(provider, baseUrl, now)
@@ -1326,6 +1833,12 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
         return nil
     end
 
+    if wantVideo and type(data.hlsUrl) == "string" and data.hlsUrl ~= "" then
+        if not shouldAvoidUrl(data.hlsUrl, avoidResolvedUrl) then
+            return data.hlsUrl
+        end
+    end
+
     if wantVideo and type(data.formatStreams) == "table" then
         local best
         local bestQuality = -999999
@@ -1337,6 +1850,7 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
                 end
 
                 local quality = codecScore(mime)
+                    + audioLanguageScore(stream)
                     + (tonumber(stream.bitrate) or tonumber(stream.qualityLabel and stream.qualityLabel:match("(%d+)")) or 0) / 1000
                 if tostring(mime):lower():find("audio", 1, true) and tostring(mime):lower():find("video", 1, true) then
                     quality = quality + 120
@@ -1349,12 +1863,6 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
             ::continue_format_stream::
         end
         if best then return best end
-    end
-
-    if wantVideo and type(data.hlsUrl) == "string" and data.hlsUrl ~= "" then
-        if not shouldAvoidUrl(data.hlsUrl, avoidResolvedUrl) then
-            return data.hlsUrl
-        end
     end
 
     if type(data.adaptiveFormats) == "table" then
@@ -1370,7 +1878,9 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
                 end
 
                 if (not wantVideo and isAudio) or (wantVideo and isVideo and isAudio) then
-                    local score = codecScore(mime) + (tonumber(stream.bitrate) or tonumber(stream.audioSampleRate) or 0) / 1000
+                    local score = codecScore(mime)
+                        + audioLanguageScore(stream)
+                        + (tonumber(stream.bitrate) or tonumber(stream.audioSampleRate) or 0) / 1000
                     if score > bestScore then
                         best = stream.url
                         bestScore = score
@@ -1391,6 +1901,12 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
     end
 
     if wantVideo then
+        if type(data.hls) == "string" and data.hls ~= "" then
+            if not shouldAvoidUrl(data.hls, avoidResolvedUrl) then
+                return data.hls
+            end
+        end
+
         if type(data.videoStreams) == "table" then
             local best
             local bestScore = -999999
@@ -1402,6 +1918,7 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
 
                     local mime = stream.mimeType or stream.format or stream.codec
                     local score = codecScore(mime)
+                        + audioLanguageScore(stream)
                         + (tonumber(stream.bitrate) or tonumber(stream.quality and tostring(stream.quality):match("(%d+)")) or 0) / 1000
                     if score > bestScore then
                         best = stream.url
@@ -1411,12 +1928,6 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
                 ::continue_video_stream::
             end
             if best then return best end
-        end
-
-        if type(data.hls) == "string" and data.hls ~= "" then
-            if not shouldAvoidUrl(data.hls, avoidResolvedUrl) then
-                return data.hls
-            end
         end
 
         return nil
@@ -1432,7 +1943,9 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
                 end
 
                 local mime = stream.mimeType or stream.format or stream.codec
-                local score = codecScore(mime) + (tonumber(stream.bitrate) or 0) / 1000
+                local score = codecScore(mime)
+                    + audioLanguageScore(stream)
+                    + (tonumber(stream.bitrate) or 0) / 1000
                 if score > bestScore then
                     best = stream.url
                     bestScore = score
@@ -1660,7 +2173,7 @@ local function resolveInvidiousInstance(baseUrl, videoId, wantVideo, avoidResolv
                 instance = baseUrl,
                 videoId = videoId,
                 wantVideo = wantVideo,
-                streamUrl = streamUrl,
+                streamUrl = redactUrlForDebug(streamUrl),
             })
             callback({
                 playableUrl = streamUrl,
@@ -1738,7 +2251,7 @@ local function resolvePipedInstance(baseUrl, videoId, wantVideo, avoidResolvedUr
                 instance = baseUrl,
                 videoId = videoId,
                 wantVideo = wantVideo,
-                streamUrl = streamUrl,
+                streamUrl = redactUrlForDebug(streamUrl),
             })
             callback({
                 playableUrl = streamUrl,
@@ -1839,11 +2352,25 @@ local function hasProvider(order, providerName)
     return false
 end
 
-local function getProviderOrder(avoidProvider, allowEmbedFallback)
+local function getProviderOrder(avoidProvider, allowEmbedFallback, forceProvider)
     local configured = getConfiguredProviderOrder()
     if allowEmbedFallback == true and not hasProvider(configured, "embed") then
         configured[#configured + 1] = "embed"
     end
+
+    if type(forceProvider) == "string" and forceProvider ~= "" and forceProvider ~= "auto" then
+        for _, provider in ipairs(configured) do
+            if provider == forceProvider then
+                return { forceProvider }
+            end
+        end
+        if forceProvider == "embed" and allowEmbedFallback == true then
+            return { "embed" }
+        end
+        return {}
+    end
+
+    configured = getAdaptiveProviderOrder(configured)
 
     if type(avoidProvider) ~= "string" or avoidProvider == "" then
         return configured
@@ -1937,7 +2464,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
                 provider = cachedProvider,
                 instance = cachedInstance,
                 status = cachedPayload.status,
-                resolvedUrl = cachedResolvedUrl,
+                resolvedUrl = redactUrlForDebug(cachedResolvedUrl),
             })
             callback(cloneTable(cached.payload))
             return
@@ -1949,7 +2476,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
             status = cachedPayload.status,
             avoidProvider = resolverOptions.avoidProvider,
             avoidInstance = resolverOptions.avoidInstance,
-            avoidResolvedUrl = resolverOptions.avoidResolvedUrl,
+            avoidResolvedUrl = redactUrlForDebug(resolverOptions.avoidResolvedUrl),
         })
     end
 
@@ -1963,7 +2490,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
     discoverInstances(forceRefresh, function(invidiousInstances, pipedInstances)
         local maxInstances = math.max(1, tonumber(resolverOptions.maxInstances) or getMaxInstances())
         local avoidResolvedUrl = resolverOptions.avoidResolvedUrl
-        local order = getProviderOrder(resolverOptions.avoidProvider, allowEmbedFallback)
+        local order = getProviderOrder(resolverOptions.avoidProvider, allowEmbedFallback, resolverOptions.forceProvider)
         local filteredInvidious = filterInstances("invidious", invidiousInstances, resolverOptions.avoidInstance)
         local filteredPiped = filterInstances("piped", pipedInstances, resolverOptions.avoidInstance)
         local cobaltEndpoints = collectConfiguredCobaltEndpoints()
@@ -1976,6 +2503,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
             allowAudioFallback = allowAudioFallback,
             allowEmbedFallback = allowEmbedFallback,
             forceRefresh = forceRefresh,
+            forceProvider = resolverOptions.forceProvider,
             avoidProvider = resolverOptions.avoidProvider,
             avoidInstance = resolverOptions.avoidInstance,
             providerOrder = table.concat(order, " > "),
@@ -2006,7 +2534,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
                     reason = payload.reason,
                     provider = payload.provider,
                     instance = payload.instance,
-                    resolvedUrl = payload.resolvedUrl or payload.playableUrl,
+                    resolvedUrl = redactUrlForDebug(payload.resolvedUrl or payload.playableUrl),
                     video = payload.video,
                     warning = payload.warning,
                 })
@@ -2053,7 +2581,7 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
                             url = url,
                             provider = audioResult.provider,
                             instance = audioResult.instance,
-                            resolvedUrl = audioResult.resolvedUrl or audioResult.playableUrl,
+                            resolvedUrl = redactUrlForDebug(audioResult.resolvedUrl or audioResult.playableUrl),
                         })
                         onResolved(audioResult, "resolved_audio_fallback")
                         return
@@ -2391,7 +2919,7 @@ Citizen.CreateThread(function()
     })
 
     if not ytDlpAvailable and #cobaltEndpoints == 0 and not isEmbedFallbackAllowed({}) then
-        print(("[7-pmms] Resolver preflight: yt-dlp is unavailable (%s) and no Cobalt endpoint is configured. YouTube playback will depend on public Invidious/Piped instances and may fail."):format(tostring(ytDlpReason or "unknown")))
+        print(("[7-pmms] Resolver preflight: %s No Cobalt endpoint is configured, so YouTube playback will depend on public Invidious/Piped instances and may fail. Install yt-dlp for the FXServer process, set Config.resolver.extractor.ytDlpPath/ytDlpCommand, or configure a trusted Cobalt/extractor endpoint."):format(summarizeYtDlpPreflightReason(ytDlpReason)))
     end
 end)
 

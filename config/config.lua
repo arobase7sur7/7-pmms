@@ -29,19 +29,23 @@ Config.autoDisableVehicleRadio   = true
 
 Config.debug = {
     -- Master switch. Leave false in production unless you are diagnosing an issue.
-    enabled = true,
+    enabled = false,
 
     -- Set all = true to enable every debug category below.
-    all = true,
+    all = false,
 
-    player = true,    -- start/stop/startup/retry/cancel playback decisions
-    resolver = true,  -- provider order, provider failures, fallback decisions
-    favorites = true, -- favorite optimistic/server ack/persistence decisions
-    dui = true,       -- DUI browser startup and local playback errors
+    player = false,    -- start/stop/startup/retry/cancel playback decisions
+    resolver = false,  -- provider order, provider failures, fallback decisions
+    favorites = false, -- favorite optimistic/server ack/persistence decisions
+    dui = false,       -- DUI browser startup and local playback errors
     nui = false,      -- browser/NUI console logs
     search = false,
     database = false,
     target = false,
+}
+
+Config.ui = {
+    maxHistorySyncItems = 30,
 }
 
 Config.playlists = {
@@ -51,6 +55,8 @@ Config.playlists = {
 
 Config.search = {
     minimumBusyMs = 500,
+    maxInstances = 8,
+    instanceFailureCooldownSeconds = 600,
 }
 
 Config.directLinks = {
@@ -65,6 +71,7 @@ Config.directLinks = {
         "ogv",
         "oga",
         "wav",
+        "m3u8",
     },
 }
 
@@ -103,6 +110,15 @@ Config.dui = {
     screenWidth  = 1280,
     screenHeight = 720,
     timeout      = 30000,
+    renderMaxFps = 30,
+    renderIdleFps = 5,
+    renderDistanceBuffer = 5.0,
+    cacheRuntimeAssets = true,
+    -- Draw decoded oversized HLS video through a capped canvas. This downscales; it does not transcode unsupported codecs.
+    hlsCanvasDownscale = true,
+    hlsCanvasMaxWidth = 1920,
+    hlsCanvasMaxHeight = 1080,
+    hlsCanvasMaxFps = 30,
 
     urls = {},
 
@@ -122,6 +138,8 @@ Config.resolver = {
     parallelInstancesPerProvider = 2,
     -- How long a failing resolver instance is skipped before retrying it.
     instanceFailureCooldownSeconds = 600,
+    -- Used when providers expose alternate audio metadata. First match wins.
+    audioLanguagePriority = { "original", "en", "en-US", "und" },
 
     extractor = {
         enabled = true,
@@ -136,6 +154,8 @@ Config.resolver = {
             "python -m yt_dlp",
             "py -m yt_dlp",
         },
+        -- Optional explicit binary/path override. Example: "C:/tools/yt-dlp.exe"
+        ytDlpPath = nil,
         timeoutMs = 9000,
         cooldownSeconds = 300,
         maxAttemptsPerProvider = 2,
@@ -192,7 +212,15 @@ Config.resolver = {
 
     -- Retry resolution after an early playback failure.
     retryOnPlaybackError = true,
-    retryAttempts = 1,
+    retryAttempts = 4,
+
+    adaptiveProviderRanking = {
+        enabled = true,
+        minCompletedPlays = 8,
+        minProviderSamples = 2,
+        dataFile = "data/provider_stats.json",
+        saveDebounceMs = 5000,
+    },
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -430,6 +458,14 @@ Config.searchSources = {
         cooldown = 2,
         clientId = "", -- Add Twitch API Client ID here if available, otherwise it directly bypasses
         clientSecret = "",
+    },
+    ["direct"] = {
+        label = "Direct",
+        enabled = true,
+        icon = "link",
+        placeholder = "Paste a direct media URL...",
+        maxResults = 1,
+        cooldown = 0,
     }
 }
 

@@ -22,6 +22,29 @@ local function countTableEntries(value)
     return count
 end
 
+local function redactUrlForDebug(url)
+    if type(url) ~= "string" then
+        return url
+    end
+
+    local redacted = url
+    local queryStart = redacted:find("?", 1, true)
+    if queryStart then
+        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
+    end
+
+    local hashStart = redacted:find("#", 1, true)
+    if hashStart then
+        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
+    end
+
+    if #redacted > 180 then
+        redacted = redacted:sub(1, 177) .. "..."
+    end
+
+    return redacted
+end
+
 function GetMediaPlayerStates()
     return mediaPlayerStates
 end
@@ -322,6 +345,12 @@ local function isHandleAudibleForNearby(handle, info, distance, entity, entityTy
     return numericDistance <= (range + 0.5)
 end
 
+local function getEffectivePlaybackVolume(info)
+    local deviceVolume = tonumber(info and info.volume) or 100
+    local localVolume = type(GetBaseVolume) == "function" and tonumber(GetBaseVolume()) or 100
+    return Clamp((deviceVolume * localVolume) / 100, 0, 100, deviceVolume)
+end
+
 local function getClosestActiveHandle(maxDistance)
     local playerPos = GetEntityCoords(PlayerPedId())
     local nearby = GetNearbyActiveMediaPlayers(playerPos, mediaPlayerStates)
@@ -352,8 +381,8 @@ RegisterNetEvent("pmms:startupAttempt", function(payload)
         playbackToken = payload.playbackToken,
         phase = payload.phase,
         startupTimeoutMs = payload.startupTimeoutMs,
-        url = payload.resolvedOptions.originalUrl or payload.resolvedOptions.url,
-        resolvedUrl = payload.resolvedOptions.resolvedUrl or payload.resolvedOptions.url,
+        url = redactUrlForDebug(payload.resolvedOptions.originalUrl or payload.resolvedOptions.url),
+        resolvedUrl = redactUrlForDebug(payload.resolvedOptions.resolvedUrl or payload.resolvedOptions.url),
         provider = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.provider or nil,
         instance = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.instance or nil,
         resolverStatus = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.status or nil,
@@ -638,12 +667,24 @@ Citizen.CreateThread(function()
                 end
 
                 local currentOffset = getInterpolatedOffset(handle, info, nowMs)
+                local renderBuffer = tonumber(Config.dui and Config.dui.renderDistanceBuffer) or 5.0
+                local playbackRange = getConfiguredPlaybackRange(info)
+                local visualSurfaceActive = info.video ~= false and (
+                    player.browser.renderTarget ~= nil
+                    or player.browser.sfHandle ~= nil
+                    or player.browser.scaleform ~= nil
+                )
+                player.browser:setRenderState(
+                    visualSurfaceActive
+                    and distance >= 0
+                    and distance <= (playbackRange + renderBuffer)
+                )
 
                 player.browser:sendMessage({
                     type = "update",
                     handle = handle,
                     distance = distance,
-                    volume = info.volume or 100,
+                    volume = getEffectivePlaybackVolume(info),
                     offset = currentOffset,
                     options = info,
                     sameRoom = isSameRoom(playerPos, entity, entityType, info.isVehicle),

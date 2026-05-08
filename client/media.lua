@@ -128,11 +128,22 @@ function InitMediaPlayer(handle, options, entity, model, entityType, startupAtte
 
     local browser = createBrowser(handle, options, model)
     if not browser then
+        local resolvedPlaybackToken = getPlayerPlaybackToken(nil, options, playbackToken)
         MarkMediaPlayerFailed(handle, "DUI browser could not be created.", {
-            playbackToken = getPlayerPlaybackToken(nil, options, playbackToken),
+            playbackToken = resolvedPlaybackToken,
             stateRevision = options and options.stateRevision or nil,
             url = options and (options.originalUrl or options.url) or nil,
         })
+        if startupAttemptId then
+            TriggerServerEvent(
+                "pmms:startupError",
+                handle,
+                startupAttemptId,
+                options and options.url or nil,
+                "DUI browser could not be created.",
+                resolvedPlaybackToken
+            )
+        end
         creatingPlayers[handle] = nil
         return nil
     end

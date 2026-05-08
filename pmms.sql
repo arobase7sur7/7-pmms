@@ -4,7 +4,9 @@ CREATE TABLE IF NOT EXISTS `pmms_playlists` (
   `name` varchar(255) NOT NULL,
   `is_favorite` tinyint(1) NOT NULL DEFAULT 0,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_pmms_playlist_owner_id` (`owner_license`, `id`),
+  KEY `idx_pmms_playlists_owner_favorite` (`owner_license`, `is_favorite`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `pmms_playlist_tracks` (

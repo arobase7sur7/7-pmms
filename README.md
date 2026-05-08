@@ -69,6 +69,7 @@ Supported direct-link extensions:
 - `ogv`
 - `oga`
 - `wav`
+- `m3u8`
 
 Direct-link validation rules:
 
@@ -81,6 +82,20 @@ Direct-link validation rules:
 - no unsupported formats such as `mov`, `flv`, `mpeg`, `mid`, or `midi`
 
 Provider page URLs without file-like media extensions stay on the resolver path instead of being treated as direct links.
+Proxy-style URLs with a nested `url`, `u`, `src`, `source`, `media`, `stream`, or `target` query parameter are unwrapped only when the nested value is itself a safe supported direct media URL.
+HLS (`.m3u8`) playback uses the bundled `hls.js` DUI runtime, so server owners do not need to install a browser plugin for direct HLS links.
+For HLS, the playlist and segment hosts still need to be reachable by the FiveM browser and expose browser-friendly CORS headers. Alternate audio tracks exposed by the manifest are synced back to the NUI and can be selected from the now-playing panel.
+For best DUI compatibility, HLS video should expose browser-decodable H.264/AAC variants at practical RP screen sizes. Very high resolution, HDR, DRM, or unusual codec playlists can load metadata but fail or show black in FiveM's embedded Chromium.
+High-resolution HLS is attempted instead of rejected. When `Config.dui.hlsCanvasDownscale = true`, DUI can draw decoded oversized video through a capped canvas layer:
+
+```lua
+Config.dui.hlsCanvasDownscale = true
+Config.dui.hlsCanvasMaxWidth = 1920
+Config.dui.hlsCanvasMaxHeight = 1080
+Config.dui.hlsCanvasMaxFps = 30
+```
+
+This only downscales video that FiveM CEF can already decode. It cannot transcode HEVC/HDR/DRM streams into H.264/AAC.
 
 ## Requirements
 
@@ -136,15 +151,186 @@ Important resolver defaults:
 - `Config.resolver.allowEmbedFallback = false`
 - `Config.resolver.warnOnFallback = false`
 - `Config.resolver.retryOnPlaybackError = true`
-- `Config.resolver.retryAttempts = 1`
+- `Config.resolver.retryAttempts = 4`
+- `Config.resolver.audioLanguagePriority = { "original", "en", "en-US", "und" }`
 
 The default resolver chain treats only ad-free direct streams as successful playback sources: local `yt-dlp`, configured extractor HTTP endpoints, optional Cobalt API endpoints, Invidious, Piped, then audio-only fallback. Embedded YouTube fallback is opt-in with `allowEmbedFallback = true`; when no ad-free source is found, playback fails cleanly instead of staying in a fallback loading state.
+In the NUI, the YouTube source has a provider selector. `Auto` uses the ad-free resolver chain. Selecting `YouTube Embed` is an explicit per-play opt-in and can show ads, so it is not used by default.
 
-If your server runtime cannot spawn `yt-dlp`, configure `Config.resolver.cobalt.endpoints` with a self-hosted or trusted private Cobalt API root. Protected instances can use `Config.resolver.cobalt.apiKey`, which is sent as `Authorization: Api-Key <key>` by default. A YouTube Data API key alone cannot provide direct playable media streams; scripts that “just work” with YouTube usually rely on embedded playback, a downloader service, or a local extractor.
+### Beginner YouTube Provider Guide
+
+If you see this warning:
+
+```text
+Resolver preflight: local yt-dlp probe could not spawn any candidate command from the FXServer environment. No Cobalt endpoint is configured, so YouTube playback will depend on public Invidious/Piped instances and may fail.
+```
+
+The resource still started correctly. It only means YouTube reliability depends on public fallback providers until you configure one stronger resolver.
+
+Recommended setup ladder:
+
+1. Default/noob setup: start the resource with the default config. Public Invidious and Piped instances are free and already listed, but they are community services and can randomly rate-limit, go offline, return CORS-hostile URLs, or fail for some videos.
+2. Better setup: install `yt-dlp` on the same machine/user that starts FXServer. This is free and usually the easiest reliable ad-free option for a self-hosted server.
+3. Best setup: run your own trusted extractor HTTP service or Cobalt instance and point `7-pmms` at it. This is still free software, but you host it yourself.
+
+Provider order is configured here:
+
+```lua
+Config.resolver.extractor.providerOrder = {
+    "yt_dlp_local",
+    "extractor_http",
+    "cobalt",
+    "invidious",
+    "piped",
+}
+```
+
+Auto mode can also learn from successful playback starts across all players:
+
+```lua
+Config.resolver.adaptiveProviderRanking = {
+    enabled = true,
+    minCompletedPlays = 8,
+    minProviderSamples = 2,
+    dataFile = "data/provider_stats.json",
+    saveDebounceMs = 5000,
+}
+```
+
+This only affects automatic provider selection. If a player forces `yt-dlp`, Cobalt, Piped, Invidious, or Embed from the NUI, that forced choice is respected and is not used for ranking. Use `/pmmsproviders` or `/pmms_providers` to see the current provider top.
+
+#### Local yt-dlp
+
+Install `yt-dlp` where the FXServer process can run it, then test one of these commands in the same terminal/user that starts FXServer:
+
+```sh
+yt-dlp --version
+python -m yt_dlp --version
+py -m yt_dlp --version
+```
+
+If none of those works, `spawn_failed` is expected. It means FXServer could not start that command from its environment. On Windows, an explicit path is often the clearest fix:
+
+```lua
+Config.resolver.extractor.ytDlpPath = "C:/tools/yt-dlp.exe"
+```
+
+You can also change the command list:
+
+```lua
+Config.resolver.extractor.ytDlpCommand = {
+    "C:/tools/yt-dlp.exe",
+    "python -m yt_dlp",
+    "py -m yt_dlp",
+}
+```
+
+On Linux, add the command that works on your host:
+
+```lua
+Config.resolver.extractor.ytDlpCommand = {
+    "yt-dlp",
+    "python3 -m yt_dlp",
+    "python -m yt_dlp",
+}
+```
+
+#### Extractor HTTP
+
+Use this only if you run or trust an HTTP resolver service. `7-pmms` sends a `POST` request with JSON like `{ url, mode, avoidResolvedUrl, source }`. The service should return JSON containing one of `playableUrl`, `url`, or `streamUrl`, plus optional `title`, `author`, `duration`, and `thumbnail`.
+
+```lua
+Config.resolver.extractor.httpEndpoints = {
+    "https://your-resolver.example.com/api/resolve",
+}
+```
+
+Do not add random public endpoints here unless you trust them. They receive the URLs your players request.
+
+#### Cobalt
+
+Cobalt is an optional media downloader API. For production, use a self-hosted or trusted private Cobalt API root.
+
+```lua
+Config.resolver.cobalt.endpoints = {
+    "https://your-cobalt-instance.example.com",
+}
+Config.resolver.cobalt.apiKey = "your-secret-key"
+Config.resolver.cobalt.apiKeyHeader = "Authorization"
+Config.resolver.cobalt.apiKeyPrefix = "Api-Key"
+```
+
+With the default header settings, `7-pmms` sends:
+
+```text
+Authorization: Api-Key your-secret-key
+```
+
+Keep Cobalt output browser-friendly for FiveM DUI:
+
+```lua
+Config.resolver.cobalt.alwaysProxy = true
+Config.resolver.cobalt.videoQuality = "720"
+Config.resolver.cobalt.youtubeVideoCodec = "h264"
+Config.resolver.cobalt.youtubeVideoContainer = "mp4"
+```
+
+#### Invidious and Piped
+
+These are free public fallback providers. They are useful for a plug-and-play public resource, but they are not guaranteed. Keep multiple instances so one failing host does not break every play request:
+
+```lua
+Config.resolver.instances.invidious = {
+    "https://inv.nadeko.net",
+    "https://yewtu.be",
+    "https://invidious.nerdvpn.de",
+}
+
+Config.resolver.instances.piped = {
+    "https://api.piped.private.coffee",
+    "https://pipedapi.kavin.rocks",
+    "https://api-piped.mha.fi",
+}
+```
+
+The resolver temporarily skips failing instances so it does not retry the same broken host immediately:
+
+```lua
+Config.resolver.instanceFailureCooldownSeconds = 600
+```
+
+#### YouTube Embed
+
+YouTube Embed is available only when you explicitly opt in. It may show ads and is not recommended as the default RP mode.
+The embed path uses the YouTube IFrame API instead of loading a `/watch` page as a normal media URL. This makes explicit embed playback cleaner, but it still depends on YouTube allowing the video to be embedded and it does not expose alternate audio tracks to `7-pmms`.
+
+```lua
+Config.resolver.allowEmbedFallback = false
+```
+
+If you intentionally allow it:
+
+```lua
+Config.resolver.allowEmbedFallback = true
+```
+
+Server owners and players still have to select/allow the embed provider intentionally. `Auto` stays on the ad-free resolver chain first.
+
+If the preflight warning says every candidate `spawn_failed`, the resource is starting normally but FXServer could not create a child process for those commands from its runtime environment. On hosted or restricted FXServer setups, use `Config.resolver.extractor.httpEndpoints` or `Config.resolver.cobalt.endpoints` instead of local extraction.
+
+A YouTube Data API key alone cannot provide direct playable media streams. Scripts that "just work" with YouTube usually rely on embedded playback, a downloader service, or a local extractor.
 
 Debug logging is controlled by `Config.debug`. Set `Config.debug.enabled = true`, then enable the categories you need, such as `player`, `resolver`, `favorites`, `dui`, or `nui`; set `all = true` only when you want very noisy diagnostics.
 
-The bundled search UI supports the configured sources in `Config.searchSources`. The default configuration includes YouTube, SoundCloud, and Twitch.
+The bundled search UI supports the configured sources in `Config.searchSources`. The default configuration includes YouTube, SoundCloud, Twitch, and Direct for pasted media links.
+
+### Production Smoothness
+
+`Config.ui.maxHistorySyncItems` limits how many recent history rows are sent to each NUI refresh. The full per-device history count stays server-side, but only the newest rows are rendered to keep repeated open/close and long sessions smooth.
+
+`Config.dui.renderMaxFps`, `Config.dui.renderIdleFps`, `Config.dui.renderDistanceBuffer`, and `Config.dui.cacheRuntimeAssets` control DUI draw cost. The defaults render visible screens at a capped rate and keep hidden/out-of-range browsers from doing per-frame texture work.
+
+Resolver provider stats are live operational data. The resource creates/updates `data/provider_stats.json` locally; public releases should ship `data/provider_stats.example.json` and let each server build its own stats.
 
 ## Persistent vs Temporary State
 

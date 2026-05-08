@@ -41,6 +41,17 @@ files {
     "ui/index.html",
     "ui/style.css",
     "ui/app.js",
+    "http/dui_runtime/index.html",
+    "http/dui_runtime/style.css",
+    "http/dui_runtime/script.js",
+    "http/dui_runtime/hls.min.js",
+    "http/dui_runtime/loading.svg",
+    "http/dui_runtime/mediaelement.min.js",
+    "http/dui_runtime/mediaelementplayer.min.css",
+    "http/dui_runtime/dailymotion.min.js",
+    "http/dui_runtime/twitch.min.js",
+    "http/dui_runtime/vimeo.min.js",
+    "http/dui_runtime/wave.js",
 }
 
 ui_page "ui/index.html"

@@ -1,7 +1,46 @@
 local uiIsOpen = false
 local baseVolume = 100
+local baseVolumeKvpKey = "pmms:baseVolume:v1"
 local tooltipsEnabled = true
 local permissions = {}
+
+local function setBaseVolume(value)
+    baseVolume = Clamp(value, 0, 100, 100)
+    SetResourceKvp(baseVolumeKvpKey, tostring(baseVolume))
+    return baseVolume
+end
+
+local function loadBaseVolume()
+    local stored = GetResourceKvpString(baseVolumeKvpKey)
+    if stored then
+        baseVolume = Clamp(tonumber(stored), 0, 100, 100)
+    end
+end
+
+loadBaseVolume()
+
+local function redactUrlForDebug(url)
+    if type(url) ~= "string" then
+        return url
+    end
+
+    local redacted = url
+    local queryStart = redacted:find("?", 1, true)
+    if queryStart then
+        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
+    end
+
+    local hashStart = redacted:find("#", 1, true)
+    if hashStart then
+        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
+    end
+
+    if #redacted > 180 then
+        redacted = redacted:sub(1, 177) .. "..."
+    end
+
+    return redacted
+end
 
 function IsUiOpen()
     return uiIsOpen
@@ -96,6 +135,7 @@ RegisterNUICallback("startup", function(_, cb)
         searchSources              = Config.searchSources,
         searchMinimumBusyMs        = (Config.search and Config.search.minimumBusyMs) or 500,
         deviceDefaults             = buildGlobalDeviceDefaults(),
+        baseVolume                 = GetBaseVolume(),
         debug                      = Config.debug,
     }))
 end)
@@ -108,8 +148,9 @@ end)
 RegisterNUICallback("play", function(data, cb)
     PMMSDebug("nui", "NUI play callback", {
         handle = data and data.handle or nil,
-        url = data and data.options and data.options.url or nil,
+        url = redactUrlForDebug(data and data.options and data.options.url or nil),
         title = data and data.options and data.options.title or nil,
+        youtubeProvider = data and data.options and (data.options.youtubeProvider or data.options.resolverProvider) or nil,
     })
     if data.options and data.options.url and data.options.url ~= "" then
         TriggerServerEvent("pmms:start", data.handle, data.options)
@@ -129,6 +170,19 @@ RegisterNUICallback("stop", function(data, cb)
         handle = data and data.handle or nil,
     })
     TriggerServerEvent("pmms:stop", data.handle)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("playPlaylistTracks", function(data, cb)
+    local trackCount = data and type(data.tracks) == "table" and #data.tracks or 0
+    PMMSDebug("nui", "NUI playlist batch callback", {
+        handle = data and data.handle or nil,
+        playlistId = data and data.playlistId or nil,
+        trackCount = trackCount,
+    })
+    if data and data.handle and type(data.tracks) == "table" and #data.tracks > 0 then
+        TriggerServerEvent("pmms:playPlaylistTracks", data.handle, data.playlistId, data.tracks)
+    end
     cb(json.encode({}))
 end)
 
@@ -253,12 +307,17 @@ RegisterNUICallback("removeFromQueue", function(data, cb)
 end)
 
 RegisterNUICallback("setBaseVolume", function(data, cb)
-    baseVolume = Clamp(data.volume, 0, 100, 100)
+    setBaseVolume(data and data.volume or baseVolume)
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("setVolume", function(data, cb)
     TriggerServerEvent("pmms:setVolume", data.handle, data.volume)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("setAudioTrack", function(data, cb)
+    TriggerServerEvent("pmms:setAudioTrack", data.handle, data.audioTrack or data.track or data.index)
     cb(json.encode({}))
 end)
 
@@ -414,6 +473,7 @@ function ShowUi(selectedHandle)
         adminMaxRange = Config.adminMaxRange or Config.maxRange,
         searchMinimumBusyMs = (Config.search and Config.search.minimumBusyMs) or 500,
         deviceDefaults = buildGlobalDeviceDefaults(),
+        baseVolume = type(GetBaseVolume) == "function" and GetBaseVolume() or 100,
         debug = Config.debug,
         selectedHandle = selectedHandle,
     })
@@ -472,7 +532,7 @@ RegisterNetEvent("pmms:showBaseVolume", function()
 end)
 
 RegisterNetEvent("pmms:setBaseVolume", function(vol)
-    baseVolume = Clamp(vol, 0, 100, 100)
+    setBaseVolume(vol)
     ShowNotification("Volume set to " .. baseVolume .. "%")
 end)
 
@@ -508,6 +568,7 @@ RegisterNUICallback("deletePlaylist", function(data, cb)
 end)
 
 RegisterNUICallback("setPlaylistFavorite", function(data, cb)
+    data = type(data) == "table" and data or {}
     PMMSDebug("favorites", "NUI favorite callback", {
         playlistId = data and data.playlistId or nil,
         favorite = data and data.favorite or nil,

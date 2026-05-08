@@ -225,6 +225,7 @@ local function captureCurrentTrackOptions(mp)
         duration = mp.duration,
         author = mp.author,
         thumbnail = mp.thumbnail,
+        live = mp.live == true,
         volume = mp.volume,
         offset = 0,
         filter = mp.filter,
@@ -234,6 +235,9 @@ local function captureCurrentTrackOptions(mp)
         resolvedUrl = mp.resolvedUrl,
         resolver = cloneTable(mp.resolver),
         directLink = cloneTable(mp.directLink),
+        audioTracks = cloneTable(mp.audioTracks),
+        audioTrack = cloneTable(mp.audioTrack or mp.selectedAudioTrack),
+        selectedAudioTrack = cloneTable(mp.selectedAudioTrack or mp.audioTrack),
     }
 end
 
@@ -322,6 +326,16 @@ local function mergeResolvedIntoOptions(target, resolved)
     if not target.duration and resolved.duration then
         target.duration = resolved.duration
     end
+    if resolved.live == true or resolved.live == false then
+        target.live = resolved.live == true
+    end
+    if type(resolved.audioTracks) == "table" then
+        target.audioTracks = cloneTable(resolved.audioTracks)
+    end
+    if type(resolved.audioTrack) == "table" or type(resolved.selectedAudioTrack) == "table" then
+        target.audioTrack = cloneTable(resolved.audioTrack or resolved.selectedAudioTrack)
+        target.selectedAudioTrack = cloneTable(resolved.selectedAudioTrack or resolved.audioTrack)
+    end
     if resolved.video == false then
         target.video = false
     elseif resolved.video == true then
@@ -395,13 +409,21 @@ local function prepareNextEntry(handle, mp, entry)
         return
     end
 
+    if entry.resolving == true then
+        MarkDirty()
+        return
+    end
+
     MarkDirty()
 
     local resolveIntent = cloneTable(queuedOptions)
+    entry.resolving = true
     ResolvePlaybackOptions(resolveIntent, {
         notifyOnFailure = false,
     }, function(ok, resolved)
+        entry.resolving = false
         if not ok or type(resolved) ~= "table" then
+            entry.resolveFailedAt = os.time()
             return
         end
 
@@ -417,6 +439,7 @@ local function prepareNextEntry(handle, mp, entry)
         end
 
         mergeResolvedIntoOptions(liveEntry.options or {}, resolved)
+        liveEntry.resolvedAt = os.time()
 
         local liveMp = GetMediaPlayer(handle)
         if liveMp then
@@ -478,6 +501,7 @@ local function buildPlaybackOptions(handle, mp, session, queued, context)
     options.url = queued.url
     options.title = queued.title or queued.url
     options.duration = queued.duration
+    options.live = queued.live == true
     options.author = queued.author
     options.thumbnail = queued.thumbnail
     options.offset = queued.offset or 0
@@ -488,6 +512,9 @@ local function buildPlaybackOptions(handle, mp, session, queued, context)
     options.resolvedUrl = queued.resolvedUrl
     options.resolver = cloneTable(queued.resolver)
     options.directLink = cloneTable(queued.directLink)
+    options.audioTracks = cloneTable(queued.audioTracks)
+    options.audioTrack = cloneTable(queued.audioTrack or queued.selectedAudioTrack)
+    options.selectedAudioTrack = cloneTable(queued.selectedAudioTrack or queued.audioTrack)
     options.lastSource = tonumber(context and context.sourceId) or tonumber(options.lastSource) or nil
 
     local immediate = context and context.immediate == true or false
@@ -536,14 +563,18 @@ function AddToQueue(handle, source, options)
         and type(queuedOptions.url) == "string"
         and queuedOptions.url ~= "" then
         local resolveIntent = cloneTable(queuedOptions)
+        queueEntry.resolving = true
         ResolvePlaybackOptions(resolveIntent, {
             notifyOnFailure = false,
         }, function(ok, resolved)
+            queueEntry.resolving = false
             if not ok or type(resolved) ~= "table" or not queueEntry.options then
+                queueEntry.resolveFailedAt = os.time()
                 return
             end
 
             mergeResolvedIntoOptions(queueEntry.options, resolved)
+            queueEntry.resolvedAt = os.time()
 
             local liveMp = GetMediaPlayer(handle)
             local liveSession = getSessionForHandle(handle)

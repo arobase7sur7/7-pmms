@@ -29,10 +29,13 @@ var cachedSharedPlaylists = [];
 var cachedFriends      = [];
 var currentPlaylistId  = null;
 var currentPlaylistName = '';
+var currentPlaylistTracks = [];
 var pendingTrackForPlaylist = null;
 var pendingFavoriteState = {};
+var confirmedFavoriteState = {};
 var favoriteRequestSeq = 0;
 var favoriteResponseFloor = {};
+var quietPlaylistRefreshUntil = 0;
 var usableMediaPlayers = [];
 var usableMediaPlayerIndex = {};
 var currentViewId = 'view-home';
@@ -72,6 +75,8 @@ var playerSuggestionState = {
 };
 var _queuedUiData = null;
 var _uiFrameScheduled = false;
+var _uiVisible = false;
+var _lastUiUpdateSignature = '';
 
 var _lastGridHandles   = [];
 var _lastActiveHandle  = null;
@@ -79,6 +84,17 @@ var _lastNowPlayingPanelKey = '';
 var _lastBottomPlayerKey = '';
 
 var URL_PATTERN = /^(https?:\/\/|www\.)[^\s]+$/i;
+var YOUTUBE_URL_PATTERN = /(?:youtube\.com\/watch\?[^#\s]*v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)/i;
+var youtubeProviderMode = 'auto';
+var YOUTUBE_PROVIDER_OPTIONS = [
+    { value: 'auto', label: 'Auto', description: 'Try ad-free sources in order.' },
+    { value: 'yt_dlp_local', label: 'yt-dlp', description: 'Use the local server extractor.' },
+    { value: 'extractor_http', label: 'Extractor API', description: 'Use configured resolver endpoints.' },
+    { value: 'cobalt', label: 'Cobalt', description: 'Use configured Cobalt endpoints.' },
+    { value: 'invidious', label: 'Invidious', description: 'Use public/private Invidious streams.' },
+    { value: 'piped', label: 'Piped', description: 'Use public/private Piped streams.' },
+    { value: 'embed', label: 'YouTube Embed', description: 'Opt-in only. May show ads.', danger: true }
+];
 var LOOP_MODE_ORDER = ['off', 'track', 'queue', 'shuffle_once', 'shuffle_loop'];
 var LOOP_MODE_LABELS = {
     off: 'Loop Off',
@@ -90,6 +106,7 @@ var LOOP_MODE_LABELS = {
 var PENDING_CONTROL_TIMEOUT_MS = 2500;
 var FAVORITE_SYNC_TIMEOUT_MS = 12000;
 var FAVORITE_HARD_TIMEOUT_MS = 20000;
+var FAVORITE_CONFIRMED_TTL_MS = 1800;
 var pendingControlState = {};
 var _searchBusySince = 0;
 var _searchRetryTimer = null;
@@ -97,6 +114,55 @@ var _playerSuggestionTimer = null;
 var localPlaybackFailures = {};
 var requestedStartupStates = {};
 var debugConfig = { enabled: false };
+var localBaseVolume = 100;
+var MAX_RENDERED_HISTORY_ITEMS = 30;
+
+function setUiVisible(visible) {
+    _uiVisible = visible === true;
+    document.body.style.display = 'block';
+    document.body.classList.toggle('pmms-ui-visible', _uiVisible);
+    document.body.classList.toggle('pmms-ui-hidden', !_uiVisible);
+}
+
+function getStateMapSignature(map, includeOffsets) {
+    var parts = [];
+    Object.keys(map || {}).sort().forEach(function(key) {
+        var value = map[key] || {};
+        var info = value.info || value;
+        parts.push([
+            handleKey(key) || key,
+            info.stateRevision || value.stateRevision || '',
+            info.playbackToken || value.playbackToken || '',
+            info.phase || value.phase || '',
+            info.message || value.message || '',
+            info.queueLength || value.queueLength || (Array.isArray(info.queue) ? info.queue.length : ''),
+            info.historyCount || value.historyCount || '',
+            includeOffsets ? Math.floor((Number(value.offset) || Number(info.offset) || 0) * 2) / 2 : ''
+        ].join(':'));
+    });
+    return parts.join('|');
+}
+
+function getUiUpdateSignature(data) {
+    if (!data || data.showUi || data.hideUi) return '';
+    return [
+        getStateMapSignature(data.activeMediaPlayers, true),
+        getStateMapSignature(data.startupStates, false),
+        getStateMapSignature(data.deviceSessions, false),
+        getStateMapSignature(data.failedPlayers, false),
+        Array.isArray(data.usableMediaPlayers)
+            ? data.usableMediaPlayers.map(function(device) {
+                return [
+                    handleKey(device && device.handle),
+                    device && Math.round((Number(device.distance) || 0) * 2) / 2,
+                    device && device.active ? 1 : 0,
+                    device && device.visibleBecause || ''
+                ].join(':');
+            }).join('|')
+            : '',
+        data.baseVolume !== undefined ? clampPercent(data.baseVolume, localBaseVolume) : ''
+    ].join('~');
+}
 
 function debugEnabled(category) {
     var cfg = debugConfig || {};
@@ -148,6 +214,14 @@ function cloneValue(source) {
 
 function clonePlainObject(source) {
     return cloneValue(source || {});
+}
+
+function clampPercent(value, fallback) {
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        numeric = Number.isFinite(Number(fallback)) ? Number(fallback) : 100;
+    }
+    return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
 function copyStateMap(source) {
@@ -485,8 +559,165 @@ function timeToString(time) {
     return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+function getDurationLabel(info) {
+    var duration = Number(info && info.duration);
+    if (Number.isFinite(duration) && duration > 0) {
+        return timeToString(duration);
+    }
+    return info && info.live === true ? 'Live' : '--:--';
+}
+
+function getPlaybackTimeLabel(offset, info) {
+    return timeToString(offset) + ' / ' + getDurationLabel(info);
+}
+
 function isDirectUrl(str) {
     return URL_PATTERN.test(str);
+}
+
+function isYoutubeLikeUrl(url) {
+    return typeof url === 'string' && YOUTUBE_URL_PATTERN.test(url);
+}
+
+function normalizeDirectInputUrl(str) {
+    var value = String(str || '').trim();
+    if (/^www\./i.test(value)) {
+        return 'https://' + value;
+    }
+    return value;
+}
+
+function getYoutubeProviderOption(value) {
+    for (var i = 0; i < YOUTUBE_PROVIDER_OPTIONS.length; i++) {
+        if (YOUTUBE_PROVIDER_OPTIONS[i].value === value) {
+            return YOUTUBE_PROVIDER_OPTIONS[i];
+        }
+    }
+    return YOUTUBE_PROVIDER_OPTIONS[0];
+}
+
+function getCurrentYoutubeProviderMode() {
+    var selected = getYoutubeProviderOption(youtubeProviderMode);
+    return selected ? selected.value : 'auto';
+}
+
+function shouldShowYoutubeProviderControl() {
+    return getCurrentSearchSource && getCurrentSearchSource() === 'youtube';
+}
+
+function positionYoutubeProviderMenu(menu, btn) {
+    if (!menu || !btn) return;
+    var rect = btn.getBoundingClientRect();
+    menu.style.left = Math.max(12, Math.round(rect.left)) + 'px';
+    menu.style.top = Math.round(rect.bottom + 8) + 'px';
+}
+
+function closeYoutubeProviderMenu() {
+    var menu = document.getElementById('youtube-provider-menu');
+    if (menu) menu.classList.remove('open');
+}
+
+function updateYoutubeProviderControl() {
+    var btn = document.getElementById('youtube-provider-btn');
+    if (!btn) return;
+
+    var mode = getCurrentYoutubeProviderMode();
+    var option = getYoutubeProviderOption(mode);
+    var visible = shouldShowYoutubeProviderControl();
+    btn.classList.toggle('visible', visible);
+    btn.classList.toggle('embed-selected', mode === 'embed');
+    btn.textContent = option && option.label ? option.label : 'Auto';
+    btn.title = mode === 'embed'
+        ? 'YouTube Embed is opt-in and can show ads.'
+        : 'Choose the YouTube resolver provider.';
+
+    if (!visible) {
+        closeYoutubeProviderMenu();
+    }
+
+    var warning = document.querySelector('#youtube-provider-menu .youtube-provider-warning');
+    if (warning) {
+        warning.classList.toggle('visible', mode === 'embed');
+    }
+
+    document.querySelectorAll('#youtube-provider-menu .youtube-provider-option').forEach(function(item) {
+        item.classList.toggle('active', item.dataset.provider === mode);
+    });
+}
+
+function ensureYoutubeProviderMenu() {
+    var btn = document.getElementById('youtube-provider-btn');
+    if (!btn) return;
+
+    var menu = document.getElementById('youtube-provider-menu');
+    if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'youtube-provider-menu';
+        menu.className = 'youtube-provider-menu';
+        menu.innerHTML = YOUTUBE_PROVIDER_OPTIONS.map(function(option) {
+            return '<button type="button" class="youtube-provider-option' + (option.danger ? ' danger' : '') + '" data-provider="' + safeText(option.value) + '">' +
+                '<span class="youtube-provider-option-title">' + safeText(option.label) + '</span>' +
+                '<span class="youtube-provider-option-desc">' + safeText(option.description) + '</span>' +
+            '</button>';
+        }).join('') +
+        '<div class="youtube-provider-warning">YouTube Embed is not ad-free. It can show ads or fail in DUI, so it is only used when selected here.</div>';
+        document.body.appendChild(menu);
+
+        menu.querySelectorAll('.youtube-provider-option').forEach(function(item) {
+            item.onclick = function(e) {
+                e.stopPropagation();
+                youtubeProviderMode = this.dataset.provider || 'auto';
+                if (youtubeProviderMode === 'embed') {
+                    showNotification('YouTube Embed can show ads and is not recommended for RP.', 'YouTube Provider', '#ff4444');
+                }
+                updateYoutubeProviderControl();
+                closeYoutubeProviderMenu();
+            };
+        });
+    }
+
+    btn.onclick = function(e) {
+        e.stopPropagation();
+        ensureYoutubeProviderMenu();
+        positionYoutubeProviderMenu(menu, btn);
+        menu.classList.toggle('open');
+        updateYoutubeProviderControl();
+    };
+
+    if (!btn.dataset.providerClickBound) {
+        btn.dataset.providerClickBound = '1';
+        document.addEventListener('click', function() {
+            closeYoutubeProviderMenu();
+        });
+        window.addEventListener('resize', closeYoutubeProviderMenu);
+    }
+
+    updateYoutubeProviderControl();
+}
+
+function applyYoutubeProviderPreference(options) {
+    var next = clonePlainObject(options || {});
+    if (!isYoutubeLikeUrl(next.url || '') || next.youtubeProvider || next.youtubeResolverProvider || next.resolverProvider) {
+        return next;
+    }
+
+    var mode = getCurrentYoutubeProviderMode();
+    if (mode === 'auto') {
+        return next;
+    }
+
+    var currentSource = getCurrentSearchSource && getCurrentSearchSource();
+    if (currentSource !== 'youtube' && next.source !== 'youtube') {
+        return next;
+    }
+
+    next.youtubeProvider = mode;
+    next.youtubeProviderExplicit = true;
+    next.resolverProvider = mode;
+    if (mode === 'embed') {
+        next.allowEmbedFallback = true;
+    }
+    return next;
 }
 
 function getCurrentDeviceLabel() {
@@ -767,6 +998,14 @@ function mergeMediaPlayerStates(incomingStates) {
 }
 
 function queueUiUpdate(data) {
+    var nextSignature = getUiUpdateSignature(data);
+    if (nextSignature && nextSignature === _lastUiUpdateSignature) {
+        return;
+    }
+    if (nextSignature) {
+        _lastUiUpdateSignature = nextSignature;
+    }
+
     _queuedUiData = data;
     if (_uiFrameScheduled) return;
     _uiFrameScheduled = true;
@@ -831,8 +1070,12 @@ function switchView(viewId) {
 }
 
 function updateUi(data) {
+    if (data.baseVolume !== undefined) {
+        localBaseVolume = clampPercent(data.baseVolume, localBaseVolume);
+    }
     if (data.showUi) {
-        document.body.style.display = 'block';
+        _lastUiUpdateSignature = '';
+        setUiVisible(true);
         if (data.debug !== undefined) {
             debugConfig = data.debug || { enabled: false };
             debugLog('nui', 'debug config updated from showUi', debugConfig);
@@ -864,9 +1107,10 @@ function updateUi(data) {
             activePlayerHandle = handleKey(data.selectedHandle);
             _lastActiveHandle = activePlayerHandle;
         }
-        resetDevicesGridState();
         activateSearchBtn();
-        requestPlaylists(hasPendingFavoriteMutations());
+        if (libraryState.playlistsDirty || !libraryState.playlistsLoaded || hasPendingFavoriteMutations()) {
+            requestPlaylists(hasPendingFavoriteMutations());
+        }
         if (currentViewId === 'view-library' || currentViewId === 'view-playlist') {
             requestSharedPlaylists(false);
         }
@@ -876,17 +1120,10 @@ function updateUi(data) {
         return;
     }
     if (data.hideUi) {
-        document.body.style.display = 'none';
-        activePlayerHandle = null;
+        setUiVisible(false);
+        _lastUiUpdateSignature = '';
         pendingControlState = {};
         _activeSearchRequestId = null;
-        _lastNowPlayingPanelKey = '';
-        _lastBottomPlayerKey = '';
-        usableMediaPlayers = [];
-        usableMediaPlayerIndex = {};
-        deviceSessions = {};
-        localPlaybackFailures = {};
-        requestedStartupStates = {};
         clearTimeout(_searchRetryTimer);
         _searchRetryTimer = null;
         clearTimeout(_playerSuggestionTimer);
@@ -895,9 +1132,6 @@ function updateUi(data) {
         playerSuggestionState.suggestions = [];
         playerSuggestionState.pendingRequestId = null;
         hidePlayerSuggestions();
-        resetDevicesGridState();
-        updateBottomPlayer();
-        updateNowPlayingPanel();
         return;
     }
 
@@ -1211,6 +1445,8 @@ function requestPlaybackOnHandle(handle, options) {
         return;
     }
 
+    options = applyYoutubeProviderPreference(options || {});
+
     selectDevice(numericHandle);
     requestedStartupStates[String(numericHandle)] = {
         handle: numericHandle,
@@ -1298,19 +1534,11 @@ function sendSeekUpdate(value, force) {
 }
 
 function sendVolumeUpdate(value, force) {
-    if (!activePlayerHandle) return;
     var now = Date.now();
     if (!force && (now - _lastVolumeSendAt) < _volumeThrottleMs) return;
     _lastVolumeSendAt = now;
-    setPendingControlField(activePlayerHandle, 'volume', value);
-    var key = handleKey(activePlayerHandle);
-    if (key && mediaPlayerStates[key] && mediaPlayerStates[key].info) {
-        mediaPlayerStates[key].info.volume = value;
-    }
-    if (key && deviceSessions[key] && deviceSessions[key].settings) {
-        deviceSessions[key].settings.volume = value;
-    }
-    sendMessage('setVolume', { handle: _h(), volume: value });
+    localBaseVolume = clampPercent(value, localBaseVolume);
+    sendMessage('setBaseVolume', { volume: localBaseVolume });
 }
 
 function updateSeekPreviewLabels(value, duration) {
@@ -1318,7 +1546,7 @@ function updateSeekPreviewLabels(value, duration) {
     var tot = document.getElementById('np-time-total');
     if (cur) cur.textContent = timeToString(value);
     if (tot) {
-        tot.textContent = (duration && duration > 0) ? timeToString(duration) : 'Live';
+        tot.textContent = (duration && duration > 0) ? timeToString(duration) : '--:--';
     }
 }
 
@@ -1395,9 +1623,9 @@ function initPlayerControls() {
     }
 }
 
-function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol) {
+function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream) {
     if (vol) {
-        vol.disabled = !canControl;
+        vol.disabled = false;
         if (_isAdjustingVolume && _volumeDragValue != null) {
             vol.value = _volumeDragValue;
         } else {
@@ -1428,7 +1656,7 @@ function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInf
             progress.max = 100;
             progress.value = 0;
             if (timeCur) timeCur.textContent = hasInfo ? timeToString(offset) : '0:00';
-            if (timeTot) timeTot.textContent = hasInfo ? 'Live' : '0:00';
+            if (timeTot) timeTot.textContent = hasInfo ? (isLiveStream ? 'Live' : '--:--') : '0:00';
         }
         _updateProgressFill(progress);
     }
@@ -1473,6 +1701,7 @@ function updateBottomPlayer() {
     var canControl = canControlMediaPlayer(liveMp);
     var duration = hasInfo ? Number(info.duration) : 0;
     var hasDuration = Number.isFinite(duration) && duration > 0;
+    var isLiveStream = hasInfo && info.live === true;
     var canSeek = canControl && hasDuration;
     var canGoPrevious = canUsePrevious(currentHandle, liveMp || mp);
     var isPaused = hasInfo && info.paused;
@@ -1485,8 +1714,7 @@ function updateBottomPlayer() {
     if (hasDuration && offset > duration) {
         offset = duration;
     }
-    var currentVol = (hasInfo && info.volume != null) ? parseInt(info.volume, 10) : 100;
-    if (!Number.isFinite(currentVol)) currentVol = 100;
+    var currentVol = clampPercent(localBaseVolume, 100);
     var canCancelStartup = canCancelStartupForHandle(currentHandle);
     var titleText = hasInfo && info.title ? info.title : (startupPending ? getStartupDisplayTitle(startupState) : (startupFailed ? 'Playback Failed' : 'Nothing Playing'));
     var subtitleText = getCurrentDeviceLabel();
@@ -1514,7 +1742,8 @@ function updateBottomPlayer() {
         deviceCapability,
         loopMode,
         currentVol,
-        hasDuration ? duration : 'live',
+        localBaseVolume,
+        hasDuration ? duration : (isLiveStream ? 'live' : 'unknown-duration'),
         hasLocalFailure ? 1 : 0,
         hasLocalFailure ? (localFailure.message || '') : '',
         startupState ? startupState.attemptId || '' : '',
@@ -1528,7 +1757,7 @@ function updateBottomPlayer() {
 
     if (playerKey === _lastBottomPlayerKey) {
         if (hasInfo) {
-            _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol);
+            _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream);
         } else {
             if (progress) {
                 progress.disabled = true;
@@ -1537,11 +1766,11 @@ function updateBottomPlayer() {
                 _updateProgressFill(progress);
             }
             if (vol) {
-                vol.disabled = true;
-                vol.value = 100;
+                vol.disabled = false;
+                vol.value = localBaseVolume;
                 _updateProgressFill(vol);
             }
-            if (volVal) volVal.textContent = '100%';
+            if (volVal) volVal.textContent = localBaseVolume + '%';
             if (timeCur) timeCur.textContent = startupPending ? getStartupPhaseLabel(startupState) : (hasLocalFailure ? 'Error' : '0:00');
             if (timeTot) timeTot.textContent = startupPending ? '...' : (hasLocalFailure ? 'Local' : '0:00');
         }
@@ -1659,7 +1888,7 @@ function updateBottomPlayer() {
     }
 
     if (hasInfo) {
-        _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol);
+        _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream);
         return;
     }
 
@@ -1670,11 +1899,11 @@ function updateBottomPlayer() {
         _updateProgressFill(progress);
     }
     if (vol) {
-        vol.disabled = true;
-        vol.value = 100;
+        vol.disabled = false;
+        vol.value = localBaseVolume;
         _updateProgressFill(vol);
     }
-    if (volVal) volVal.textContent = '100%';
+    if (volVal) volVal.textContent = localBaseVolume + '%';
     if (timeCur) timeCur.textContent = startupPending ? getStartupPhaseLabel(startupState) : (hasLocalFailure ? 'Error' : '0:00');
     if (timeTot) timeTot.textContent = startupPending ? '...' : (hasLocalFailure ? 'Local' : '0:00');
 }
@@ -1689,7 +1918,9 @@ function _setPlayerIdle(titleEl, subtitleEl, playBtn, prevBtn, nextBtn, stopBtn,
     subtitleEl.textContent = 'Select a nearby device to begin';
     [playBtn, prevBtn, nextBtn, stopBtn, loopBtn, muteBtn, videoBtn].forEach(function(b) { if (b) b.disabled = true; });
     if (progress) { progress.disabled = true; progress.value = 0; _updateProgressFill(progress); }
-    if (vol)      { vol.disabled = true; vol.value = 100; _updateProgressFill(vol); }
+    if (vol)      { vol.disabled = true; vol.value = localBaseVolume; _updateProgressFill(vol); }
+    var volVal = document.getElementById('np-volume-val');
+    if (volVal) volVal.textContent = localBaseVolume + '%';
     if (timeCur)  timeCur.textContent = '0:00';
     if (timeTot)  timeTot.textContent = '0:00';
     if (playBtn) playBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>';
@@ -1748,16 +1979,28 @@ function wrapTrackEntries(entries, newestFirst) {
     if (newestFirst) {
         list.reverse();
     }
-    return list.map(function(entry) {
+    return list.map(function(entry, index) {
+        var sourceIndex = newestFirst ? (list.length - 1 - index) : index;
         if (entry && entry.options) {
-            return entry;
+            return {
+                source: entry.source,
+                name: entry.name,
+                options: entry.options,
+                queueId: entry.queueId,
+                _sourceIndex: sourceIndex
+            };
         }
-        return { options: entry };
+        return { options: entry, _sourceIndex: sourceIndex };
     });
 }
 
 function getTrackEntriesSignature(entries) {
     var wrapped = wrapTrackEntries(entries, false);
+    return getQueueSignature(wrapped, false);
+}
+
+function getRenderedHistorySignature(entries) {
+    var wrapped = wrapTrackEntries(entries, true).slice(0, MAX_RENDERED_HISTORY_ITEMS);
     return getQueueSignature(wrapped, false);
 }
 
@@ -1781,7 +2024,7 @@ function getInlineQueueHtml(mp) {
     if (queue.length === 0) {
         html += '<div class="np-queue-empty">Queue is empty.</div>';
     } else {
-        html += '<div class="np-queue-list">';
+        html += '<div class="np-queue-list" data-list-key="manual-queue">';
         queue.forEach(function(q, idx) {
             var qTitle = getQueueItemTitle(q, idx);
             var qSub = getQueueItemSubtitle(q);
@@ -1809,13 +2052,23 @@ function getInlineQueueHtml(mp) {
     return html;
 }
 
-function getReadOnlyTrackListHtml(title, entries, emptyText, subtitleText, newestFirst) {
+function getReadOnlyTrackListHtml(title, entries, emptyText, subtitleText, newestFirst, actions) {
     var wrapped = wrapTrackEntries(entries, newestFirst);
+    actions = actions || {};
+    var totalCount = Number.isFinite(Number(actions.totalCount)) ? Math.max(0, Number(actions.totalCount)) : wrapped.length;
+    var limit = Number(actions.limit) || 0;
+    if (limit > 0 && wrapped.length > limit) {
+        wrapped = wrapped.slice(0, limit);
+        subtitleText = actions.limitText || ('Showing newest ' + limit + ' of ' + totalCount + '.');
+    } else if (limit > 0 && totalCount > wrapped.length) {
+        subtitleText = actions.limitText || ('Showing newest ' + wrapped.length + ' of ' + totalCount + '.');
+    }
+    var listKey = String(title || 'list').toLowerCase().replace(/[^a-z0-9]+/g, '-');
     var html =
         '<div class="np-queue-section">' +
             '<div class="np-queue-header">' +
                 '<span class="np-queue-title">' + safeText(title) + '</span>' +
-                '<span class="np-queue-count">' + wrapped.length + '</span>' +
+                '<span class="np-queue-count">' + (totalCount !== wrapped.length ? (wrapped.length + '/' + totalCount) : wrapped.length) + '</span>' +
             '</div>';
 
     if (subtitleText) {
@@ -1825,7 +2078,7 @@ function getReadOnlyTrackListHtml(title, entries, emptyText, subtitleText, newes
     if (wrapped.length === 0) {
         html += '<div class="np-queue-empty">' + safeText(emptyText) + '</div>';
     } else {
-        html += '<div class="np-queue-list">';
+        html += '<div class="np-queue-list" data-list-key="' + safeText(listKey) + '">';
         wrapped.forEach(function(entry, index) {
             html +=
                 '<div class="np-queue-item np-queue-item-readonly">' +
@@ -1835,6 +2088,24 @@ function getReadOnlyTrackListHtml(title, entries, emptyText, subtitleText, newes
                             '<div class="np-queue-item-title">' + safeText(getQueueItemTitle(entry, index)) + '</div>' +
                             '<div class="np-queue-item-sub">' + safeText(getQueueItemSubtitle(entry)) + '</div>' +
                         '</div>' +
+                    '</div>';
+            if (actions.addToPlaylist || actions.replayQueue) {
+                html += '<div class="np-queue-actions">';
+                if (actions.addToPlaylist) {
+                    html +=
+                        '<button class="btn-icon btn-sm np-history-add" data-history-add-index="' + entry._sourceIndex + '" data-tooltip="Add to playlist" aria-label="Add history item to playlist">' +
+                            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+                        '</button>';
+                }
+                if (actions.replayQueue) {
+                    html +=
+                        '<button class="btn-icon btn-sm np-history-replay" data-history-replay-index="' + entry._sourceIndex + '" data-tooltip="Replay / queue again" aria-label="Replay history item">' +
+                            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' +
+                        '</button>';
+                }
+                html += '</div>';
+            }
+            html +=
                     '</div>' +
                 '</div>';
         });
@@ -1875,7 +2146,14 @@ function getNowPlayingSecondaryListsHtml(handle, mp, session) {
         history,
         'Nothing has been played on this device yet.',
         'Clears when the device session resets.',
-        true
+        true,
+        {
+            addToPlaylist: true,
+            replayQueue: true,
+            limit: MAX_RENDERED_HISTORY_ITEMS,
+            totalCount: Number.isFinite(Number(effectiveSession.historyCount)) ? Number(effectiveSession.historyCount) : history.length,
+            limitText: 'Showing newest ' + MAX_RENDERED_HISTORY_ITEMS + ' history items. Older plays remain in device history.'
+        }
     );
 }
 
@@ -1885,6 +2163,36 @@ function removeQueueItemLocally(handle, index) {
     var queue = mediaPlayerStates[key].info.queue;
     if (!Array.isArray(queue)) return;
     queue.splice(index - 1, 1);
+}
+
+function getHistoryTrackByIndex(index) {
+    var session = getEffectiveDeviceSession(activePlayerHandle);
+    var history = session && Array.isArray(session.history) ? session.history : [];
+    if (!Number.isFinite(index) || index < 0 || index >= history.length) {
+        return null;
+    }
+    return history[index];
+}
+
+function getTrackOptions(entry) {
+    return entry && entry.options ? entry.options : entry;
+}
+
+function buildPlaybackOptionsFromTrack(track) {
+    var options = getTrackOptions(track);
+    if (!options || !options.url) {
+        return null;
+    }
+    return {
+        url: options.originalUrl || options.url,
+        title: options.title || options.url,
+        duration: options.duration,
+        author: options.author,
+        thumbnail: options.thumbnail,
+        video: options.video !== false,
+        audioTrack: cloneValue(options.audioTrack || options.selectedAudioTrack),
+        selectedAudioTrack: cloneValue(options.selectedAudioTrack || options.audioTrack)
+    };
 }
 
 function getStartupMetaHtml(state) {
@@ -1969,6 +2277,50 @@ function bindNowPlayingPanelActions(panel) {
             sendMessage('removeFromQueue', { handle: _h(), index: index });
         };
     });
+
+    panel.querySelectorAll('[data-history-add-index]').forEach(function(btn) {
+        btn.onclick = function() {
+            var index = parseInt(this.dataset.historyAddIndex, 10);
+            var options = buildPlaybackOptionsFromTrack(getHistoryTrackByIndex(index));
+            if (!options || !options.url) return;
+            openAddToPlaylistModal(options);
+        };
+    });
+
+    panel.querySelectorAll('[data-history-replay-index]').forEach(function(btn) {
+        btn.onclick = function() {
+            if (!activePlayerHandle) return;
+            var index = parseInt(this.dataset.historyReplayIndex, 10);
+            var options = buildPlaybackOptionsFromTrack(getHistoryTrackByIndex(index));
+            if (!options || !options.url) return;
+            requestPlaybackOnHandle(_h(), options);
+            showNotification('Added back to the queue.', 'History');
+        };
+    });
+
+    var audioTrackSelect = panel.querySelector('#np-audio-track');
+    if (audioTrackSelect) {
+        audioTrackSelect.onchange = function() {
+            if (!activePlayerHandle) return;
+            var mp = getCurrentLiveMP();
+            var info = mp && mp.info ? mp.info : null;
+            var tracks = getAudioTracks(info);
+            var index = parseInt(audioTrackSelect.value, 10);
+            if (!Number.isFinite(index) || index < 0 || index >= tracks.length) return;
+
+            var selectedTrack = cloneValue(tracks[index]);
+            if (info) {
+                info.audioTracks = tracks.map(function(track, trackIndex) {
+                    var copy = cloneValue(track);
+                    copy.selected = trackIndex === index;
+                    return copy;
+                });
+                info.audioTrack = selectedTrack;
+                info.selectedAudioTrack = selectedTrack;
+            }
+            sendMessage('setAudioTrack', { handle: _h(), audioTrack: selectedTrack });
+        };
+    }
 }
 
 function getNowPlayingPanelRenderKey(mp) {
@@ -1982,7 +2334,7 @@ function getNowPlayingPanelRenderKey(mp) {
     var localFailure = getCurrentLocalPlaybackFailure();
     var session = getEffectiveDeviceSession(activePlayerHandle);
     var currentTrack = session && session.currentTrack ? session.currentTrack : null;
-    var historySignature = getTrackEntriesSignature(session && session.history ? session.history : []);
+    var historySignature = getRenderedHistorySignature(session && session.history ? session.history : []);
     var previewSignature = getTrackEntriesSignature(session && session.playbackPreview ? session.playbackPreview : []);
     if (!hasMedia) {
         var queueOnly = mp && mp.info && Array.isArray(mp.info.queue) ? mp.info.queue : [];
@@ -2012,6 +2364,8 @@ function getNowPlayingPanelRenderKey(mp) {
         + (info.url || '') + '|'
         + (info.thumbnail || '') + '|'
         + duration + '|'
+        + (info.live === true ? 'live' : 'vod') + '|'
+        + getAudioTrackSignature(info) + '|'
         + (localFailure ? localFailure.message || '' : '') + '|'
         + getQueueSignature(queue, canControlMediaPlayer(mp)) + '|'
         + historySignature + '|'
@@ -2029,11 +2383,31 @@ function updateNowPlayingPanelTimeOnly(panel, mp) {
         offset = duration;
     }
 
-    var text = timeToString(offset) + ' / ' + (hasDuration ? timeToString(duration) : 'Live');
+    var text = getPlaybackTimeLabel(offset, info);
     var timeEl = panel.querySelector('#np-meta-time');
     if (timeEl && timeEl.textContent !== text) {
         timeEl.textContent = text;
     }
+}
+
+function capturePanelScrollPositions(panel) {
+    var positions = {};
+    if (!panel) return positions;
+    panel.querySelectorAll('.np-queue-list').forEach(function(list, index) {
+        var key = list.dataset.listKey || String(index);
+        positions[key] = list.scrollTop || 0;
+    });
+    return positions;
+}
+
+function restorePanelScrollPositions(panel, positions) {
+    if (!panel || !positions) return;
+    panel.querySelectorAll('.np-queue-list').forEach(function(list, index) {
+        var key = list.dataset.listKey || String(index);
+        if (positions[key] != null) {
+            list.scrollTop = positions[key];
+        }
+    });
 }
 
 function updateNowPlayingPanel() {
@@ -2056,6 +2430,7 @@ function updateNowPlayingPanel() {
     }
 
     _lastNowPlayingPanelKey = panelKey;
+    var panelScrollPositions = capturePanelScrollPositions(panel);
 
     if (!activePlayerHandle) {
         panel.innerHTML =
@@ -2136,6 +2511,7 @@ function updateNowPlayingPanel() {
                 getNowPlayingSecondaryListsHtml(activePlayerHandle, mp, session) +
             '</div>';
         bindNowPlayingPanelActions(panel);
+        restorePanelScrollPositions(panel, panelScrollPositions);
         applyStaticTooltips();
         return;
     }
@@ -2149,6 +2525,8 @@ function updateNowPlayingPanel() {
     var thumbHtml = normalizedThumb
         ? '<div class="np-thumb" style="background-image:url(' + encodeURI(normalizedThumb) + ')"></div>'
         : '<div class="np-thumb np-thumb-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>';
+    var canControlNowPlaying = canControlMediaPlayer(liveMp);
+    var audioTrackControlHtml = getAudioTrackControlHtml(info, canControlNowPlaying);
 
     panel.innerHTML =
         '<div class="np-panel-inner">' +
@@ -2156,8 +2534,9 @@ function updateNowPlayingPanel() {
             '<div class="np-meta">' +
                 '<div class="np-meta-title" title="' + safeText(info.title) + '">' + safeText(info.title || 'Untitled') + '</div>' +
                 '<div class="np-meta-author">' + safeText(info.author || '') + '</div>' +
-                '<div class="np-meta-time" id="np-meta-time">' + timeToString(offset) + ' / ' + (info.duration ? timeToString(info.duration) : 'Live') + '</div>' +
+                '<div class="np-meta-time" id="np-meta-time">' + getPlaybackTimeLabel(offset, info) + '</div>' +
                 (info.url ? '<div class="np-meta-url" title="' + safeText(info.url) + '">' + safeText(_truncateUrl(info.url)) + '</div>' : '') +
+                audioTrackControlHtml +
                 statusHtml +
                 '<div class="np-panel-actions">' +
                     settingsButtonHtml +
@@ -2169,6 +2548,7 @@ function updateNowPlayingPanel() {
         getNowPlayingSecondaryListsHtml(activePlayerHandle, liveMp, getEffectiveDeviceSession(activePlayerHandle));
 
     bindNowPlayingPanelActions(panel);
+    restorePanelScrollPositions(panel, panelScrollPositions);
     updateNowPlayingPanelTimeOnly(panel, liveMp);
     applyStaticTooltips();
 }
@@ -2179,6 +2559,80 @@ function _truncateUrl(url) {
     return url.substring(0, 47) + '...';
 }
 
+function getAudioTracks(info) {
+    if (!info || !Array.isArray(info.audioTracks)) return [];
+    return info.audioTracks.map(function(track, index) {
+        var copy = cloneValue(track || {});
+        copy.index = Number.isFinite(Number(copy.index)) ? Number(copy.index) : index;
+        copy.id = copy.id !== undefined && copy.id !== null ? String(copy.id) : String(copy.index);
+        copy.label = copy.label || copy.name || copy.language || ('Track ' + (index + 1));
+        return copy;
+    });
+}
+
+function getSelectedAudioTrackIndex(info) {
+    var tracks = getAudioTracks(info);
+    if (!tracks.length) return -1;
+    var selected = info && (info.audioTrack || info.selectedAudioTrack);
+
+    if (selected && Number.isFinite(Number(selected.index))) {
+        var index = Number(selected.index);
+        if (index >= 0 && index < tracks.length) return index;
+    }
+    if (selected && selected.id !== undefined && selected.id !== null) {
+        var id = String(selected.id);
+        for (var byId = 0; byId < tracks.length; byId++) {
+            if (String(tracks[byId].id) === id) return byId;
+        }
+    }
+    for (var bySelected = 0; bySelected < tracks.length; bySelected++) {
+        if (tracks[bySelected].selected === true) return bySelected;
+    }
+    return 0;
+}
+
+function getAudioTrackSignature(info) {
+    var tracks = getAudioTracks(info);
+    if (!tracks.length) return '';
+    return getSelectedAudioTrackIndex(info) + ':' + tracks.map(function(track) {
+        return [track.index, track.id, track.label, track.language].join(',');
+    }).join('|');
+}
+
+function getAudioTrackDisplayName(track, index) {
+    track = track || {};
+    var label = track.label || track.name || ('Track ' + (index + 1));
+    var language = track.language || track.lang || '';
+    if (language && String(label).toLowerCase().indexOf(String(language).toLowerCase()) === -1) {
+        return label + ' (' + language + ')';
+    }
+    return label;
+}
+
+function getAudioTrackControlHtml(info, canControl) {
+    var tracks = getAudioTracks(info);
+    if (tracks.length === 1) {
+        var onlyTrack = tracks[0] || {};
+        if (!onlyTrack.language && !onlyTrack.label && !onlyTrack.name) return '';
+        return '<span class="np-audio-track-badge" title="Current audio track">' +
+            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm13.5-1.5-1.4 1.4A4.2 4.2 0 0 1 17.3 12c0 1.2-.4 2.3-1.2 3.1l1.4 1.4A6.1 6.1 0 0 0 19.3 12c0-1.8-.7-3.4-1.8-4.5Z"/></svg>' +
+            safeText(getAudioTrackDisplayName(onlyTrack, 0)) +
+        '</span>';
+    }
+    if (tracks.length <= 1) return '';
+    var selectedIndex = getSelectedAudioTrackIndex(info);
+    var options = tracks.map(function(track, index) {
+        return '<option value="' + safeText(String(index)) + '"' + (index === selectedIndex ? ' selected' : '') + '>' +
+            safeText(getAudioTrackDisplayName(track, index)) +
+        '</option>';
+    }).join('');
+
+    return '<label class="np-audio-track-control">' +
+        '<span class="np-audio-track-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm13.5-1.5-1.4 1.4A4.2 4.2 0 0 1 17.3 12c0 1.2-.4 2.3-1.2 3.1l1.4 1.4A6.1 6.1 0 0 0 19.3 12c0-1.8-.7-3.4-1.8-4.5Z"/></svg>Audio</span>' +
+        '<select id="np-audio-track" ' + (canControl ? '' : 'disabled') + '>' + options + '</select>' +
+    '</label>';
+}
+
 
 'use strict';
 
@@ -2186,6 +2640,31 @@ var _searchDebounceTimer = null;
 var _searchDebounceMs = 320;
 var _searchRequestSeq = 0;
 var _activeSearchRequestId = null;
+
+function getSearchSourceConfig(source) {
+    var key = source || defaultSearchSource || 'youtube';
+    return searchSources && searchSources[key] ? searchSources[key] : (searchSources.youtube || {});
+}
+
+function getCurrentSearchSource() {
+    var select = document.getElementById('search-source');
+    return select && select.value ? select.value : (defaultSearchSource || 'youtube');
+}
+
+function updateSearchPlaceholder() {
+    var input = document.getElementById('search-input');
+    var btn = document.getElementById('search-btn');
+    var source = getCurrentSearchSource();
+    var config = getSearchSourceConfig(source);
+
+    if (input) {
+        input.placeholder = config.placeholder || 'Search or paste a URL...';
+    }
+    if (btn) {
+        btn.textContent = source === 'direct' ? 'Play' : 'Search';
+    }
+    updateYoutubeProviderControl();
+}
 
 function initSearch() {
     var btn   = document.getElementById('search-btn');
@@ -2203,7 +2682,11 @@ function initSearch() {
 
     if (select) {
         select.addEventListener('change', function() {
+            updateSearchPlaceholder();
+            updateYoutubeProviderControl();
+            clearSearchResults();
             if (!input.value || !input.value.trim()) return;
+            if (getCurrentSearchSource() === 'direct') return;
             performSearch(true);
         });
     }
@@ -2217,11 +2700,20 @@ function initSearch() {
             return;
         }
 
+        if (getCurrentSearchSource() === 'direct') {
+            clearTimeout(_searchDebounceTimer);
+            _setSearchState('idle');
+            return;
+        }
+
         clearTimeout(_searchDebounceTimer);
         _searchDebounceTimer = setTimeout(function() {
             performSearch(false);
         }, _searchDebounceMs);
     });
+
+    updateSearchPlaceholder();
+    ensureYoutubeProviderMenu();
 }
 
 function populateSearchSources(sources, preferredSource) {
@@ -2250,6 +2742,8 @@ function populateSearchSources(sources, preferredSource) {
             select.value = firstEnabled;
         }
     }
+    updateSearchPlaceholder();
+    ensureYoutubeProviderMenu();
 }
 
 function activateSearchBtn() {
@@ -2308,12 +2802,23 @@ function performSearch(forceImmediate) {
     if (!q) return;
     clearTimeout(_searchRetryTimer);
 
+    if (source === 'direct' && !isDirectUrl(q)) {
+        clearSearchResults();
+        var err = document.getElementById('search-status');
+        if (err) {
+            err.textContent = 'Paste a direct http(s) media URL.';
+            err.className = 'search-status muted';
+            err.style.display = 'block';
+        }
+        return;
+    }
+
     if (isDirectUrl(q)) {
         if (!activePlayerHandle) {
             showNotification('Please select a nearby device first!', 'Play', '#ff4444');
             return;
         }
-        requestPlaybackOnHandle(_h(), { url: q, label: getCurrentDeviceLabel(), video: true });
+        requestPlaybackOnHandle(_h(), { url: normalizeDirectInputUrl(q), label: getCurrentDeviceLabel(), video: true, source: source });
         if (input) input.value = '';
         clearSearchResults();
         return;
@@ -2475,6 +2980,7 @@ function renderSearchResults(results, requestId) {
                     duration: res.duration,
                     author: res.author,
                     thumbnail: thumbSrc || res.thumbnail,
+                    source: res.source || getCurrentSearchSource(),
                     video: true
                 });
                 clearSearchResults();
@@ -2553,8 +3059,38 @@ function dropPendingFavorite(key) {
     delete pendingFavoriteState[key];
 }
 
+function markConfirmedFavorite(key, favorite, requestId) {
+    if (!key) return;
+    confirmedFavoriteState[key] = {
+        favorite: favorite === true,
+        requestId: Number.isFinite(Number(requestId)) ? Number(requestId) : null,
+        expiresAt: Date.now() + FAVORITE_CONFIRMED_TTL_MS
+    };
+}
+
+function getConfirmedFavorite(key) {
+    if (!key) return null;
+    var confirmed = confirmedFavoriteState[key];
+    if (!confirmed) return null;
+    if (Number(confirmed.expiresAt) <= Date.now()) {
+        delete confirmedFavoriteState[key];
+        return null;
+    }
+    return confirmed;
+}
+
+function clearExpiredConfirmedFavorites() {
+    var now = Date.now();
+    Object.keys(confirmedFavoriteState).forEach(function(key) {
+        if (!confirmedFavoriteState[key] || Number(confirmedFavoriteState[key].expiresAt) <= now) {
+            delete confirmedFavoriteState[key];
+        }
+    });
+}
+
 function applyPendingFavoritesSnapshot(playlists) {
     if (!Array.isArray(playlists)) return [];
+    clearExpiredConfirmedFavorites();
 
     return playlists.map(function(pl) {
         if (!pl) return pl;
@@ -2565,6 +3101,12 @@ function applyPendingFavoritesSnapshot(playlists) {
         if (pending) {
             merged.is_favorite = pending.favorite === true ? 1 : 0;
             merged.isFavorite = pending.favorite === true;
+        } else {
+            var confirmed = getConfirmedFavorite(key);
+            if (confirmed) {
+                merged.is_favorite = confirmed.favorite === true ? 1 : 0;
+                merged.isFavorite = confirmed.favorite === true;
+            }
         }
         return merged;
     });
@@ -2683,12 +3225,64 @@ function commitCanonicalPlaylists(playlists, summary, libraryRevision) {
         }
     });
 
-    refreshDisplayedPlaylists();
+    refreshDisplayedPlaylists({ quiet: shouldQuietPlaylistRefresh() });
 }
 
-function refreshDisplayedPlaylists() {
+function markQuietPlaylistRefresh(ms) {
+    quietPlaylistRefreshUntil = Math.max(quietPlaylistRefreshUntil, Date.now() + (Number(ms) || 900));
+}
+
+function shouldQuietPlaylistRefresh() {
+    return Date.now() < quietPlaylistRefreshUntil;
+}
+
+function updatePlaylistGridFavoriteState(lists, targetId) {
+    var grid = document.getElementById(targetId);
+    if (!grid || !Array.isArray(lists) || !lists.length) {
+        return false;
+    }
+
+    var cards = Array.prototype.slice.call(grid.querySelectorAll('.playlist-card[data-playlist-id]'));
+    if (cards.length !== lists.length) {
+        return false;
+    }
+
+    for (var i = 0; i < lists.length; i++) {
+        var pl = lists[i];
+        var key = normalizePlaylistId(pl && pl.id);
+        var card = cards[i];
+        if (!key || !card || card.dataset.playlistId !== key) {
+            return false;
+        }
+
+        var isFavorite = isPlaylistFavorite(pl);
+        var isFavoritePending = !!pendingFavoriteState[key];
+        card.classList.toggle('favorite-active', isFavorite);
+        card.classList.toggle('favorite-pending', isFavoritePending);
+
+        var sub = card.querySelector('.playlist-sub');
+        if (sub) {
+            sub.textContent = isFavorite ? 'Pinned favorite' : 'Playlist';
+        }
+
+        var pinBtn = card.querySelector('.playlist-pin-btn');
+        if (pinBtn) {
+            pinBtn.classList.toggle('active', isFavorite);
+            pinBtn.classList.toggle('favorite-pending', isFavoritePending);
+            pinBtn.title = isFavorite ? 'Unpin Favorite' : 'Pin Favorite';
+            pinBtn.disabled = isFavoritePending;
+        }
+    }
+
+    return true;
+}
+
+function refreshDisplayedPlaylists(options) {
+    var quiet = !!(options && options.quiet) || shouldQuietPlaylistRefresh();
     cachedPlaylists = applyPendingFavoritesSnapshot(authoritativePlaylists);
-    populatePlaylists(cachedPlaylists, 'playlists-grid', { allowFavorite: true });
+    if (!(quiet && updatePlaylistGridFavoriteState(cachedPlaylists, 'playlists-grid'))) {
+        populatePlaylists(cachedPlaylists, 'playlists-grid', { allowFavorite: true, quiet: quiet });
+    }
     renderSidebarFavorites();
     updateLibrarySummaryDisplay();
 }
@@ -2735,9 +3329,28 @@ function setPlaylistFavoriteOptimistic(playlistId, favorite) {
         previous = isPlaylistFavorite(pl);
         return true;
     });
+    var displayedFavorite = previous;
+    (cachedPlaylists || []).some(function(pl) {
+        if (!pl) return false;
+        if (String(pl.id) !== key) return false;
+        displayedFavorite = isPlaylistFavorite(pl);
+        return true;
+    });
+
+    if (!existingPending && displayedFavorite === normalizedFavorite) {
+        debugLog('favorites', 'favorite request ignored because displayed state already matches target', {
+            playlistId: playlistId,
+            key: key,
+            favorite: normalizedFavorite
+        });
+        markQuietPlaylistRefresh(1200);
+        refreshDisplayedPlaylists({ quiet: true });
+        return;
+    }
 
     favoriteRequestSeq += 1;
     favoriteResponseFloor[key] = favoriteRequestSeq;
+    delete confirmedFavoriteState[key];
     clearPendingFavoriteTimers(key);
     pendingFavoriteState[key] = {
         favorite: normalizedFavorite,
@@ -2759,7 +3372,8 @@ function setPlaylistFavoriteOptimistic(playlistId, favorite) {
         replacingRequestId: existingPending ? existingPending.requestId : null
     });
 
-    refreshDisplayedPlaylists();
+    markQuietPlaylistRefresh(1800);
+    refreshDisplayedPlaylists({ quiet: true });
 
     var expectedKey = key;
     var expectedRequestId = favoriteRequestSeq;
@@ -2778,7 +3392,7 @@ function setPlaylistFavoriteOptimistic(playlistId, favorite) {
         var pending = pendingFavoriteState[expectedKey];
         if (!pending || pending.requestId !== expectedRequestId) return;
         dropPendingFavorite(expectedKey);
-        refreshDisplayedPlaylists();
+        refreshDisplayedPlaylists({ quiet: true });
         requestCanonicalPlaylistsRefresh();
         debugLog('favorites', 'favorite ack hard timeout, reverting to canonical refresh', {
             key: expectedKey,
@@ -2790,7 +3404,7 @@ function setPlaylistFavoriteOptimistic(playlistId, favorite) {
     setTimeout(function() {
         if (!pendingFavoriteState[expectedKey]) return;
         if (pendingFavoriteState[expectedKey].requestId !== expectedRequestId) return;
-        refreshDisplayedPlaylists();
+        refreshDisplayedPlaylists({ quiet: true });
     }, 160);
 
     sendMessage('setPlaylistFavorite', {
@@ -2866,7 +3480,9 @@ function handlePlaylistFavoriteUpdate(payload) {
     var currentRevision = normalizeLibraryRevision(libraryState.libraryRevision);
     var hasNewerRevision = incomingRevision !== null && (currentRevision === null || incomingRevision > currentRevision);
     var hasStaleFavoriteAck = Number.isFinite(floor) && Number.isFinite(requestId) && requestId < floor;
+    var hasOlderRevision = incomingRevision !== null && currentRevision !== null && incomingRevision < currentRevision;
     var payloadFavorite = normalizeFavoritePayloadValue(payload);
+    var hasAuthoritativeFavoriteValue = payloadFavorite !== null && !hasStaleFavoriteAck && (Number.isFinite(requestId) || payload.success !== undefined);
     var confirmsPending = !!(
         pending
         && !hasStaleFavoriteAck
@@ -2888,11 +3504,13 @@ function handlePlaylistFavoriteUpdate(payload) {
         incomingRevision: incomingRevision,
         currentRevision: currentRevision,
         hasNewerRevision: hasNewerRevision,
+        hasOlderRevision: hasOlderRevision,
         hasStaleFavoriteAck: hasStaleFavoriteAck,
+        hasAuthoritativeFavoriteValue: hasAuthoritativeFavoriteValue,
         confirmsPending: confirmsPending
     });
 
-    if (incomingRevision !== null && currentRevision !== null && incomingRevision < currentRevision) {
+    if (hasOlderRevision && !hasAuthoritativeFavoriteValue) {
         debugLog('favorites', 'favorite update ignored: older library revision', {
             key: key,
             incomingRevision: incomingRevision,
@@ -2912,8 +3530,15 @@ function handlePlaylistFavoriteUpdate(payload) {
     if (!hasStaleFavoriteAck && Number.isFinite(requestId)) {
         favoriteResponseFloor[key] = requestId;
     }
-    if (incomingRevision !== null) {
+    if (incomingRevision !== null && !hasOlderRevision) {
         libraryState.libraryRevision = incomingRevision;
+    }
+    if (!hasStaleFavoriteAck && payloadFavorite !== null) {
+        if (payload.success === false) {
+            delete confirmedFavoriteState[key];
+        } else {
+            markConfirmedFavorite(key, payloadFavorite, requestId);
+        }
     }
 
     if (confirmsPending) {
@@ -2935,7 +3560,8 @@ function handlePlaylistFavoriteUpdate(payload) {
             showNotification(payload.message, 'Library', '#ff4444');
         }
         if (!hasStaleFavoriteAck && payload.success !== false && patchCanonicalPlaylistFavorite(key, payload, payloadFavorite)) {
-            refreshDisplayedPlaylists();
+            markQuietPlaylistRefresh(1200);
+            refreshDisplayedPlaylists({ quiet: true });
             return;
         }
         debugLog('favorites', 'favorite update missing playlist snapshot, requesting refresh', {
@@ -2957,6 +3583,18 @@ function handlePlaylistFavoriteUpdate(payload) {
         });
     }
     var normalizedPlaylists = normalizeFavoriteSnapshotFromPayload(payload.playlists, key, payload, payloadFavorite);
+    if (hasOlderRevision) {
+        if (patchCanonicalPlaylistFavorite(key, payload, payloadFavorite)) {
+            markQuietPlaylistRefresh(1200);
+            refreshDisplayedPlaylists({ quiet: true });
+            if (payload.success === false && payload.message) {
+                showNotification(payload.message, 'Library', '#ff4444');
+            }
+            return;
+        }
+        requestCanonicalPlaylistsRefresh();
+        return;
+    }
     commitCanonicalPlaylists(normalizedPlaylists, payload.summary || payload, incomingRevision);
     if (!hasStaleFavoriteAck && payload.success === false && payload.message) {
         showNotification(payload.message, 'Library', '#ff4444');
@@ -3007,8 +3645,10 @@ function renderSidebarFavorites() {
 
 function populatePlaylists(lists, targetId, options) {
     var allowFavorite = !!(options && options.allowFavorite);
+    var quiet = !!(options && options.quiet);
     var grid = document.getElementById(targetId);
     if (!grid) return;
+    grid.classList.toggle('playlist-grid-quiet', quiet);
 
     if (!lists || lists.length === 0) {
         grid.innerHTML = '<div class="empty-state"><p>No playlists here.</p></div>';
@@ -3021,6 +3661,7 @@ function populatePlaylists(lists, targetId, options) {
         var isFavoritePending = !!pendingFavoriteState[normalizePlaylistId(pl.id)];
         var card = document.createElement('div');
         card.className = 'playlist-card' + (isFavorite ? ' favorite-active' : '') + (isFavoritePending ? ' favorite-pending' : '');
+        card.dataset.playlistId = normalizePlaylistId(pl.id) || '';
         card.innerHTML =
             '<div class="playlist-card-icon">' +
                 '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>' +
@@ -3049,7 +3690,7 @@ function populatePlaylists(lists, targetId, options) {
         if (pinBtn) {
             pinBtn.onclick = function(e) {
                 e.stopPropagation();
-                setPlaylistFavoriteOptimistic(pl.id, !isFavorite);
+                setPlaylistFavoriteOptimistic(pl.id, !this.classList.contains('active'));
             };
         }
 
@@ -3066,6 +3707,7 @@ function populatePlaylists(lists, targetId, options) {
 function populatePlaylistTracks(pid, tracks) {
     var list = document.getElementById('tracks-list');
     if (!list) return;
+    currentPlaylistTracks = Array.isArray(tracks) ? tracks.map(function(track) { return cloneValue(track); }) : [];
 
     if (!tracks || tracks.length === 0) {
         list.innerHTML = '<div class="empty-state"><p>This playlist is empty.</p></div>';
@@ -3121,9 +3763,30 @@ function playPlaylist() {
         return;
     }
     if (!currentPlaylistId) return;
-    var firstBtn = document.querySelector('#tracks-list .track-play-btn');
-    if (firstBtn) firstBtn.click();
-    showNotification('Playing playlist: ' + currentPlaylistName, 'Library');
+    var tracks = currentPlaylistTracks.filter(function(track) {
+        return track && typeof track.url === 'string' && track.url !== '';
+    }).map(function(track) {
+        return {
+            url: track.url,
+            title: track.title || track.url,
+            duration: track.duration,
+            author: track.author,
+            thumbnail: track.thumbnail,
+            video: track.video !== false,
+            audioTrack: cloneValue(track.audioTrack || track.selectedAudioTrack),
+            selectedAudioTrack: cloneValue(track.selectedAudioTrack || track.audioTrack)
+        };
+    });
+    if (tracks.length === 0) {
+        showNotification('This playlist has no playable tracks.', 'Library', '#ff4444');
+        return;
+    }
+    sendMessage('playPlaylistTracks', {
+        handle: _h(),
+        playlistId: currentPlaylistId,
+        tracks: tracks
+    });
+    showNotification('Queued ' + tracks.length + ' track' + (tracks.length === 1 ? '' : 's') + ': ' + currentPlaylistName, 'Library');
 }
 
 function deleteCurrentPlaylist() {
@@ -3133,6 +3796,7 @@ function deleteCurrentPlaylist() {
         sendMessage('deletePlaylist', { playlistId: currentPlaylistId });
         switchView('view-library');
         currentPlaylistId = null;
+        currentPlaylistTracks = [];
     });
 }
 
@@ -3513,7 +4177,6 @@ function getAdminDefaultsFromPayload(payload) {
 function adminStatesMatch(state, defaults) {
     if (!state || !defaults) return true;
     return Math.abs(state.range - defaults.range) < 0.01
-        && Math.abs(state.volume - defaults.volume) < 0.01
         && Math.abs(state.attSame - defaults.attSame) < 0.01
         && Math.abs(state.attDiff - defaults.attDiff) < 0.01
         && Math.abs(state.diffRoomVolume - defaults.diffRoomVolume) < 0.001
@@ -3570,7 +4233,6 @@ function syncAdminControls(body, state) {
     if (!body || !state) return;
 
     var rangeInput = body.querySelector('#set-range');
-    var volumeInput = body.querySelector('#set-volume');
     var attSameInput = body.querySelector('#set-att-same');
     var attDiffInput = body.querySelector('#set-att-diff');
     var diffRoomInput = body.querySelector('#set-diff-room');
@@ -3582,21 +4244,18 @@ function syncAdminControls(body, state) {
         rangeInput.value = String(getRangeSliderValue(state.range, allowAdminRange));
         updateAdminRangeSliderVisual(rangeInput, allowAdminRange);
     }
-    if (volumeInput) volumeInput.value = String(Math.round(state.volume));
     if (attSameInput) attSameInput.value = state.attSame.toFixed(1);
     if (attDiffInput) attDiffInput.value = state.attDiff.toFixed(1);
     if (diffRoomInput) diffRoomInput.value = state.diffRoomVolume.toFixed(2);
     if (transitionInput) transitionInput.value = state.transitionSeconds.toFixed(1);
 
     var rangeLabel = body.querySelector('#val-range');
-    var volumeLabel = body.querySelector('#val-volume');
     var attSameLabel = body.querySelector('#val-att-same');
     var attDiffLabel = body.querySelector('#val-att-diff');
     var diffRoomLabel = body.querySelector('#val-diff-room');
     var transitionLabel = body.querySelector('#val-transition');
 
     if (rangeLabel) rangeLabel.textContent = Math.round(state.range) + 'm';
-    if (volumeLabel) volumeLabel.textContent = Math.round(state.volume) + '%';
     if (attSameLabel) attSameLabel.textContent = state.attSame.toFixed(1);
     if (attDiffLabel) attDiffLabel.textContent = state.attDiff.toFixed(1);
     if (diffRoomLabel) diffRoomLabel.textContent = (state.diffRoomVolume * 100).toFixed(0) + '%';
@@ -3719,11 +4378,6 @@ function openAdminModal(forcedHandle) {
         '</div>' +
 
         '<div class="admin-section">' +
-            '<label class="admin-label">Volume <span id="val-volume">' + Math.round(state.volume) + '%</span></label>' +
-            '<input type="range" class="slider" id="set-volume" min="0" max="100" value="' + Math.round(state.volume) + '"' + (canEdit ? '' : ' disabled') + '>' +
-        '</div>' +
-
-        '<div class="admin-section">' +
             '<label class="admin-label">Same-Room Attenuation <span id="val-att-same">' + state.attSame.toFixed(1) + '</span></label>' +
             '<input type="range" class="slider" id="set-att-same" min="0" max="10" step="0.1" value="' + state.attSame.toFixed(1) + '"' + (canEdit ? '' : ' disabled') + '>' +
         '</div>' +
@@ -3764,10 +4418,6 @@ function openAdminModal(forcedHandle) {
         setPendingControlField(handle, 'range', state.range);
         sendMessage('setRange', { handle: handle, range: Math.round(state.range) });
         };
-        var sendVolume = function() {
-        setPendingControlField(handle, 'volume', state.volume);
-        sendMessage('setVolume', { handle: handle, volume: Math.round(state.volume) });
-        };
         var sendAttenuation = function() {
         setPendingControlField(handle, 'attSame', state.attSame);
         setPendingControlField(handle, 'attDiff', state.attDiff);
@@ -3785,7 +4435,6 @@ function openAdminModal(forcedHandle) {
         updateAdminResetControls(body, state, defaults, canEdit, function() {
             var previous = {
                 range: state.range,
-                volume: state.volume,
                 attSame: state.attSame,
                 attDiff: state.attDiff,
                 diffRoomVolume: state.diffRoomVolume,
@@ -3795,7 +4444,6 @@ function openAdminModal(forcedHandle) {
 
             resetAdminWriteTimers();
             state.range = defaults.range;
-            state.volume = defaults.volume;
             state.attSame = defaults.attSame;
             state.attDiff = defaults.attDiff;
             state.diffRoomVolume = defaults.diffRoomVolume;
@@ -3805,7 +4453,6 @@ function openAdminModal(forcedHandle) {
             syncAdminControls(body, state);
 
             if (Math.abs(previous.range - state.range) >= 0.01) sendRange();
-            if (Math.abs(previous.volume - state.volume) >= 0.01) sendVolume();
             if (Math.abs(previous.attSame - state.attSame) >= 0.01 || Math.abs(previous.attDiff - state.attDiff) >= 0.01) sendAttenuation();
             if (Math.abs(previous.diffRoomVolume - state.diffRoomVolume) >= 0.001) sendDiffRoomVolume();
             if (Math.abs(previous.transitionSeconds - state.transitionSeconds) >= 0.01) sendTransition();
@@ -3839,17 +4486,6 @@ function openAdminModal(forcedHandle) {
         _queueAdminWrite('range', sendRange, 120);
     }, function() {
         _flushAdminWrite('range', sendRange);
-    });
-
-        _adminSlider('set-volume', 'val-volume', function(v) {
-        return Math.round(parseFloat(v) || 0) + '%';
-    }, function(v) {
-        state.volume = Math.max(0, Math.min(100, parseFloat(v) || 0));
-        setPendingControlField(handle, 'volume', state.volume);
-        refreshResetControls();
-        _queueAdminWrite('volume', sendVolume, 100);
-    }, function() {
-        _flushAdminWrite('volume', sendVolume);
     });
 
         _adminSlider('set-att-same', 'val-att-same', function(v) {
@@ -4302,6 +4938,7 @@ window.addEventListener('message', function(event) {
                 adminMaxRange: d.adminMaxRange,
                 searchMinimumBusyMs: d.searchMinimumBusyMs,
                 deviceDefaults: d.deviceDefaults,
+                baseVolume: d.baseVolume,
                 debug: d.debug
             });
             break;
@@ -4389,10 +5026,12 @@ window.addEventListener('message', function(event) {
             cachedPlaylists = [];
             cachedSharedPlaylists = [];
             cachedFriends = [];
+            currentPlaylistTracks = [];
             Object.keys(pendingFavoriteState).forEach(function(key) {
                 clearPendingFavoriteTimers(key);
             });
             pendingFavoriteState = {};
+            confirmedFavoriteState = {};
             favoriteRequestSeq = 0;
             favoriteResponseFloor = {};
             pendingControlState = {};

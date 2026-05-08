@@ -218,7 +218,8 @@ function HomeView() {
       <div id="search-bar">
         <SearchIcon />
         <select id="search-source" />
-        <input type="text" id="search-input" placeholder="Search YouTube, paste a URL..." autoComplete="off" />
+        <button id="youtube-provider-btn" type="button" title="YouTube source provider">Auto</button>
+        <input type="text" id="search-input" placeholder="Search or paste a URL..." autoComplete="off" />
         <button id="search-btn">Search</button>
       </div>
       <div id="search-status" className="search-status" style={{ display: 'none' }} />

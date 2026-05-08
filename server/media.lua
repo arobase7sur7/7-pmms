@@ -3,6 +3,7 @@ local startupStates = {}
 local startupStateTtlSeconds = 12
 local startAttemptSequence = 0
 local startPlaybackSequence = 0
+local endedEventGuards = {}
 local deviceSessions = {}
 local deviceSessionRevision = 0
 local maxDeviceHistoryEntries = 50
@@ -11,6 +12,7 @@ local sessionLockIdleSeconds = 10 * 60
 local commitDeviceSession
 local isYoutubeLikeUrl
 local pushImmediateSync
+local getDeviceCapabilityState
 
 local function cloneTable(source)
     local copy = {}
@@ -37,6 +39,30 @@ local function cloneDeepTable(source, seen)
         copy[cloneDeepTable(key, seen)] = cloneDeepTable(value, seen)
     end
 
+    return copy
+end
+
+local function getMaxHistorySyncItems()
+    local uiConfig = type(Config.ui) == "table" and Config.ui or {}
+    return math.max(0, tonumber(uiConfig.maxHistorySyncItems) or 30)
+end
+
+local function cloneRecentHistoryForSync(history)
+    if type(history) ~= "table" then
+        return {}
+    end
+
+    local total = #history
+    local limit = getMaxHistorySyncItems()
+    if limit <= 0 or total <= limit then
+        return cloneDeepTable(history)
+    end
+
+    local copy = {}
+    local first = total - limit + 1
+    for index = first, total do
+        copy[#copy + 1] = cloneDeepTable(history[index])
+    end
     return copy
 end
 
@@ -423,7 +449,8 @@ function BuildMediaPlayersSyncStateForPlayer(src)
     local sessionStateCopy = {}
     for handle, session in pairs(deviceSessions) do
         local sessionLock = buildSessionLockStateForPlayer(src, handle)
-        local history = cloneDeepTable(session.history)
+        local fullHistoryCount = type(session.history) == "table" and #session.history or 0
+        local history = cloneRecentHistoryForSync(session.history)
         local preview = type(BuildPlaybackPreview) == "function"
             and BuildPlaybackPreview(handle, GetMediaPlayer(handle), session)
             or cloneDeepTable(session.queue)
@@ -435,7 +462,7 @@ function BuildMediaPlayersSyncStateForPlayer(src)
             history = history,
             playbackPreview = preview,
             queueLength = type(session.queue) == "table" and #session.queue or 0,
-            historyCount = type(history) == "table" and #history or 0,
+            historyCount = fullHistoryCount,
             canGoPrevious = type(session.history) == "table" and #session.history > 0 or false,
             currentTrack = cloneDeepTable(session.currentTrack),
             idleResetAt = session.idleResetAt,
@@ -538,6 +565,29 @@ local function stripUrlQuery(url)
     return (url:gsub("[?#].*$", ""))
 end
 
+local function redactUrlForDebug(url)
+    if type(url) ~= "string" then
+        return url
+    end
+
+    local redacted = url
+    local queryStart = redacted:find("?", 1, true)
+    if queryStart then
+        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
+    end
+
+    local hashStart = redacted:find("#", 1, true)
+    if hashStart then
+        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
+    end
+
+    if #redacted > 180 then
+        redacted = redacted:sub(1, 177) .. "..."
+    end
+
+    return redacted
+end
+
 local function getUrlExtension(url)
     local stripped = stripUrlQuery(url)
     if type(stripped) ~= "string" then
@@ -600,6 +650,49 @@ local function normalizeDuration(value)
     return nil
 end
 
+local function normalizeAudioTrackSelection(value)
+    if value == nil then
+        return nil
+    end
+
+    local selection = {}
+    if type(value) == "number" or type(value) == "string" then
+        selection.index = math.floor(tonumber(value) or -1)
+    elseif type(value) == "table" then
+        local rawIndex = value.index
+            or value.audioTrackIndex
+            or value.trackIndex
+            or value.id
+        local index = tonumber(rawIndex)
+        if index and index >= 0 then
+            selection.index = math.floor(index)
+        end
+
+        local function copyString(targetKey, sourceKey)
+            if type(value[sourceKey]) == "string" and value[sourceKey] ~= "" then
+                selection[targetKey] = value[sourceKey]:sub(1, 128)
+            end
+        end
+
+        copyString("id", "id")
+        copyString("label", "label")
+        copyString("name", "name")
+        copyString("language", "language")
+        copyString("language", "lang")
+        copyString("groupId", "groupId")
+    end
+
+    if selection.index == nil
+        and selection.id == nil
+        and selection.language == nil
+        and selection.label == nil
+        and selection.name == nil then
+        return nil
+    end
+
+    return selection
+end
+
 local function clampTransitionSeconds(value)
     local maxTransition = tonumber(Config.maxTransitionSeconds) or 8.0
     local defaultTransition = tonumber(Config.defaultTransitionSeconds) or 2.0
@@ -626,8 +719,33 @@ local function getAllowedRangeForPlayer(src)
     return getConfiguredMaxRange()
 end
 
-local function getDeviceCapabilityState(info, session)
-    if session and type(session.settings) == "table" and session.settings.isVehicle == true then
+getDeviceCapabilityState = function(info, session)
+    local sessionSettings = type(session) == "table" and type(session.settings) == "table" and session.settings or nil
+    local explicitCapability = nil
+
+    if sessionSettings and type(sessionSettings.deviceCapability) == "string" then
+        explicitCapability = sessionSettings.deviceCapability
+    elseif type(session) == "table" and type(session.deviceCapability) == "string" then
+        explicitCapability = session.deviceCapability
+    elseif type(info) == "table" and type(info.deviceCapability) == "string" then
+        explicitCapability = info.deviceCapability
+    elseif type(info) == "table" and type(info.capabilities) == "table" then
+        local caps = info.capabilities
+        if caps.video == false and caps.audio ~= false then
+            explicitCapability = "audio"
+        elseif caps.video == true then
+            explicitCapability = "video"
+        end
+    end
+
+    if explicitCapability == "audio" or explicitCapability == "audio_only" then
+        return "audio"
+    end
+    if explicitCapability == "video" or explicitCapability == "screen" then
+        return "video"
+    end
+
+    if sessionSettings and sessionSettings.isVehicle == true then
         return "audio"
     end
 
@@ -672,6 +790,7 @@ local function buildTrackSnapshot(options)
         duration = normalizeDuration(options.duration),
         author = options.author,
         thumbnail = options.thumbnail,
+        live = options.live == true,
         volume = options.volume,
         offset = 0,
         filter = options.filter,
@@ -681,6 +800,9 @@ local function buildTrackSnapshot(options)
         resolvedUrl = options.resolvedUrl,
         resolver = cloneDeepTable(options.resolver),
         directLink = cloneDeepTable(options.directLink),
+        audioTracks = cloneDeepTable(options.audioTracks),
+        audioTrack = cloneDeepTable(options.audioTrack or options.selectedAudioTrack),
+        selectedAudioTrack = cloneDeepTable(options.selectedAudioTrack or options.audioTrack),
         playbackToken = options.playbackToken,
     }
 
@@ -936,22 +1058,114 @@ local function addFallbackWarningNotification(src, warning)
     end
 end
 
+local function normalizeYoutubeResolverProvider(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local provider = value:lower():gsub("%s+", "_"):gsub("%-", "_")
+    if provider == "" or provider == "auto" then
+        return "auto"
+    end
+    if provider == "youtube" or provider == "youtube_embed" or provider == "embed" then
+        return "embed"
+    end
+    if provider == "yt_dlp" or provider == "ytdlp" or provider == "yt_dlp_local" then
+        return "yt_dlp_local"
+    end
+    if provider == "extractor" or provider == "extractor_http" then
+        return "extractor_http"
+    end
+    if provider == "cobalt" or provider == "invidious" or provider == "piped" then
+        return provider
+    end
+
+    return nil
+end
+
+local function getRequestedYoutubeResolverProvider(options)
+    if type(options) ~= "table" then
+        return nil, false
+    end
+
+    local raw = options.youtubeProvider
+        or options.youtubeResolverProvider
+        or options.resolverProvider
+        or options.provider
+    local provider = normalizeYoutubeResolverProvider(raw)
+    local explicit = provider ~= nil or options.youtubeProviderExplicit == true
+    return provider, explicit
+end
+
+local function buildEffectiveResolverOptions(options, resolverOptions)
+    local effective = cloneDeepTable(resolverOptions or {})
+    local provider, explicit = getRequestedYoutubeResolverProvider(options)
+
+    if provider and provider ~= "auto" then
+        effective.forceProvider = provider
+        effective.forceRefresh = true
+        effective.allowAudioFallback = false
+        if provider == "embed" then
+            effective.allowFallback = true
+            effective.allowEmbedFallback = true
+        else
+            effective.allowEmbedFallback = false
+        end
+    elseif explicit then
+        effective.allowEmbedFallback = false
+    end
+
+    return effective
+end
+
+local function recordAutoProviderPlayback(options, resolver, outcome, reason, context)
+    if type(RecordResolverProviderPlayback) ~= "function"
+        or type(options) ~= "table"
+        or type(resolver) ~= "table"
+        or type(resolver.provider) ~= "string"
+        or resolver.provider == "" then
+        return
+    end
+
+    local provider, explicit = getRequestedYoutubeResolverProvider(options)
+    if provider and provider ~= "auto" then
+        return
+    end
+    if explicit and provider ~= "auto" then
+        return
+    end
+
+    local sourceUrl = options.originalUrl or options.url
+    if not isYoutubeLikeUrl(sourceUrl) then
+        return
+    end
+
+    local elapsedMs = 0
+    if context and context.createdAt then
+        elapsedMs = math.max(0, (os.time() - context.createdAt) * 1000)
+    end
+
+    RecordResolverProviderPlayback(resolver.provider, resolver.instance, outcome, elapsedMs, reason)
+end
+
 local function resolvePlaybackAndNotify(src, options, resolverOptions, callback)
     if type(ResolvePlaybackOptions) ~= "function" then
         PMMSDebug("resolver", "resolver function unavailable, using original options", {
             src = src,
-            url = options and options.url or nil,
+            url = redactUrlForDebug(options and options.url or nil),
         })
         callback(true, cloneTable(options), nil)
         return
     end
 
+    resolverOptions = buildEffectiveResolverOptions(options, resolverOptions)
     local notifyOnFailure = resolverOptions == nil or resolverOptions.notifyOnFailure ~= false
     PMMSDebug("resolver", "resolve requested", {
         src = src,
-        url = options and options.url or nil,
-        originalUrl = options and options.originalUrl or nil,
+        url = redactUrlForDebug(options and options.url or nil),
+        originalUrl = redactUrlForDebug(options and options.originalUrl or nil),
         forceRefresh = resolverOptions and resolverOptions.forceRefresh == true,
+        forceProvider = resolverOptions and resolverOptions.forceProvider or nil,
         avoidProvider = resolverOptions and resolverOptions.avoidProvider or nil,
         avoidInstance = resolverOptions and resolverOptions.avoidInstance or nil,
         allowAudioFallback = resolverOptions and resolverOptions.allowAudioFallback,
@@ -961,7 +1175,7 @@ local function resolvePlaybackAndNotify(src, options, resolverOptions, callback)
         if not ok or type(resolvedOptions) ~= "table" then
             PMMSDebug("resolver", "resolve failed", {
                 src = src,
-                url = options and options.url or nil,
+                url = redactUrlForDebug(options and options.url or nil),
                 warning = warning,
             })
             if notifyOnFailure then
@@ -974,8 +1188,8 @@ local function resolvePlaybackAndNotify(src, options, resolverOptions, callback)
         local resolver = type(resolvedOptions.resolver) == "table" and resolvedOptions.resolver or {}
         PMMSDebug("resolver", "resolve succeeded", {
             src = src,
-            url = options and options.url or nil,
-            resolvedUrl = resolvedOptions.resolvedUrl or resolvedOptions.url,
+            url = redactUrlForDebug(options and options.url or nil),
+            resolvedUrl = redactUrlForDebug(resolvedOptions.resolvedUrl or resolvedOptions.url),
             status = resolver.status,
             provider = resolver.provider,
             instance = resolver.instance,
@@ -997,6 +1211,96 @@ local function applyResolvedMetadata(target, source)
     target.resolverReason = target.resolver.reason or target.resolverReason or "unknown"
     target.resolverWarning = target.resolver.warning or target.resolverWarning
     target.resolverFallback = target.resolverStatus == "fallback"
+    if type(source.audioTracks) == "table" then
+        target.audioTracks = cloneDeepTable(source.audioTracks)
+    end
+    local audioTrack = normalizeAudioTrackSelection(source.audioTrack or source.selectedAudioTrack)
+    if audioTrack then
+        target.audioTrack = audioTrack
+        target.selectedAudioTrack = cloneDeepTable(audioTrack)
+    end
+end
+
+local function jsonEquivalent(left, right)
+    if left == right then
+        return true
+    end
+    if type(left) ~= type(right) then
+        return false
+    end
+    if type(left) ~= "table" then
+        return left == right
+    end
+
+    local okLeft, encodedLeft = pcall(json.encode, left)
+    local okRight, encodedRight = pcall(json.encode, right)
+    return okLeft and okRight and encodedLeft == encodedRight
+end
+
+local function applyPlaybackMetadata(target, details)
+    if type(target) ~= "table" or type(details) ~= "table" then
+        return false
+    end
+
+    local changed = false
+    local duration = normalizeDuration(details.duration)
+    if duration and tonumber(target.duration) ~= duration then
+        target.duration = duration
+        changed = true
+    elseif details.live == true and target.duration ~= nil then
+        target.duration = nil
+        changed = true
+    end
+
+    if details.live == true or details.live == false then
+        if target.live ~= (details.live == true) then
+            target.live = details.live == true
+            changed = true
+        end
+    end
+
+    if type(details.title) == "string" and details.title ~= "" and details.title ~= target.url and target.title ~= details.title then
+        target.title = details.title
+        changed = true
+    end
+    if type(details.author) == "string" and details.author ~= "" and target.author ~= details.author then
+        target.author = details.author
+        changed = true
+    end
+    if type(details.thumbnail) == "string" and details.thumbnail ~= "" and target.thumbnail ~= details.thumbnail then
+        target.thumbnail = details.thumbnail
+        changed = true
+    end
+    if details.video == false and target.video ~= false then
+        target.video = false
+        changed = true
+    elseif details.video == true and target.video ~= true then
+        target.video = true
+        changed = true
+    end
+
+    if type(details.audioTracks) == "table" then
+        if not jsonEquivalent(target.audioTracks, details.audioTracks) then
+            target.audioTracks = cloneDeepTable(details.audioTracks)
+            changed = true
+        end
+    end
+
+    local selectedAudioTrack = normalizeAudioTrackSelection(
+        details.audioTrack
+            or details.selectedAudioTrack
+            or details.audioTrackIndex
+    )
+    if selectedAudioTrack then
+        if not jsonEquivalent(target.audioTrack, selectedAudioTrack)
+            or not jsonEquivalent(target.selectedAudioTrack, selectedAudioTrack) then
+            target.audioTrack = cloneDeepTable(selectedAudioTrack)
+            target.selectedAudioTrack = cloneDeepTable(selectedAudioTrack)
+            changed = true
+        end
+    end
+
+    return changed
 end
 
 local function beginStartContext(handle, src, options, retries)
@@ -1032,8 +1336,8 @@ local function beginStartContext(handle, src, options, retries)
         src = src,
         attemptId = context.currentAttemptId,
         playbackToken = context.playbackToken,
-        url = initialOptions.url,
-        originalUrl = initialOptions.originalUrl,
+        url = redactUrlForDebug(initialOptions.url),
+        originalUrl = redactUrlForDebug(initialOptions.originalUrl),
         title = initialOptions.title,
         video = initialOptions.video,
     })
@@ -1059,8 +1363,8 @@ local function updateStartContextResolved(handle, resolvedOptions)
     PMMSDebug("player", "start context resolved", {
         handle = handle,
         attemptId = context.currentAttemptId,
-        url = resolved.originalUrl or resolved.url,
-        resolvedUrl = resolved.resolvedUrl or resolved.url,
+        url = redactUrlForDebug(resolved.originalUrl or resolved.url),
+        resolvedUrl = redactUrlForDebug(resolved.resolvedUrl or resolved.url),
         provider = context.lastProvider,
         instance = context.lastInstance,
         resolverStatus = context.lastResolverStatus,
@@ -1264,11 +1568,73 @@ local function isAllowedDirectLinkExtension(extension)
     return false
 end
 
+local function decodeUrlComponent(value)
+    if type(value) ~= "string" or value == "" then
+        return nil
+    end
+
+    local decoded = value:gsub("+", " ")
+    decoded = decoded:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end)
+    return decoded
+end
+
+local function extractNestedDirectLinkUrl(url)
+    if type(url) ~= "string" or url == "" then
+        return nil
+    end
+
+    local query = url:match("%?([^#]+)")
+    if type(query) ~= "string" or query == "" then
+        return nil
+    end
+
+    local candidateKeys = {
+        url = true,
+        u = true,
+        src = true,
+        source = true,
+        media = true,
+        stream = true,
+        target = true,
+    }
+
+    for pair in query:gmatch("[^&]+") do
+        local rawKey, rawValue = pair:match("^([^=]+)=?(.*)$")
+        local key = rawKey and decodeUrlComponent(rawKey)
+        if key and candidateKeys[key:lower()] and type(rawValue) == "string" and rawValue ~= "" then
+            local decoded = rawValue
+            for _ = 1, 2 do
+                local nextDecoded = decodeUrlComponent(decoded)
+                if not nextDecoded or nextDecoded == decoded then
+                    break
+                end
+                decoded = nextDecoded
+            end
+
+            if type(decoded) == "string"
+                and decoded:match("^https?://")
+                and not decoded:find("[%c<>\"'`]", 1, false)
+                and not decoded:find("^https?://[^/]-@", 1, false)
+                and not isYoutubeLikeUrl(decoded)
+                and not isTwitchLikeUrl(decoded) then
+                local extension = getUrlExtension(decoded)
+                if extension and isAllowedDirectLinkExtension(extension) then
+                    return decoded
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 local function getDirectLinkPlaybackMode(extension, contentType)
     local lowerExt = type(extension) == "string" and extension:lower() or ""
     local lowerType = type(contentType) == "string" and contentType:lower() or ""
 
-    if lowerExt == "mp4" or lowerExt == "m4v" or lowerExt == "webm" or lowerExt == "ogv" then
+    if lowerExt == "mp4" or lowerExt == "m4v" or lowerExt == "webm" or lowerExt == "ogv" or lowerExt == "m3u8" then
         return "video"
     end
 
@@ -1283,6 +1649,12 @@ local function getDirectLinkPlaybackMode(extension, contentType)
         return "audio"
     end
 
+    if lowerType:find("mpegurl", 1, true)
+        or lowerType:find("application/vnd.apple.mpegurl", 1, true)
+        or lowerType:find("application/x-mpegurl", 1, true) then
+        return "video"
+    end
+
     if lowerType:find("video/", 1, true) == 1 then
         return "video"
     end
@@ -1292,6 +1664,24 @@ local function getDirectLinkPlaybackMode(extension, contentType)
     end
 
     return nil
+end
+
+local function isLikelyHtmlResponse(body)
+    if type(body) ~= "string" then
+        return false
+    end
+
+    local head = body:sub(1, 512):lower()
+    return head:find("<!doctype html", 1, true) ~= nil
+        or head:find("<html", 1, true) ~= nil
+end
+
+local function isHlsManifestBody(body)
+    if type(body) ~= "string" then
+        return false
+    end
+
+    return body:sub(1, 1024):find("#EXTM3U", 1, true) ~= nil
 end
 
 local function extractHeaderValue(headers, name)
@@ -1415,7 +1805,7 @@ local function probePreparedDirectLink(prepared, callback)
         callback(true, prepared, nil)
     end
 
-    local function handleProbeResult(statusCode, headers, followUp)
+    local function handleProbeResult(statusCode, body, headers, followUp)
         local status = tonumber(statusCode) or 0
         if status >= 300 and status < 400 and followUp ~= true then
             callback(false, nil, "Redirected direct links are not supported.")
@@ -1427,16 +1817,33 @@ local function probePreparedDirectLink(prepared, callback)
 
         local contentType = extractHeaderValue(headers, "content-type")
         if not contentType or contentType == "" then
+            if followUp == true and isLikelyHtmlResponse(body) then
+                callback(false, nil, "This direct link does not point to playable media.")
+                return true
+            end
+            if extension == "m3u8" and followUp == true and isHlsManifestBody(body) then
+                finalizeSuccess("application/vnd.apple.mpegurl")
+                return true
+            end
+            if followUp == true and isAllowedDirectLinkExtension(extension) then
+                finalizeSuccess(nil)
+                return true
+            end
             return false
         end
 
         local lowerType = contentType:lower()
         if lowerType:find("text/html", 1, true)
             or lowerType:find("application/json", 1, true)
-            or lowerType:find("text/plain", 1, true)
+            or (lowerType:find("text/plain", 1, true) and extension ~= "m3u8")
             or lowerType:find("application/xml", 1, true)
             or lowerType:find("text/xml", 1, true) then
             callback(false, nil, "This direct link does not point to playable media.")
+            return true
+        end
+
+        if extension == "m3u8" and followUp == true and isHlsManifestBody(body) then
+            finalizeSuccess("application/vnd.apple.mpegurl")
             return true
         end
 
@@ -1445,12 +1852,12 @@ local function probePreparedDirectLink(prepared, callback)
     end
 
     PerformHttpRequest(url, function(statusCode, _, headers)
-        if handleProbeResult(statusCode, headers, false) then
+        if handleProbeResult(statusCode, nil, headers, false) then
             return
         end
 
-        PerformHttpRequest(url, function(statusCodeGet, _, headersGet)
-            if handleProbeResult(statusCodeGet, headersGet, true) then
+        PerformHttpRequest(url, function(statusCodeGet, bodyGet, headersGet)
+            if handleProbeResult(statusCodeGet, bodyGet, headersGet, true) then
                 return
             end
 
@@ -1458,6 +1865,7 @@ local function probePreparedDirectLink(prepared, callback)
         end, "GET", "", {
             ["User-Agent"] = "7-PMMS-DirectLinkProbe",
             ["Accept"] = "audio/*,video/*;q=0.9,*/*;q=0.1",
+            ["Range"] = "bytes=0-4095",
         }, requestOptions)
     end, "HEAD", "", {
         ["User-Agent"] = "7-PMMS-DirectLinkProbe",
@@ -1573,7 +1981,7 @@ local function failActiveLocalPlayback(handle, src, message, details)
     PMMSDebug("player", "active local playback failed", {
         src = src,
         handle = handle,
-        playbackToken = currentToken,
+        playbackToken = mp and mp.playbackToken or nil,
         message = finalMessage,
         details = details,
         provider = resolver.provider,
@@ -1623,9 +2031,27 @@ local function validateAndPrepareStartOptions(src, options)
         return false, nil, "You do not have permission to play the specified URL"
     end
 
+    local nestedDirectUrl = extractNestedDirectLinkUrl(prepared.url)
+    if nestedDirectUrl then
+        prepared.proxyUrl = prepared.url
+        prepared.originalUrl = prepared.originalUrl or prepared.url
+        prepared.url = nestedDirectUrl
+    end
+
     local directLinkOk, directLinkError = validateAndTagDirectLink(prepared.url, prepared)
     if not directLinkOk then
         return false, nil, directLinkError
+    end
+
+    local requestedProvider, providerExplicit = getRequestedYoutubeResolverProvider(prepared)
+    if providerExplicit then
+        prepared.youtubeProvider = requestedProvider or "auto"
+        prepared.youtubeProviderExplicit = true
+    end
+
+    if nestedDirectUrl and type(prepared.directLink) == "table" then
+        prepared.directLink.unwrapped = true
+        prepared.directLink.proxyUrl = prepared.proxyUrl
     end
 
     prepared.title = prepared.title or prepared.url
@@ -1778,8 +2204,8 @@ local function triggerStartOnClient(handle, src, resolvedOptions, intentOptions,
         attemptId = context.currentAttemptId,
         playbackToken = context.playbackToken,
         phase = resolvedPhase,
-        url = resolved.originalUrl or resolved.url,
-        resolvedUrl = resolved.resolvedUrl or resolved.url,
+        url = redactUrlForDebug(resolved.originalUrl or resolved.url),
+        resolvedUrl = redactUrlForDebug(resolved.resolvedUrl or resolved.url),
         provider = resolved.resolver and resolved.resolver.provider or nil,
         instance = resolved.resolver and resolved.resolver.instance or nil,
         resolverStatus = resolved.resolver and resolved.resolver.status or nil,
@@ -1803,7 +2229,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             src = src,
             handle = handle,
             optionsType = type(intentOptions),
-            url = intentOptions and intentOptions.url or nil,
+            url = redactUrlForDebug(intentOptions and intentOptions.url or nil),
         })
         TriggerClientEvent("pmms:error", src, "Invalid playback options.")
         ClearRestricted(handle)
@@ -1826,7 +2252,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
                 src = src,
                 handle = handle,
                 attemptId = attemptId,
-                url = intentOptions.url,
+                url = redactUrlForDebug(intentOptions.url),
                 error = directError,
             })
             failPlaybackStart(handle, src, directError or "This direct media link could not be verified.")
@@ -1847,8 +2273,8 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
                 src = src,
                 handle = handle,
                 attemptId = attemptId,
-                url = finalIntent.originalUrl or finalIntent.url,
-                resolvedUrl = finalIntent.resolvedUrl,
+                url = redactUrlForDebug(finalIntent.originalUrl or finalIntent.url),
+                resolvedUrl = redactUrlForDebug(finalIntent.resolvedUrl),
                 provider = finalIntent.resolver and finalIntent.resolver.provider or nil,
                 instance = finalIntent.resolver and finalIntent.resolver.instance or nil,
             })
@@ -2031,7 +2457,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
     PMMSDebug("player", "start event received", {
         src = src,
         handle = handle,
-        url = type(options) == "table" and options.url or nil,
+        url = redactUrlForDebug(type(options) == "table" and options.url or nil),
         title = type(options) == "table" and options.title or nil,
         video = type(options) == "table" and options.video or nil,
     })
@@ -2081,7 +2507,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
         PMMSDebug("player", "start rejected: validation failed", {
             src = src,
             handle = handle,
-            url = type(options) == "table" and options.url or nil,
+            url = redactUrlForDebug(type(options) == "table" and options.url or nil),
             error = errorMessage,
         })
         TriggerClientEvent("pmms:error", src, errorMessage)
@@ -2112,7 +2538,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
         PMMSDebug("player", "active media player found, queueing request", {
             src = src,
             handle = handle,
-            url = preparedOptions.url,
+            url = redactUrlForDebug(preparedOptions.url),
             title = preparedOptions.title,
         })
         AddToQueue(handle, src, preparedOptions)
@@ -2120,6 +2546,106 @@ RegisterNetEvent("pmms:start", function(handle, options)
     end
 
     startMediaPlayerForClient(handle, src, preparedOptions, {})
+end)
+
+RegisterNetEvent("pmms:playPlaylistTracks", function(handle, playlistId, tracks)
+    local src = source
+    handle = tonumber(handle) or handle
+
+    if type(handle) ~= "number" then
+        TriggerClientEvent("pmms:error", src, "Invalid media player handle.")
+        return
+    end
+
+    if not requirePermission(src, handle, "interact") then
+        return
+    end
+
+    if isLockedDefaultMediaPlayer(handle) and not IsPlayerAceAllowed(src, "pmms.manage") then
+        TriggerClientEvent("pmms:error", src, "You do not have permission to play on a locked media player")
+        return
+    end
+
+    if type(tracks) ~= "table" or #tracks <= 0 then
+        TriggerClientEvent("pmms:error", src, "This playlist has no playable tracks.")
+        return
+    end
+
+    local preparedTracks = {}
+    local rejectedCount = 0
+    for _, track in ipairs(tracks) do
+        local candidate = type(track) == "table" and cloneDeepTable(track) or nil
+        if candidate then
+            candidate.video = candidate.video ~= false
+            local ok, prepared = validateAndPrepareStartOptions(src, candidate)
+            if ok and prepared then
+                preparedTracks[#preparedTracks + 1] = prepared
+            else
+                rejectedCount = rejectedCount + 1
+            end
+        else
+            rejectedCount = rejectedCount + 1
+        end
+    end
+
+    if #preparedTracks <= 0 then
+        TriggerClientEvent("pmms:error", src, "No valid playlist tracks could be played.")
+        return
+    end
+
+    local restricted = GetRestrictedHandles()
+    if restricted[handle] then
+        if restricted[handle] ~= src then
+            TriggerClientEvent("pmms:error", src, "This player is busy")
+            return
+        end
+        ClearRestricted(handle)
+    end
+
+    if IsMediaPlayerActive(handle) then
+        for _, prepared in ipairs(preparedTracks) do
+            AddToQueue(handle, src, prepared)
+        end
+        TriggerClientEvent("pmms:notify", src, {
+            title = "Library",
+            text = ("Queued %d playlist track%s%s."):format(
+                #preparedTracks,
+                #preparedTracks == 1 and "" or "s",
+                rejectedCount > 0 and (" (" .. rejectedCount .. " skipped)") or ""
+            ),
+        })
+        return
+    end
+
+    local startupContext = startContexts[handle]
+    if startupContext then
+        if startupContext.source ~= src then
+            TriggerClientEvent("pmms:error", src, "This player is busy")
+            return
+        end
+        clearStartContext(handle, false, true)
+    end
+
+    for index = 2, #preparedTracks do
+        AddToQueue(handle, src, preparedTracks[index])
+    end
+
+    PMMSDebug("player", "playlist batch start requested", {
+        src = src,
+        handle = handle,
+        playlistId = playlistId,
+        startTitle = preparedTracks[1].title,
+        queuedCount = math.max(0, #preparedTracks - 1),
+        rejectedCount = rejectedCount,
+    })
+
+    startMediaPlayerForClient(handle, src, preparedTracks[1], {})
+    if rejectedCount > 0 then
+        TriggerClientEvent("pmms:notify", src, {
+            title = "Library",
+            text = ("Started playlist; %d invalid track%s skipped."):format(rejectedCount, rejectedCount == 1 and "" or "s"),
+        })
+    end
 end)
 
 RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, playbackToken)
@@ -2166,7 +2692,21 @@ RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, play
     if details.video == false then
         merged.video = false
     end
+    if type(details.audioTracks) == "table" then
+        merged.audioTracks = cloneDeepTable(details.audioTracks)
+    end
+    local selectedAudioTrack = normalizeAudioTrackSelection(
+        details.audioTrack
+            or details.selectedAudioTrack
+            or details.audioTrackIndex
+    )
+    if selectedAudioTrack then
+        merged.audioTrack = selectedAudioTrack
+        merged.selectedAudioTrack = cloneDeepTable(selectedAudioTrack)
+    end
+    applyPlaybackMetadata(merged, details)
 
+    recordAutoProviderPlayback(merged, merged.resolver, "success", "startup_ready", context)
     AddMediaPlayer(handle, merged)
     clearStartContext(handle, false, false)
     ClearRestricted(handle)
@@ -2175,8 +2715,8 @@ RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, play
         handle = handle,
         attemptId = attemptId,
         playbackToken = context.playbackToken,
-        url = merged.originalUrl or merged.url,
-        resolvedUrl = merged.resolvedUrl or merged.url,
+        url = redactUrlForDebug(merged.originalUrl or merged.url),
+        resolvedUrl = redactUrlForDebug(merged.resolvedUrl or merged.url),
         provider = merged.resolver and merged.resolver.provider or nil,
         instance = merged.resolver and merged.resolver.instance or nil,
         resolverStatus = merged.resolver and merged.resolver.status or nil,
@@ -2184,6 +2724,196 @@ RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, play
         video = merged.video,
     })
     pushImmediateSync()
+end)
+
+RegisterNetEvent("pmms:updatePlaybackMetadata", function(handle, metadata, playbackToken)
+    local src = source
+    handle = tonumber(handle)
+
+    if not handle or type(metadata) ~= "table" then
+        return
+    end
+
+    local context = startContexts[handle]
+    if context
+        and type(playbackToken) == "string"
+        and playbackToken ~= ""
+        and tostring(context.playbackToken) == tostring(playbackToken) then
+        local contextChanged = false
+        contextChanged = applyPlaybackMetadata(context.currentOptions, metadata) or contextChanged
+        contextChanged = applyPlaybackMetadata(context.options, metadata) or contextChanged
+        if contextChanged then
+            context.updatedAt = os.time()
+            startContexts[handle] = context
+        end
+        return
+    end
+
+    local mp = GetMediaPlayer(handle)
+    if not mp or type(mp) ~= "table" then
+        return
+    end
+
+    local currentToken = type(mp.playbackToken) == "string" and mp.playbackToken or nil
+    if currentToken
+        and (
+            type(playbackToken) ~= "string"
+            or playbackToken == ""
+            or tostring(currentToken) ~= tostring(playbackToken)
+        ) then
+        PMMSDebug("player", "playback metadata ignored: stale playback token", {
+            src = src,
+            handle = handle,
+            requestedToken = playbackToken,
+            currentToken = currentToken,
+        })
+        return
+    end
+
+    local changed = applyPlaybackMetadata(mp, metadata)
+    local session = deviceSessions[handle]
+    if session then
+        if type(session.currentTrack) == "table" then
+            changed = applyPlaybackMetadata(session.currentTrack, metadata) or changed
+        end
+        if type(session.playerTemplate) == "table" then
+            changed = applyPlaybackMetadata(session.playerTemplate, metadata) or changed
+        end
+        if changed then
+            commitDeviceSession(handle, session)
+        end
+    elseif changed then
+        MarkDirty()
+    end
+
+    if changed then
+        PMMSDebug("player", "playback metadata updated", {
+            src = src,
+            handle = handle,
+            playbackToken = playbackToken,
+            duration = mp.duration,
+            live = mp.live == true,
+            audioTrackCount = type(mp.audioTracks) == "table" and #mp.audioTracks or 0,
+        })
+        if pushImmediateSync then
+            pushImmediateSync()
+        end
+    end
+end)
+
+RegisterNetEvent("pmms:ended", function(handle, metadata, playbackToken)
+    local src = source
+    handle = tonumber(handle)
+
+    if not handle then
+        return
+    end
+
+    local mp = GetMediaPlayer(handle)
+    if not mp or type(mp) ~= "table" then
+        PMMSDebug("player", "playback ended ignored: no active media player", {
+            src = src,
+            handle = handle,
+            playbackToken = playbackToken,
+        })
+        return
+    end
+
+    local currentToken = type(mp.playbackToken) == "string" and mp.playbackToken or nil
+    if currentToken
+        and (
+            type(playbackToken) ~= "string"
+            or playbackToken == ""
+            or tostring(currentToken) ~= tostring(playbackToken)
+        ) then
+        PMMSDebug("player", "playback ended ignored: stale playback token", {
+            src = src,
+            handle = handle,
+            requestedToken = playbackToken,
+            currentToken = currentToken,
+        })
+        return
+    end
+
+    metadata = type(metadata) == "table" and metadata or {}
+    local duration = normalizeDuration(mp.duration or metadata.duration)
+    if not duration or duration <= 0 or mp.live == true then
+        PMMSDebug("player", "playback ended ignored: missing or live duration", {
+            src = src,
+            handle = handle,
+            playbackToken = playbackToken,
+            duration = mp.duration or metadata.duration,
+            live = mp.live == true,
+        })
+        return
+    end
+
+    local clientTime = parseOffset(metadata.currentTime or metadata.offset)
+    local liveOffset = getLivePlaybackOffset(mp)
+    local nearDuration = math.max(0, duration - 2)
+    if clientTime < nearDuration and liveOffset < nearDuration then
+        PMMSDebug("player", "playback ended ignored: not near duration", {
+            src = src,
+            handle = handle,
+            playbackToken = playbackToken,
+            clientTime = clientTime,
+            serverOffset = liveOffset,
+            duration = duration,
+        })
+        return
+    end
+
+    local now = os.time()
+    for key, timestamp in pairs(endedEventGuards) do
+        if now - timestamp > 8 then
+            endedEventGuards[key] = nil
+        end
+    end
+
+    local guardKey = ("%s:%s"):format(tostring(handle), tostring(currentToken or playbackToken or ""))
+    if endedEventGuards[guardKey] and now - endedEventGuards[guardKey] <= 4 then
+        PMMSDebug("player", "playback ended ignored: duplicate end event", {
+            src = src,
+            handle = handle,
+            playbackToken = playbackToken,
+            clientTime = clientTime,
+            serverOffset = liveOffset,
+            duration = duration,
+        })
+        return
+    end
+    endedEventGuards[guardKey] = now
+
+    local loopMode = NormalizeLoopMode(mp.loopMode, mp.loop)
+    local shouldAdvanceQueue = (type(mp.queue) == "table" and #mp.queue > 0)
+        or loopMode == "queue"
+        or loopMode == "shuffle_loop"
+
+    PMMSDebug("player", "playback ended accepted", {
+        src = src,
+        handle = handle,
+        playbackToken = playbackToken,
+        loopMode = loopMode,
+        clientTime = clientTime,
+        serverOffset = liveOffset,
+        duration = duration,
+        queueLength = type(mp.queue) == "table" and #mp.queue or 0,
+    })
+
+    if loopMode == "track" then
+        mp.offset = 0
+        mp.startTime = now
+        mp.paused = false
+        mp.pausedAt = nil
+        MarkDirty()
+        if pushImmediateSync then
+            pushImmediateSync()
+        end
+    elseif shouldAdvanceQueue then
+        PlayNextInQueue(handle, { reason = "client_ended", source = src })
+    else
+        RemoveMediaPlayer(handle)
+    end
 end)
 
 RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, failedMessage, playbackToken)
@@ -2206,7 +2936,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
             handle = handle,
             attemptId = attemptId,
             playbackToken = playbackToken,
-            failedUrl = failedUrl,
+            failedUrl = redactUrlForDebug(failedUrl),
             message = failedMessage,
             currentSource = context and context.source or nil,
             currentAttemptId = context and context.currentAttemptId or nil,
@@ -2218,21 +2948,30 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     local currentOptions = context.currentOptions or context.options or {}
     local currentResolver = type(currentOptions.resolver) == "table" and currentOptions.resolver or {}
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
+    local playbackFailureReason = classifyPlaybackError(failedMessage)
+
+    recordAutoProviderPlayback(currentOptions, currentResolver, "failure", playbackFailureReason, context)
 
     context.errorHistory = context.errorHistory or {}
     context.errorHistory[#context.errorHistory + 1] = {
         url = failedUrl,
         message = failedMessage,
-        reason = classifyPlaybackError(failedMessage),
+        reason = playbackFailureReason,
         at = os.time(),
     }
     startContexts[handle] = context
+
+    if type(SuppressResolverInstance) == "function"
+        and type(currentResolver.provider) == "string"
+        and type(currentResolver.instance) == "string" then
+        SuppressResolverInstance(currentResolver.provider, currentResolver.instance, playbackFailureReason)
+    end
 
     PMMSDebug("player", "startup error received", {
         src = src,
         handle = handle,
         attemptId = attemptId,
-        failedUrl = failedUrl,
+        failedUrl = redactUrlForDebug(failedUrl),
         message = failedMessage,
         reason = context.errorHistory[#context.errorHistory].reason,
         resolverStatus = currentResolver.status,
@@ -2278,7 +3017,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         retryCount = retryContext.retries,
         avoidProvider = retryContext.lastProvider,
         avoidInstance = retryContext.lastInstance,
-        avoidResolvedUrl = failedUrl,
+        avoidResolvedUrl = redactUrlForDebug(failedUrl),
     })
 
     if previousAttemptId and previousAttemptId ~= retryContext.currentAttemptId then
@@ -2349,7 +3088,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback error ignored: stale playback token", {
             src = src,
             handle = handle,
-            failedUrl = failedUrl,
+            failedUrl = redactUrlForDebug(failedUrl),
             message = failedMessage,
             requestedToken = playbackToken,
             currentToken = currentToken,
@@ -2361,10 +3100,10 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback error ignored: url mismatch", {
             src = src,
             handle = handle,
-            failedUrl = failedUrl,
-            currentUrl = mp.url,
-            originalUrl = mp.originalUrl,
-            resolvedUrl = mp.resolvedUrl,
+            failedUrl = redactUrlForDebug(failedUrl),
+            currentUrl = redactUrlForDebug(mp.url),
+            originalUrl = redactUrlForDebug(mp.originalUrl),
+            resolvedUrl = redactUrlForDebug(mp.resolvedUrl),
             message = failedMessage,
         })
         return
@@ -2376,7 +3115,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
             src = src,
             handle = handle,
             owner = lastSource,
-            failedUrl = failedUrl,
+            failedUrl = redactUrlForDebug(failedUrl),
             message = failedMessage,
         })
         return
@@ -2386,6 +3125,15 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     local currentResolver = type(mp.resolver) == "table" and mp.resolver or {}
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
     local retryCount = tonumber(mp.localPlaybackRetryCount) or 0
+    local playbackFailureReason = classifyPlaybackError(failedMessage)
+
+    recordAutoProviderPlayback(mp, currentResolver, "failure", playbackFailureReason, nil)
+
+    if type(SuppressResolverInstance) == "function"
+        and type(currentResolver.provider) == "string"
+        and type(currentResolver.instance) == "string" then
+        SuppressResolverInstance(currentResolver.provider, currentResolver.instance, playbackFailureReason)
+    end
 
     if resolverConfig.retryOnPlaybackError == false
         or not isYoutubeLikeUrl(sourceUrl)
@@ -2395,8 +3143,8 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback retry skipped", {
             src = src,
             handle = handle,
-            sourceUrl = sourceUrl,
-            failedUrl = failedUrl,
+            sourceUrl = redactUrlForDebug(sourceUrl),
+            failedUrl = redactUrlForDebug(failedUrl),
             message = failedMessage,
             retryOnPlaybackError = resolverConfig.retryOnPlaybackError ~= false,
             isYoutubeLike = isYoutubeLikeUrl(sourceUrl),
@@ -2442,13 +3190,13 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     PMMSDebug("player", "local playback retry scheduled", {
         src = src,
         handle = handle,
-        sourceUrl = sourceUrl,
-        failedUrl = failedUrl,
+        sourceUrl = redactUrlForDebug(sourceUrl),
+        failedUrl = redactUrlForDebug(failedUrl),
         message = failedMessage,
         retryCount = retryOptions.localPlaybackRetryCount,
         avoidProvider = currentResolver.provider,
         avoidInstance = currentResolver.instance,
-        avoidResolvedUrl = failedUrl,
+        avoidResolvedUrl = redactUrlForDebug(failedUrl),
     })
 
     startMediaPlayerForClient(handle, src, retryOptions, {
@@ -2564,6 +3312,46 @@ RegisterNetEvent("pmms:setVolume", function(handle, volume)
             mp.volume = settings.volume
         end
     end)
+end)
+
+RegisterNetEvent("pmms:setAudioTrack", function(handle, audioTrack)
+    local src = source
+    handle = tonumber(handle)
+    if not handle or (not IsMediaPlayerActive(handle) and not deviceSessions[handle]) then
+        return
+    end
+    if not requirePermission(src, handle, "interact") then
+        return
+    end
+
+    local selection = normalizeAudioTrackSelection(audioTrack)
+    if not selection then
+        TriggerClientEvent("pmms:error", src, "Invalid audio track selection.")
+        return
+    end
+
+    local mp, session = getRuntimeSessionForHandle(handle)
+    if mp then
+        mp.audioTrack = cloneDeepTable(selection)
+        mp.selectedAudioTrack = cloneDeepTable(selection)
+    end
+    if session then
+        if type(session.currentTrack) == "table" then
+            session.currentTrack.audioTrack = cloneDeepTable(selection)
+            session.currentTrack.selectedAudioTrack = cloneDeepTable(selection)
+        end
+        if type(session.playerTemplate) == "table" then
+            session.playerTemplate.audioTrack = cloneDeepTable(selection)
+            session.playerTemplate.selectedAudioTrack = cloneDeepTable(selection)
+        end
+        commitDeviceSession(handle, session)
+    else
+        MarkDirty()
+    end
+
+    if pushImmediateSync then
+        pushImmediateSync()
+    end
 end)
 
 RegisterNetEvent("pmms:setAttenuation", function(handle, sameRoom, diffRoom)

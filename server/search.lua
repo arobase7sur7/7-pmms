@@ -8,6 +8,10 @@ local maxQueryLength = 200
 local searchCacheTtl = 20
 local searchResultCache = {}
 local searchInflight = {}
+local searchInstanceFailures = {
+    invidious = {},
+    piped = {},
+}
 local builtinSearchInstances = {
     invidious = {
         "https://inv.nadeko.net",
@@ -136,6 +140,56 @@ local function shuffleTable(values)
     return values
 end
 
+local function getSearchMaxInstances()
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
+    local configured = tonumber(searchConfig.maxInstances) or tonumber(resolverConfig.maxInstances) or 8
+    return math.max(1, math.min(16, math.floor(configured)))
+end
+
+local function getSearchFailureCooldownSeconds()
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
+    local configured = tonumber(searchConfig.instanceFailureCooldownSeconds)
+        or tonumber(resolverConfig.instanceFailureCooldownSeconds)
+        or 600
+    return math.max(30, math.min(3600, math.floor(configured)))
+end
+
+local function isSearchInstanceCoolingDown(provider, instance)
+    local providerFailures = searchInstanceFailures[provider]
+    if type(providerFailures) ~= "table" then
+        return false
+    end
+
+    local retryAt = providerFailures[instance]
+    if not retryAt then
+        return false
+    end
+
+    if retryAt <= os.time() then
+        providerFailures[instance] = nil
+        return false
+    end
+
+    return true
+end
+
+local function markSearchInstanceFailure(provider, instance)
+    if type(instance) ~= "string" or instance == "" then
+        return
+    end
+
+    searchInstanceFailures[provider] = searchInstanceFailures[provider] or {}
+    searchInstanceFailures[provider][instance] = os.time() + getSearchFailureCooldownSeconds()
+end
+
+local function markSearchInstanceSuccess(provider, instance)
+    if searchInstanceFailures[provider] then
+        searchInstanceFailures[provider][instance] = nil
+    end
+end
+
 local function discoverInstances(callback)
     local now = os.time()
     if now < instanceCacheExpiry and (#cachedInvidiousInstances > 0 or #cachedPipedInstances > 0) then
@@ -229,17 +283,26 @@ local function discoverInstances(callback)
     end)
 end
 
-local function searchInvidious(query, maxResults, instances, index, callback)
+local function searchInvidious(query, maxResults, instances, index, callback, attempts)
     index = index or 1
-    if index > #instances or index > 5 then
+    attempts = tonumber(attempts) or 0
+    if index > #instances or attempts >= getSearchMaxInstances() then
         callback(false, nil)
         return
     end
 
-    local apiUrl = instances[index] .. "/api/v1/search?q=" .. EncodeUrlString(query) .. "&type=video"
+    local instance = instances[index]
+    if isSearchInstanceCoolingDown("invidious", instance) then
+        searchInvidious(query, maxResults, instances, index + 1, callback, attempts)
+        return
+    end
+
+    local apiUrl = instance .. "/api/v1/search?q=" .. EncodeUrlString(query) .. "&type=video"
     performDiscoveryGet(apiUrl, function(statusCode, response)
+        local providerFailed = statusCode ~= 200 or not response
         if statusCode == 200 and response then
             local ok, data = pcall(json.decode, response)
+            providerFailed = not ok or type(data) ~= "table"
             if ok and type(data) == "table" and #data > 0 then
                 local results = {}
                 for _, item in ipairs(data) do
@@ -257,27 +320,40 @@ local function searchInvidious(query, maxResults, instances, index, callback)
                 end
 
                 if #results > 0 then
+                    markSearchInstanceSuccess("invidious", instance)
                     callback(true, results)
                     return
                 end
             end
         end
 
-        searchInvidious(query, maxResults, instances, index + 1, callback)
+        if providerFailed then
+            markSearchInstanceFailure("invidious", instance)
+        end
+        searchInvidious(query, maxResults, instances, index + 1, callback, attempts + 1)
     end)
 end
 
-local function searchPiped(query, maxResults, instances, index, callback)
+local function searchPiped(query, maxResults, instances, index, callback, attempts)
     index = index or 1
-    if index > #instances or index > 5 then
+    attempts = tonumber(attempts) or 0
+    if index > #instances or attempts >= getSearchMaxInstances() then
         callback(false, nil)
         return
     end
 
-    local apiUrl = instances[index] .. "/search?q=" .. EncodeUrlString(query) .. "&filter=videos"
+    local instance = instances[index]
+    if isSearchInstanceCoolingDown("piped", instance) then
+        searchPiped(query, maxResults, instances, index + 1, callback, attempts)
+        return
+    end
+
+    local apiUrl = instance .. "/search?q=" .. EncodeUrlString(query) .. "&filter=videos"
     performDiscoveryGet(apiUrl, function(statusCode, response)
+        local providerFailed = statusCode ~= 200 or not response
         if statusCode == 200 and response then
             local ok, data = pcall(json.decode, response)
+            providerFailed = not ok or type(data) ~= "table"
             if ok and data then
                 local items = data.items or data
                 if type(items) == "table" and #items > 0 then
@@ -303,6 +379,7 @@ local function searchPiped(query, maxResults, instances, index, callback)
                     end
 
                     if #results > 0 then
+                        markSearchInstanceSuccess("piped", instance)
                         callback(true, results)
                         return
                     end
@@ -310,7 +387,10 @@ local function searchPiped(query, maxResults, instances, index, callback)
             end
         end
 
-        searchPiped(query, maxResults, instances, index + 1, callback)
+        if providerFailed then
+            markSearchInstanceFailure("piped", instance)
+        end
+        searchPiped(query, maxResults, instances, index + 1, callback, attempts + 1)
     end)
 end
 
@@ -356,6 +436,25 @@ local function searchYoutube(query, maxResults, callback)
 end
 
 function SearchMedia(query, searchSource, maxResults, callback)
+    if searchSource == "direct" then
+        if type(query) == "string" and query:match("^https?://") then
+            callback(true, {
+                {
+                    title = query,
+                    url = query,
+                    duration = 0,
+                    author = "Direct link",
+                    thumbnail = "",
+                    source = "direct",
+                    direct = true,
+                },
+            })
+        else
+            callback(false, "Paste a direct http(s) media URL.")
+        end
+        return
+    end
+
     if searchSource == "twitch" then
         callback(true, {
             {
@@ -496,11 +595,6 @@ RegisterNetEvent("pmms:clientSearch", function(data)
         end
 
         local message = type(results) == "string" and results or "No results found. Try a different query."
-        searchResultCache[cacheKey] = {
-            success = false,
-            message = message,
-            expiresAt = os.time() + searchCacheTtl,
-        }
 
         for _, listener in ipairs(listeners) do
             if listener and listener.src then

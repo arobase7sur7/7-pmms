@@ -1,5 +1,6 @@
 local favoriteMutationState = {}
 local libraryRevisionState = {}
+local sortLibraryPlaylists
 
 local function getPlaylistConfig()
     return Config.playlists or {}
@@ -29,6 +30,10 @@ local function getFavoriteOwnerState(identifier)
             busy = false,
             queue = {},
             mutationId = 0,
+            snapshot = nil,
+            snapshotRevision = nil,
+            pendingFavoriteByPlaylist = {},
+            activeFavoriteByPlaylist = {},
         }
     end
     return favoriteMutationState[identifier]
@@ -48,6 +53,53 @@ local function nextFavoriteMutationId(identifier)
     local state = getFavoriteOwnerState(identifier)
     state.mutationId = state.mutationId + 1
     return state.mutationId
+end
+
+local function clonePlaylistRow(row)
+    local copy = {}
+    for key, value in pairs(row or {}) do
+        copy[key] = value
+    end
+
+    local isFavorite = normalizeFavoriteFlag(copy.is_favorite) == true
+    copy.is_favorite = isFavorite and 1 or 0
+    copy.isFavorite = isFavorite
+    return copy
+end
+
+local function clonePlaylistList(playlists)
+    local copy = {}
+    for index, playlist in ipairs(playlists or {}) do
+        copy[index] = clonePlaylistRow(playlist)
+    end
+    return copy
+end
+
+local function cloneLibrarySnapshot(snapshot)
+    if type(snapshot) ~= "table" then
+        return nil
+    end
+
+    return {
+        libraryRevision = tonumber(snapshot.libraryRevision) or 0,
+        playlists = clonePlaylistList(snapshot.playlists),
+        summary = {
+            playlistCount = snapshot.summary and snapshot.summary.playlistCount or 0,
+            favoriteCount = snapshot.summary and snapshot.summary.favoriteCount or 0,
+            maxPlaylists = snapshot.summary and snapshot.summary.maxPlaylists or getMaxPlaylists(),
+            maxFavorites = snapshot.summary and snapshot.summary.maxFavorites or getMaxFavoritePlaylists(),
+        },
+    }
+end
+
+local function invalidateLibrarySnapshot(identifier)
+    if not identifier then
+        return
+    end
+
+    local state = getFavoriteOwnerState(identifier)
+    state.snapshot = nil
+    state.snapshotRevision = nil
 end
 
 local function runFavoriteMutation(identifier, executor)
@@ -108,22 +160,41 @@ local function buildLibrarySummaryFromPlaylists(playlists)
 end
 
 local function finalizeLibrarySnapshot(identifier, playlists, revision, callback)
-    local normalizedPlaylists = playlists or {}
-    callback({
+    local normalizedPlaylists = clonePlaylistList(playlists)
+    sortLibraryPlaylists(normalizedPlaylists)
+
+    local snapshot = {
         libraryRevision = tonumber(revision) or getLibraryRevision(identifier),
         playlists = normalizedPlaylists,
         summary = buildLibrarySummaryFromPlaylists(normalizedPlaylists),
-    })
+    }
+
+    local ownerState = getFavoriteOwnerState(identifier)
+    ownerState.snapshot = cloneLibrarySnapshot(snapshot)
+    ownerState.snapshotRevision = snapshot.libraryRevision
+    callback(cloneLibrarySnapshot(snapshot))
 end
 
-local function fetchLibrarySnapshot(identifier, callback, attempt)
-    local snapshotAttempt = tonumber(attempt) or 0
+local function fetchLibrarySnapshot(identifier, callback, options)
+    local fetchOptions = type(options) == "table" and options or {}
+    local ownerState = getFavoriteOwnerState(identifier)
+    if fetchOptions.force ~= true
+        and ownerState.snapshot
+        and tonumber(ownerState.snapshotRevision) == getLibraryRevision(identifier) then
+        callback(cloneLibrarySnapshot(ownerState.snapshot))
+        return
+    end
+
+    local snapshotAttempt = tonumber(fetchOptions.attempt) or 0
     local initialRevision = getLibraryRevision(identifier)
 
     MySQL.query('SELECT id, name, created_at, is_favorite FROM pmms_playlists WHERE owner_license = ? ORDER BY is_favorite DESC, created_at DESC', { identifier }, function(playlists)
         local currentRevision = getLibraryRevision(identifier)
         if currentRevision ~= initialRevision and snapshotAttempt < 5 then
-            fetchLibrarySnapshot(identifier, callback, snapshotAttempt + 1)
+            fetchLibrarySnapshot(identifier, callback, {
+                force = true,
+                attempt = snapshotAttempt + 1,
+            })
             return
         end
 
@@ -151,7 +222,7 @@ local function findPlaylistById(playlists, playlistId)
     return nil
 end
 
-local function sortLibraryPlaylists(playlists)
+sortLibraryPlaylists = function(playlists)
     table.sort(playlists, function(a, b)
         local aFavorite = tonumber(a and a.is_favorite) == 1 and 1 or 0
         local bFavorite = tonumber(b and b.is_favorite) == 1 and 1 or 0
@@ -292,6 +363,206 @@ local function emitFavoriteSuccess(src, identifier, playlistId, isFavorite, muta
     emitFavoriteResult(src, identifier, playlistId, mutationId, requestId, isFavorite == true, true, nil, snapshot)
 end
 
+local function emitFavoriteToListeners(listeners, identifier, playlistId, actualFavorite, success, message, snapshot)
+    for _, listener in ipairs(listeners or {}) do
+        if success then
+            emitFavoriteSuccess(
+                listener.src,
+                identifier,
+                playlistId,
+                actualFavorite == true,
+                listener.mutationId,
+                listener.requestId,
+                snapshot
+            )
+        else
+            emitFavoriteFailure(
+                listener.src,
+                identifier,
+                playlistId,
+                actualFavorite == true,
+                listener.mutationId,
+                listener.requestId,
+                message
+            )
+        end
+    end
+end
+
+local function processFavoriteMutationEntry(identifier, entry, done)
+    local id = tonumber(entry and entry.playlistId)
+    local targetFavorite = entry and entry.targetFavorite == true
+    local listeners = entry and entry.listeners or {}
+
+    local function finish()
+        if done then
+            done()
+        end
+    end
+
+    fetchLibrarySnapshot(identifier, function(snapshot)
+        local playlists = snapshot and snapshot.playlists or {}
+        local row = findPlaylistById(playlists, id)
+
+        if not row then
+            PMMSDebug("favorites", "favorite request rejected: playlist not owned or missing", {
+                identifier = identifier,
+                playlistId = id,
+                listenerCount = #listeners,
+            })
+            for _, listener in ipairs(listeners) do
+                TriggerClientEvent('pmms:notify', listener.src, {
+                    title = "Library",
+                    text = "You can only favorite your own playlists.",
+                })
+            end
+            emitFavoriteToListeners(listeners, identifier, id, false, false, "Playlist ownership mismatch.")
+            finish()
+            return
+        end
+
+        local currentlyFavorite = tonumber(row.is_favorite) == 1
+        if currentlyFavorite == targetFavorite then
+            PMMSDebug("favorites", "favorite request already persisted", {
+                identifier = identifier,
+                playlistId = id,
+                favorite = currentlyFavorite,
+                listenerCount = #listeners,
+                libraryRevision = snapshot.libraryRevision,
+            })
+            emitFavoriteToListeners(listeners, identifier, id, currentlyFavorite, true, nil, snapshot)
+            finish()
+            return
+        end
+
+        if targetFavorite then
+            local favoriteCount = 0
+            for _, playlist in ipairs(playlists) do
+                if tonumber(playlist.is_favorite) == 1 then
+                    favoriteCount = favoriteCount + 1
+                end
+            end
+
+            local maxFavorites = getMaxFavoritePlaylists()
+            if favoriteCount >= maxFavorites then
+                PMMSDebug("favorites", "favorite request rejected: favorite limit reached", {
+                    identifier = identifier,
+                    playlistId = id,
+                    favoriteCount = favoriteCount,
+                    maxFavorites = maxFavorites,
+                    listenerCount = #listeners,
+                })
+                for _, listener in ipairs(listeners) do
+                    TriggerClientEvent('pmms:notify', listener.src, {
+                        title = "Library",
+                        text = ("You can only pin %d playlists at once."):format(maxFavorites),
+                    })
+                end
+                emitFavoriteToListeners(listeners, identifier, id, currentlyFavorite, false, "Favorite limit reached.")
+                finish()
+                return
+            end
+        end
+
+        local targetValue = targetFavorite and 1 or 0
+        MySQL.update('UPDATE pmms_playlists SET is_favorite = ? WHERE id = ? AND owner_license = ? AND is_favorite <> ?', {
+            targetValue,
+            id,
+            identifier,
+            targetValue,
+        }, function(affectedRows)
+            local changed = (tonumber(affectedRows) or 0) > 0
+            if changed then
+                bumpLibraryRevision(identifier)
+            else
+                invalidateLibrarySnapshot(identifier)
+            end
+
+            fetchLibrarySnapshot(identifier, function(nextSnapshot)
+                local nextRow = findPlaylistById(nextSnapshot and nextSnapshot.playlists or {}, id)
+                local persistedFavorite = nextRow and tonumber(nextRow.is_favorite) == 1 or false
+                if persistedFavorite ~= targetFavorite then
+                    PMMSDebug("favorites", "favorite verification failed: persisted value mismatch", {
+                        identifier = identifier,
+                        playlistId = id,
+                        targetFavorite = targetFavorite,
+                        persistedFavorite = persistedFavorite,
+                        previousFavorite = currentlyFavorite,
+                        affectedRows = affectedRows,
+                    })
+                    emitFavoriteToListeners(listeners, identifier, id, currentlyFavorite, false, "Favorite update was not saved.")
+                    finish()
+                    return
+                end
+
+                local actionLabel = targetFavorite and "pinned to favorites" or "removed from favorites"
+                PMMSDebug("favorites", "favorite persisted and snapshot refreshed", {
+                    identifier = identifier,
+                    playlistId = id,
+                    targetFavorite = targetFavorite,
+                    affectedRows = affectedRows,
+                    listenerCount = #listeners,
+                    libraryRevision = nextSnapshot and nextSnapshot.libraryRevision or nil,
+                    favoriteCount = nextSnapshot and nextSnapshot.summary and nextSnapshot.summary.favoriteCount or nil,
+                })
+                for _, listener in ipairs(listeners) do
+                    TriggerClientEvent('pmms:notify', listener.src, {
+                        title = "Library",
+                        text = ("Playlist %s."):format(actionLabel),
+                    })
+                end
+                emitFavoriteToListeners(listeners, identifier, id, targetFavorite, true, nil, nextSnapshot)
+                finish()
+            end, { force = true })
+        end)
+    end)
+end
+
+local function queueFavoriteMutation(identifier, playlistId, targetFavorite, listener)
+    local ownerState = getFavoriteOwnerState(identifier)
+    local key = tostring(playlistId)
+    local active = ownerState.activeFavoriteByPlaylist[key]
+    if active and active.targetFavorite == targetFavorite then
+        active.listeners[#active.listeners + 1] = listener
+        PMMSDebug("favorites", "favorite mutation coalesced with active request", {
+            identifier = identifier,
+            playlistId = playlistId,
+            favorite = targetFavorite,
+            listenerCount = #active.listeners,
+        })
+        return
+    end
+
+    local pending = ownerState.pendingFavoriteByPlaylist[key]
+    if pending then
+        pending.targetFavorite = targetFavorite
+        pending.listeners[#pending.listeners + 1] = listener
+        PMMSDebug("favorites", "favorite mutation coalesced with queued request", {
+            identifier = identifier,
+            playlistId = playlistId,
+            favorite = targetFavorite,
+            listenerCount = #pending.listeners,
+        })
+        return
+    end
+
+    local entry = {
+        playlistId = playlistId,
+        targetFavorite = targetFavorite == true,
+        listeners = { listener },
+    }
+    ownerState.pendingFavoriteByPlaylist[key] = entry
+
+    runFavoriteMutation(identifier, function(done)
+        ownerState.pendingFavoriteByPlaylist[key] = nil
+        ownerState.activeFavoriteByPlaylist[key] = entry
+        processFavoriteMutationEntry(identifier, entry, function()
+            ownerState.activeFavoriteByPlaylist[key] = nil
+            done()
+        end)
+    end)
+end
+
 RegisterNetEvent('pmms:getPlaylists')
 AddEventHandler('pmms:getPlaylists', function(requestId)
     local src = source
@@ -341,6 +612,7 @@ AddEventHandler('pmms:createPlaylist', function(name)
             end
 
             bumpLibraryRevision(identifier)
+            invalidateLibrarySnapshot(identifier)
 
             TriggerClientEvent('pmms:notify', src, {
                 title = "Library",
@@ -393,139 +665,12 @@ AddEventHandler('pmms:setPlaylistFavorite', function(playlistId, favorite, reque
 
     local mutationId = nextFavoriteMutationId(identifier)
     local favoriteRequestId = tonumber(requestId)
-    runFavoriteMutation(identifier, function(done)
-        fetchLibrarySnapshot(identifier, function(snapshot)
-            local playlists = snapshot and snapshot.playlists or {}
-            local row = findPlaylistById(playlists, id)
-
-            if not row then
-                PMMSDebug("favorites", "favorite request rejected: playlist not owned or missing", {
-                    src = src,
-                    identifier = identifier,
-                    playlistId = id,
-                    requestId = favoriteRequestId,
-                    mutationId = mutationId,
-                })
-                TriggerClientEvent('pmms:notify', src, {
-                    title = "Library",
-                    text = "You can only favorite your own playlists.",
-                })
-                emitFavoriteFailure(src, identifier, id, false, mutationId, favoriteRequestId, "Playlist ownership mismatch.")
-                done()
-                return
-            end
-
-            local currentlyFavorite = tonumber(row.is_favorite) == 1
-            if currentlyFavorite == targetFavorite then
-                PMMSDebug("favorites", "favorite request already persisted", {
-                    src = src,
-                    identifier = identifier,
-                    playlistId = id,
-                    requestId = favoriteRequestId,
-                    mutationId = mutationId,
-                    favorite = currentlyFavorite,
-                    libraryRevision = snapshot.libraryRevision,
-                })
-                emitFavoriteSuccess(src, identifier, id, currentlyFavorite, mutationId, favoriteRequestId, snapshot)
-                done()
-                return
-            end
-
-            local function finalizeFavorite()
-                MySQL.update('UPDATE pmms_playlists SET is_favorite = ? WHERE id = ? AND owner_license = ?', {
-                    targetFavorite and 1 or 0,
-                    id,
-                    identifier,
-                }, function()
-                    PMMSDebug("favorites", "favorite update written, verifying persisted row", {
-                        src = src,
-                        identifier = identifier,
-                        playlistId = id,
-                        requestId = favoriteRequestId,
-                        mutationId = mutationId,
-                        targetFavorite = targetFavorite,
-                    })
-                    MySQL.scalar('SELECT is_favorite FROM pmms_playlists WHERE id = ? AND owner_license = ?', {
-                        id,
-                        identifier,
-                    }, function(savedFavorite)
-                        local persistedFavorite = normalizeFavoriteFlag(savedFavorite)
-                        if persistedFavorite ~= targetFavorite then
-                            PMMSDebug("favorites", "favorite verification failed: persisted value mismatch", {
-                                src = src,
-                                identifier = identifier,
-                                playlistId = id,
-                                requestId = favoriteRequestId,
-                                mutationId = mutationId,
-                                targetFavorite = targetFavorite,
-                                savedFavorite = savedFavorite,
-                                persistedFavorite = persistedFavorite,
-                                previousFavorite = currentlyFavorite,
-                            })
-                            emitFavoriteFailure(src, identifier, id, currentlyFavorite, mutationId, favoriteRequestId, "Favorite update was not saved.")
-                            done()
-                            return
-                        end
-
-                        local actionLabel = targetFavorite and "pinned to favorites" or "removed from favorites"
-                        bumpLibraryRevision(identifier)
-                        fetchLibrarySnapshot(identifier, function(nextSnapshot)
-                            PMMSDebug("favorites", "favorite verified and snapshot refreshed", {
-                                src = src,
-                                identifier = identifier,
-                                playlistId = id,
-                                requestId = favoriteRequestId,
-                                mutationId = mutationId,
-                                targetFavorite = targetFavorite,
-                                libraryRevision = nextSnapshot and nextSnapshot.libraryRevision or nil,
-                                favoriteCount = nextSnapshot and nextSnapshot.summary and nextSnapshot.summary.favoriteCount or nil,
-                            })
-                            TriggerClientEvent('pmms:notify', src, {
-                                title = "Library",
-                                text = ("Playlist %s."):format(actionLabel),
-                            })
-                            emitFavoriteSuccess(src, identifier, id, targetFavorite, mutationId, favoriteRequestId, nextSnapshot)
-                            done()
-                        end)
-                    end)
-                end)
-            end
-
-            if not targetFavorite then
-                finalizeFavorite()
-                return
-            end
-
-            local favoriteCount = 0
-            for _, playlist in ipairs(playlists) do
-                if tonumber(playlist.is_favorite) == 1 then
-                    favoriteCount = favoriteCount + 1
-                end
-            end
-
-            local maxFavorites = getMaxFavoritePlaylists()
-            if favoriteCount >= maxFavorites then
-                PMMSDebug("favorites", "favorite request rejected: favorite limit reached", {
-                    src = src,
-                    identifier = identifier,
-                    playlistId = id,
-                    requestId = favoriteRequestId,
-                    mutationId = mutationId,
-                    favoriteCount = favoriteCount,
-                    maxFavorites = maxFavorites,
-                })
-                TriggerClientEvent('pmms:notify', src, {
-                    title = "Library",
-                    text = ("You can only pin %d playlists at once."):format(maxFavorites),
-                })
-                emitFavoriteFailure(src, identifier, id, currentlyFavorite, mutationId, favoriteRequestId, "Favorite limit reached.")
-                done()
-                return
-            end
-
-            finalizeFavorite()
-        end)
-    end)
+    queueFavoriteMutation(identifier, id, targetFavorite, {
+        src = src,
+        requestId = favoriteRequestId,
+        mutationId = mutationId,
+        requestedFavorite = targetFavorite,
+    })
 end)
 
 RegisterNetEvent('pmms:deletePlaylist')
@@ -547,6 +692,7 @@ AddEventHandler('pmms:deletePlaylist', function(playlistId)
 
         MySQL.update('DELETE FROM pmms_playlists WHERE id = ?', { playlistId }, function()
             bumpLibraryRevision(identifier)
+            invalidateLibrarySnapshot(identifier)
             TriggerClientEvent('pmms:notify', src, {
                 title = "Library",
                 text = "Playlist deleted.",
