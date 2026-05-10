@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `pmms_playlist_tracks` (
   `title` varchar(255) NOT NULL,
   `url` text NOT NULL,
   `duration` int(11) DEFAULT NULL,
+  `metadata` longtext DEFAULT NULL,
   `added_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   FOREIGN KEY (`playlist_id`) REFERENCES `pmms_playlists`(`id`) ON DELETE CASCADE

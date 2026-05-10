@@ -19,13 +19,41 @@ DuiBrowser.pool = {}
 DuiBrowser.renderTargets = {}
 DuiBrowser.scaleforms = {}
 local duiWarningTimestamps = {}
+local duiRenderStats = {
+    total = 0,
+    renderable = 0,
+    rendered = 0,
+    lastFrameMs = 0,
+    lastTickAt = 0,
+}
 
-local function getDuiRenderMaxFps()
-    return math.max(1, math.min(60, tonumber(Config.dui and Config.dui.renderMaxFps) or 30))
+local function getConfiguredDuiFps(key, fallback, minValue, maxValue)
+    local value = tonumber(Config.dui and Config.dui[key]) or fallback
+    value = math.floor(value)
+    if value < minValue then
+        value = minValue
+    elseif value > maxValue then
+        value = maxValue
+    end
+    return value
 end
 
-local function getDuiRenderIdleFps()
-    return math.max(1, math.min(30, tonumber(Config.dui and Config.dui.renderIdleFps) or 5))
+local function countDuiBrowsers()
+    local count = 0
+    for _ in pairs(DuiBrowser.pool) do
+        count = count + 1
+    end
+    return count
+end
+
+function GetDuiBrowserPerfStats()
+    return {
+        total = duiRenderStats.total,
+        renderable = duiRenderStats.renderable,
+        rendered = duiRenderStats.rendered,
+        lastFrameMs = duiRenderStats.lastFrameMs,
+        lastTickAt = duiRenderStats.lastTickAt,
+    }
 end
 
 local function redactUrlForDebug(url)
@@ -230,9 +258,11 @@ function DuiBrowser:renderFrame(drawSprite)
         SetTextRenderId(self.renderTargetHandle)
         Set_2dLayer(4)
         SetScriptGfxDrawBehindPausemenu(1)
-        DrawRect(0.5, 0.5, 1.0, 1.0, 0, 0, 0, 255)
+        -- Only clear if we're not drawing the sprite to avoid black flashes
         if drawSprite and self.txdName then
             DrawSprite(self.txdName, self.txnName, 0.5, 0.5, 1.0, 1.0, 0.0, 255, 255, 255, 255)
+        else
+            DrawRect(0.5, 0.5, 1.0, 1.0, 0, 0, 0, 255)
         end
         SetTextRenderId(GetDefaultScriptRendertargetRenderId())
         SetScriptGfxDrawBehindPausemenu(0)
@@ -277,22 +307,44 @@ function DuiBrowser:destroy()
 end
 
 Citizen.CreateThread(function()
+    local nextRenderAt = 0
+
     while true do
         local wait = 500
         if next(DuiBrowser.pool) then
             local now = GetGameTimer()
-            local activeInterval = math.floor(1000 / getDuiRenderMaxFps())
-            local idleInterval = math.floor(1000 / getDuiRenderIdleFps())
-            wait = idleInterval
-
+            local renderable = {}
             for _, browser in pairs(DuiBrowser.pool) do
                 if browser:shouldRender() then
-                    local nextRenderAt = (browser.lastRenderAt or 0) + activeInterval
-                    if now >= nextRenderAt then
-                        browser.lastRenderAt = now
-                        browser:renderFrame(true)
-                    end
-                    wait = math.min(wait, activeInterval)
+                    renderable[#renderable + 1] = browser
+                end
+            end
+
+            duiRenderStats.total = countDuiBrowsers()
+            duiRenderStats.renderable = #renderable
+            duiRenderStats.lastTickAt = now
+
+            local fps = #renderable > 0
+                and getConfiguredDuiFps("renderMaxFps", 60, 5, 60)
+                or getConfiguredDuiFps("renderIdleFps", 5, 1, 15)
+            local interval = math.floor(1000 / fps)
+            local drawEveryFrame = #renderable > 0 and fps >= 55
+
+            if #renderable > 0 and (drawEveryFrame or now >= nextRenderAt) then
+                local frameStart = GetGameTimer()
+                for _, browser in ipairs(renderable) do
+                    browser:renderFrame(true)
+                end
+                duiRenderStats.rendered = #renderable
+                duiRenderStats.lastFrameMs = GetGameTimer() - frameStart
+                nextRenderAt = drawEveryFrame and now or (now + interval)
+                wait = 0
+            else
+                duiRenderStats.rendered = 0
+                wait = math.max(0, math.min(250, nextRenderAt - now))
+                if #renderable <= 0 then
+                    wait = interval
+                    nextRenderAt = now + interval
                 end
             end
         end

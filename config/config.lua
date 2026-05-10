@@ -42,10 +42,21 @@ Config.debug = {
     search = false,
     database = false,
     target = false,
+    permissions = false,
 }
 
 Config.ui = {
     maxHistorySyncItems = 30,
+}
+
+Config.admin = {
+    quickActions = {
+        applyProfiles = true,
+        extendedRangeToggle = true,
+    },
+    logs = {
+        maxEntries = 150,
+    },
 }
 
 Config.playlists = {
@@ -64,6 +75,8 @@ Config.directLinks = {
     probeTimeoutMs = 2500,
     allowedExtensions = {
         "mp3",
+        "m4a",
+        "aac",
         "mp4",
         "m4v",
         "webm",
@@ -92,6 +105,132 @@ Config.targeting = {
     distance = 2.0,
 }
 
+Config.permissions = {
+    -- "ace" keeps the historical permissions.cfg behavior.
+    -- "qbcore" checks QBCore only, "hybrid" accepts either QBCore or ACE.
+    mode = "hybrid",
+
+    -- Extra ACE objects that count as PMMS staff/admin access.
+    -- This keeps QBCore/txAdmin servers working even when they grant broad
+    -- admin permissions before resource-specific pmms.* aces are added.
+    adminAceFallbacks = { "command", "god", "admin", "qbcore.god", "qbcore.admin", "command.tpm", "command.addpermission" },
+
+    -- Direct permission grants by identifier.
+    -- To find your identifier, run /pmmsdebug in-game and check the server console.
+    adminIdentifiers = {
+        "license:YOUR_LICENSE_HEX_HERE",
+    },
+    staffIdentifiers = {
+        -- "license:...",
+    },
+
+
+    qbcore = {
+        enabled = true,
+        resource = "qb-core",
+        aceFallback = true,
+        adminPermissions = { "god", "admin" },
+        permissionMap = {
+            manage = { "god", "admin" },
+            overrideDevice = { "god", "admin" },
+            anyEntity = { "god", "admin" },
+            anyUrl = { "god", "admin" },
+            customUrl = { "god", "admin" },
+            interact = {},
+        },
+        jobs = {
+            -- Example:
+            -- manage = { police = 4, mechanic = { minGrade = 3 } },
+        },
+        gangs = {
+            -- Example:
+            -- interact = { ballas = 1 },
+        },
+    },
+}
+
+Config.deviceProfiles = {
+    club = {
+        label = "Club",
+        range = 80.0,
+        volume = 80,
+        maxVolume = 100,
+        loopMode = "queue",
+        requestMode = "pending",
+    },
+    dj_booth = {
+        label = "DJ Booth",
+        range = 65.0,
+        volume = 85,
+        maxVolume = 100,
+        loopMode = "queue",
+        requestMode = "pending",
+    },
+    cinema = {
+        label = "Cinema",
+        range = 120.0,
+        volume = 70,
+        videoOnly = true,
+        requestMode = "disabled",
+    },
+    radio = {
+        label = "Radio",
+        range = 45.0,
+        volume = 60,
+        loopMode = "queue",
+        requestMode = "queue",
+    },
+    vehicle = {
+        label = "Vehicle",
+        range = 35.0,
+        volume = 65,
+        isVehicle = true,
+        requestMode = "queue",
+    },
+    event = {
+        label = "Event",
+        range = 150.0,
+        volume = 80,
+        maxVolume = 100,
+        loopMode = "queue",
+        requestMode = "pending",
+    },
+    staff = {
+        label = "Staff Device",
+        range = 60.0,
+        volume = 75,
+        adminLock = { mode = "admin" },
+        requestMode = "disabled",
+    },
+    public = {
+        label = "Public Device",
+        range = 30.0,
+        volume = 60,
+        requestMode = "queue",
+    },
+}
+
+Config.requests = {
+    enabled = true,
+    defaultMode = "queue", -- queue | pending | disabled
+    maxPendingPerPlayer = 3,
+    pendingExpireSeconds = 600,
+    hostCanApprove = true,
+    approverJobs = {
+        -- Example:
+        -- police = 2,
+    },
+}
+
+Config.speakers = {
+    enabled = true,
+    normalPlayerLimit = 1,
+    staffLimit = -1, -- -1 = unlimited
+    persistentForStaffDevices = true,
+    avoidEcho = true,
+    propModel = Config.defaultModel or "sf_prop_sf_speaker_l_01a",
+}
+
 -- ═══════════════════════════════════════════════════════════════
 --  AUDIO
 -- ═══════════════════════════════════════════════════════════════
@@ -110,7 +249,7 @@ Config.dui = {
     screenWidth  = 1280,
     screenHeight = 720,
     timeout      = 30000,
-    renderMaxFps = 30,
+    renderMaxFps = 60,
     renderIdleFps = 5,
     renderDistanceBuffer = 5.0,
     cacheRuntimeAssets = true,
@@ -204,7 +343,7 @@ Config.resolver = {
     allowAudioFallback = true,
 
     -- Embedded YouTube can show ads or hang in DUI. Keep it opt-in.
-    allowEmbedFallback = false,
+    allowEmbedFallback = true,
 
     -- Legacy switch for resolver fallback behavior. Embedded fallback still requires allowEmbedFallback.
     fallbackOnFailure = true,
@@ -257,7 +396,7 @@ Config.defaultMediaPlayerSpawnDistance = Config.maxRange + 10.0
 --  DEFAULT MODEL
 -- ═══════════════════════════════════════════════════════════════
 
-Config.defaultModel = "prop_boombox_01"
+Config.defaultModel = "sf_prop_sf_speaker_l_01a"
 
 -- ═══════════════════════════════════════════════════════════════
 --  ENTITY MODELS
@@ -265,83 +404,79 @@ Config.defaultModel = "prop_boombox_01"
 
 Config.models = {
     -- Audio devices
-    ["prop_radio_01"]         = { label = "Radio", width = 128, height = 128 },
-    ["prop_boombox_01"]       = { label = "Boombox", width = 128, height = 128 },
-    ["prop_portable_hifi_01"] = { label = "Boombox", width = 128, height = 128 },
-    ["prop_ghettoblast_01"]   = { label = "Boombox", width = 128, height = 128 },
-    ["prop_ghettoblast_02"]   = { label = "Boombox", width = 128, height = 128 },
-    ["prop_tapeplayer_01"]    = { label = "Tape Player", width = 128, height = 128 },
-    ["prop_mp3_dock"]         = { label = "MP3 Dock", width = 128, height = 128 },
-    ["v_res_mm_audio"]        = { label = "MP3 Dock", width = 128, height = 128 },
-    ["v_res_j_radio"]         = { label = "Radio", width = 128, height = 128 },
-    ["v_res_fa_radioalrm"]    = { label = "Alarm Clock", width = 128, height = 128 },
-    ["sm_prop_smug_radio_01"] = { label = "Radio", width = 128, height = 128 },
+    ["prop_radio_01"]         = { label = "Radio", width = 128, height = 128, isPlaceable = true },
+    ["prop_boombox_01"]       = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_portable_hifi_01"] = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_ghettoblast_01"]   = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_ghettoblast_02"]   = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_tapeplayer_01"]    = { label = "Tape Player", width = 128, height = 128, isPlaceable = true },
+    ["prop_mp3_dock"]         = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
+    ["v_res_mm_audio"]        = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
+    ["v_res_j_radio"]         = { label = "Radio", width = 128, height = 128, isPlaceable = true },
+    ["v_res_fa_radioalrm"]    = { label = "Alarm Clock", width = 128, height = 128, isPlaceable = true },
+    ["sm_prop_smug_radio_01"] = { label = "Radio", width = 128, height = 128, isPlaceable = true },
 
     -- Jukeboxes
-    ["bkr_prop_clubhouse_jukebox_01a"] = { label = "Jukebox" },
-    ["bkr_prop_clubhouse_jukebox_01b"] = { label = "Jukebox" },
-    ["bkr_prop_clubhouse_jukebox_02a"] = { label = "Jukebox" },
-    ["ch_prop_arcade_jukebox_01a"]     = { label = "Jukebox" },
-    ["prop_50s_jukebox"]               = { label = "Jukebox" },
-    ["prop_jukebox_01"]                = { label = "Jukebox" },
+    ["bkr_prop_clubhouse_jukebox_01a"] = { label = "Jukebox", isPlaceable = true },
+    ["bkr_prop_clubhouse_jukebox_01b"] = { label = "Jukebox", isPlaceable = true },
+    ["bkr_prop_clubhouse_jukebox_02a"] = { label = "Jukebox", isPlaceable = true },
+    ["ch_prop_arcade_jukebox_01a"]     = { label = "Jukebox", isPlaceable = true },
+    ["prop_50s_jukebox"]               = { label = "Jukebox", isPlaceable = true },
+    ["prop_jukebox_01"]                = { label = "Jukebox", isPlaceable = true },
 
     -- TVs
-    ["ex_prop_ex_tv_flat_01"]  = { label = "TV", renderTarget = "ex_tvscreen" },
-    ["prop_tv_flat_01"]        = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_02"]        = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_02b"]       = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_03"]        = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_03b"]       = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_michael"]   = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_trev_tv_01"]        = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_02"]             = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_03"]             = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_03_overlay"]     = { label = "TV", renderTarget = "tvscreen" },
-    ["des_tvsmash_start"]      = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_flatscreen_overlay"] = { label = "TV", renderTarget = "tvscreen" },
-    ["prop_tv_flat_01_screen"] = { label = "TV", renderTarget = "tvscreen" },
-    ["vw_prop_vw_cinema_tv_01"] = { label = "TV", renderTarget = "tvscreen" },
-    ["ch_prop_ch_tv_rt_01a"]   = { label = "TV", renderTarget = "ch_tv_rt_01a" },
+    ["ex_prop_ex_tv_flat_01"]  = { label = "TV", renderTarget = "ex_tvscreen", isPlaceable = true },
+    ["prop_tv_flat_01"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_02"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_02b"]       = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_03"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_03b"]       = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_michael"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_trev_tv_01"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_02"]             = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_01_screen"] = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["vw_prop_vw_cinema_tv_01"] = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["ch_prop_ch_tv_rt_01a"]   = { label = "TV", renderTarget = "ch_tv_rt_01a", isPlaceable = true },
 
     -- Monitors
-    ["prop_monitor_w_large"]   = { label = "Monitor", renderTarget = "tvscreen" },
-    ["prop_monitor_02"  ]        = { label = "Monitor", renderTarget = "tvscreen" },
+    ["prop_monitor_w_large"]   = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_monitor_02"]        = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
 
     -- Laptops
-    ["prop_laptop_lester2"]    = { label = "Laptop", renderTarget = "tvscreen" },
-    ["hei_prop_hst_laptop"]    = { label = "Laptop", renderTarget = "tvscreen" },
-    ["hei_bank_heist_laptop"]  = { label = "Laptop", renderTarget = "tvscreen" },
-    ["gr_prop_gr_laptop_01a"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_01a" },
-    ["gr_prop_gr_laptop_01b"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_sq_01a" },
-    ["imp_prop_impexp_lappy_01a"] = { label = "Laptop", renderTarget = "prop_impexp_lappy_01a" },
-    ["bkr_prop_clubhouse_laptop_01a"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_01a" },
-    ["bkr_prop_clubhouse_laptop_01b"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_square_01a" },
-    ["ba_prop_club_laptop_dj"]    = { label = "Laptop", renderTarget = "laptop_dj" },
-    ["ba_prop_club_laptop_dj_02"] = { label = "Laptop", renderTarget = "laptop_dj_02" },
+    ["prop_laptop_lester2"]    = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_prop_hst_laptop"]    = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_bank_heist_laptop"]  = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["gr_prop_gr_laptop_01a"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_01a", isPlaceable = true },
+    ["gr_prop_gr_laptop_01b"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_sq_01a", isPlaceable = true },
+    ["imp_prop_impexp_lappy_01a"] = { label = "Laptop", renderTarget = "prop_impexp_lappy_01a", isPlaceable = true },
+    ["bkr_prop_clubhouse_laptop_01a"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_01a", isPlaceable = true },
+    ["bkr_prop_clubhouse_laptop_01b"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_square_01a", isPlaceable = true },
+    ["ba_prop_club_laptop_dj"]    = { label = "Laptop", renderTarget = "laptop_dj", isPlaceable = true },
+    ["ba_prop_club_laptop_dj_02"] = { label = "Laptop", renderTarget = "laptop_dj_02", isPlaceable = true },
 
     -- Tablets
-    ["hei_prop_dlc_tablet"]    = { label = "Tablet", renderTarget = "tablet" },
-    ["ba_prop_battle_hacker_screen"] = { label = "Tablet", renderTarget = "prop_battle_touchscreen_rt" },
+    ["hei_prop_dlc_tablet"]    = { label = "Tablet", renderTarget = "tablet", isPlaceable = true },
+    ["ba_prop_battle_hacker_screen"] = { label = "Tablet", renderTarget = "prop_battle_touchscreen_rt", isPlaceable = true },
 
     -- Cinema screens
-    ["prop_big_cin_screen"]    = { label = "Cinema", renderTarget = "cinscreen" },
-    ["v_ilev_cin_screen"]      = { label = "Cinema", renderTarget = "cinscreen" },
+    ["prop_big_cin_screen"]    = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
+    ["v_ilev_cin_screen"]      = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
 
     -- Projectors
-    ["v_ilev_lest_bigscreen"]  = { label = "Projector", renderTarget = "tvscreen" },
-    ["v_ilev_mm_screen"]       = { label = "Projector", renderTarget = "big_disp" },
-    ["v_ilev_mm_screen2"]      = { label = "Projector", renderTarget = "tvscreen" },
-    ["hei_prop_dlc_heist_board"] = { label = "Projector", renderTarget = "heist_brd" },
+    ["v_ilev_lest_bigscreen"]  = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
+    ["v_ilev_mm_screen"]       = { label = "Projector", renderTarget = "big_disp", isPlaceable = true },
+    ["v_ilev_mm_screen2"]      = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_prop_dlc_heist_board"] = { label = "Projector", renderTarget = "heist_brd", isPlaceable = true },
 
     -- Computers
-    ["ba_prop_battle_club_computer_01"] = { label = "Computer", renderTarget = "club_computer" },
-    ["sm_prop_smug_monitor_01"] = { label = "Computer", renderTarget = "smug_monitor_01" },
-    ["ex_prop_monitor_01_ex"]  = { label = "Computer", renderTarget = "prop_ex_computer_screen" },
+    ["ba_prop_battle_club_computer_01"] = { label = "Computer", renderTarget = "club_computer", isPlaceable = true },
+    ["sm_prop_smug_monitor_01"] = { label = "Computer", renderTarget = "smug_monitor_01", isPlaceable = true },
+    ["ex_prop_monitor_01_ex"]  = { label = "Computer", renderTarget = "prop_ex_computer_screen", isPlaceable = true },
 
     -- Large displays
-    ["prop_huge_display_01"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080 },
-    ["prop_huge_display_02"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080 },
-    ["xs_prop_arena_bigscreen_01"] = { label = "Jumbotron", renderTarget = "bigscreen_01", width = 1920, height = 1080 },
+    ["prop_huge_display_01"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
+    ["prop_huge_display_02"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
+    ["xs_prop_arena_bigscreen_01"] = { label = "Jumbotron", renderTarget = "bigscreen_01", width = 1920, height = 1080, isPlaceable = true },
 
     -- Bunker / Trailer monitors
     ["gr_prop_gr_trailer_monitor_01"] = { label = "Monitor", renderTarget = "gr_trailer_monitor_01" },
@@ -401,11 +536,11 @@ Config.models = {
     ["xs_prop_arena_screen_tv_01"] = { label = "TV", renderTarget = "screen_tv_01" },
 
     -- Arcade machines
-    ["vw_prop_vw_arcade_01_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_01a_screen" },
-    ["vw_prop_vw_arcade_02_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_02a_screen" },
-    ["vw_prop_vw_arcade_02b_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02b_screen" },
-    ["vw_prop_vw_arcade_02c_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02c_screen" },
-    ["vw_prop_vw_arcade_02d_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02d_screen" },
+    ["vw_prop_vw_arcade_01_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_01a_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_02a_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02b_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02b_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02c_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02c_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02d_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02d_screen", isPlaceable = true },
 
     -- Apartments / High-end TVs
     ["apa_mp_h_str_avunitl_01_b"] = { label = "TV", renderTarget = "tvscreen" },
@@ -441,6 +576,15 @@ Config.searchSources = {
         maxResults = 10,
         cooldown = 2,
     },
+    ["youtube_embed"] = {
+        label = "YouTube Embed",
+        enabled = true,
+        icon = "video",
+        placeholder = "Search YouTube (embed)...",
+        maxResults = 10,
+        cooldown = 2,
+        youtubeProvider = "embed",
+    },
     ["soundcloud"] = {
         label = "SoundCloud",
         enabled = true,
@@ -466,7 +610,70 @@ Config.searchSources = {
         placeholder = "Paste a direct media URL...",
         maxResults = 1,
         cooldown = 0,
+    },
+    ["radio"] = {
+        label = "Radio",
+        enabled = true,
+        icon = "radio",
+        placeholder = "Search radio stations...",
+        maxResults = 20,
+        cooldown = 2,
     }
+}
+
+-- ═══════════════════════════════════════════════════════════════
+--  EQUALIZER
+-- ═══════════════════════════════════════════════════════════════
+
+Config.equalizer = {
+    -- Enable/disable the equalizer system globally.
+    enabled = true,
+
+    -- Maximum number of custom presets a player can save.
+    maxCustomPresets = 5,
+
+    -- Default EQ state applied when no profile exists for a player.
+    defaultEnabled    = false,
+    defaultPreampDb   = 0.0,
+    defaultHighpass   = false,
+    defaultCompressor = false,
+
+    -- 10-band frequencies (Hz), low to high. Matches the slider order in the UI.
+    bands = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 },
+
+    -- Default per-band gain in dB (flat).
+    defaultBands = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+
+    -- Min/max dB range for the sliders.
+    bandMinDb = -12,
+    bandMaxDb = 12,
+    preampMinDb = -12,
+    preampMaxDb = 12,
+
+    -- Built-in presets.  key = preset id, bands = 10 dB values.
+    presets = {
+        { id = "flat",         label = "Flat",         bands = {  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 } },
+        { id = "rock",         label = "Rock",         bands = {  4,  3, -2, -3,  1,  3,  5,  4,  2,  1 } },
+        { id = "pop",          label = "Pop",          bands = { -1,  2,  4,  4,  2,  0, -1,  2,  3,  3 } },
+        { id = "hiphop",       label = "Hip-Hop",      bands = {  5,  5,  3,  1, -1,  0,  2,  3,  2,  1 } },
+        { id = "jazz",         label = "Jazz",         bands = {  3,  2,  1,  2, -1, -1,  0,  1,  2,  3 } },
+        { id = "classical",    label = "Classical",    bands = {  0,  0,  0,  1,  2,  2,  1,  1,  2,  3 } },
+        { id = "electronic",   label = "Electronic",   bands = {  4,  3,  1,  0, -2,  1,  3,  4,  4,  3 } },
+        { id = "bass_boost",   label = "Bass Boost",   bands = {  7,  6,  5,  3,  1,  0,  0,  0,  0,  0 } },
+        { id = "treble_boost", label = "Treble Boost", bands = {  0,  0,  0,  0,  0,  1,  2,  4,  6,  7 } },
+        { id = "podcast",      label = "Podcast",      bands = { -6, -4, -2,  1,  3,  4,  3,  1, -1, -3 } },
+        { id = "night_mode",   label = "Night Mode",   bands = { -4, -3, -2, -1,  0,  1,  1,  0, -1, -2 } },
+        { id = "radio",        label = "Radio",        bands = { -5, -3,  1,  3,  2,  1,  2,  3, -2, -5 } },
+    },
+}
+
+-- ═══════════════════════════════════════════════════════════════
+--  SPEAKERS MODEL LIST (for admin picker)
+-- ═══════════════════════════════════════════════════════════════
+
+Config.speakers.models = Config.speakers.models or {
+    { model = "sf_prop_sf_speaker_l_01a", label = "Large Speaker" },
+    { model = "prop_speaker_01a",         label = "Speaker" },
 }
 
 Config.audioVisualizations = {

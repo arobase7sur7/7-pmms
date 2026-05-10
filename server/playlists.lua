@@ -726,7 +726,20 @@ AddEventHandler('pmms:getPlaylistTracks', function(playlistId)
             return
         end
 
-        MySQL.query('SELECT id, title, url, duration, added_at FROM pmms_playlist_tracks WHERE playlist_id = ? ORDER BY added_at ASC', { playlistId }, function(tracks)
+        MySQL.query('SELECT id, title, url, duration, metadata, added_at FROM pmms_playlist_tracks WHERE playlist_id = ? ORDER BY added_at ASC', { playlistId }, function(tracks)
+            for _, track in ipairs(tracks or {}) do
+                if type(track.metadata) == "string" and track.metadata ~= "" then
+                    local ok, metadata = pcall(json.decode, track.metadata)
+                    if ok and type(metadata) == "table" then
+                        for key, value in pairs(metadata) do
+                            if track[key] == nil then
+                                track[key] = value
+                            end
+                        end
+                    end
+                end
+                track.metadata = nil
+            end
             TriggerClientEvent('pmms:setPlaylistTracks', src, playlistId, tracks or {})
         end)
     end)
@@ -767,12 +780,21 @@ AddEventHandler('pmms:addTrack', function(playlistId, trackData)
             local duration = tonumber(trackData.duration) or 0
             local title = string.sub(trackData.title, 1, 100)
             local url = string.sub(trackData.url, 1, 500)
+            local metadata = {
+                author = trackData.author,
+                thumbnail = trackData.thumbnail,
+                source = trackData.source,
+                live = trackData.live == true,
+                radio = trackData.radio == true,
+                video = trackData.video ~= false,
+            }
 
-            MySQL.insert('INSERT INTO pmms_playlist_tracks (playlist_id, title, url, duration) VALUES (?, ?, ?, ?)', {
+            MySQL.insert('INSERT INTO pmms_playlist_tracks (playlist_id, title, url, duration, metadata) VALUES (?, ?, ?, ?, ?)', {
                 playlistId,
                 title,
                 url,
                 duration,
+                json.encode(metadata),
             }, function()
                 TriggerClientEvent('pmms:notify', src, {
                     title = "Library",

@@ -1,4 +1,4 @@
-﻿const maxTimeDifference = 2;
+const maxTimeDifference = 2;
 
 var resourceName = 'pmms';
 const RANGE_ENTER_BUFFER = 1.0;
@@ -1347,6 +1347,7 @@ function finishStartupAttempt(player, handle, result, details) {
         clearStartupWatchdog(player);
         clearStartupSignalHandlers(player);
         notifyStartupReady(handle, currentAttemptId, currentPlaybackToken, details && details.metadata ? details.metadata : {});
+        removeStalePlayersForHandle(handle);
         callMediaPlaybackMethod(player, 'pause');
         return true;
     }
@@ -1460,6 +1461,27 @@ function isProviderBackedStartup(options, media) {
         || sourceUrl.indexOf('invidious') !== -1
         || sourceUrl.indexOf('piped.video') !== -1
         || sourceUrl.indexOf('/watch?v=') !== -1;
+}
+
+function isRecoverableReadFailureMessage(message) {
+    var text = String(message || '').toLowerCase();
+    return text.indexOf('pipeline_error_read') !== -1
+        || text.indexOf('ffmpegdemuxer') !== -1
+        || text.indexOf('data source error') !== -1
+        || text.indexOf('mediaerrorcode=2') !== -1
+        || text.indexOf('networkstate=3') !== -1
+        || text.indexOf('net::') !== -1
+        || text.indexOf('err_') !== -1
+        || text.indexOf('failed to fetch') !== -1
+        || text.indexOf('read failure') !== -1;
+}
+
+function isRecoverablePlaybackFailure(message, options, media) {
+    if (!isRecoverableReadFailureMessage(message)) {
+        return false;
+    }
+    return isProviderBackedStartup(options, media)
+        || !!(media && media.pmms && media.pmms.providerBackedStartup);
 }
 
 function resolveStartupTimeoutMs(timeoutMs) {
@@ -2156,6 +2178,57 @@ function removePlayer(player) {
     if (player.parentNode) {
         player.remove();
     }
+
+    if (!document.querySelector('[data-pmms-stale-handle]') && !document.querySelector('.pmms-recovering')) {
+        document.body.classList.remove('pmms-recovering-source');
+    }
+}
+
+function removeStalePlayersForHandle(handle) {
+    var selector = '[data-pmms-stale-handle="' + String(handle).replace(/"/g, '\\"') + '"]';
+    var stalePlayers = document.querySelectorAll(selector);
+    stalePlayers.forEach(function(player) {
+        removePlayer(player);
+    });
+    if (!document.querySelector('[data-pmms-stale-handle]')) {
+        document.body.classList.remove('pmms-recovering-source');
+    }
+}
+
+function parkStalePlayerForRecovery(player, handle) {
+    if (!player || !player.parentNode || !player.pmms) {
+        return false;
+    }
+
+    player.pmms.recovering = true;
+    player.pmms.localRecoveryPending = true;
+    player.pmms.staleRecovery = true;
+    clearStartupTracking(player);
+    stopVideoHealthMonitor(player);
+    cleanupAudioGraph(player);
+
+    try {
+        setVolume(player, 0);
+        callMediaPlaybackMethod(player, 'pause');
+    } catch (_) {}
+
+    var staleId = getCanonicalPlayerId(handle) + '_stale_' + String(Date.now());
+    player.id = staleId;
+    player.dataset.pmmsStaleHandle = String(handle);
+    player.classList.add('pmms-stale-recovery');
+    player.style.pointerEvents = 'none';
+    document.body.classList.add('pmms-recovering-source');
+
+    window.setTimeout(function() {
+        if (player && player.parentNode && player.pmms && player.pmms.staleRecovery) {
+            removePlayer(player);
+            if (!document.querySelector('[data-pmms-stale-handle]')) {
+                document.body.classList.remove('pmms-recovering-source');
+            }
+        }
+    }, 20000);
+
+    return true;
 }
 
 function getHlsLevelDetails(media) {
@@ -2583,6 +2656,7 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
             var reportPlaybackFailure = function(message) {
                 hideLoadingIcon();
                 var diagnosticMessage = appendMediaDiagnostics(message, media);
+                var recoverable = isRecoverablePlaybackFailure(diagnosticMessage, options, media);
 
                 if (media.pmms.startupAttemptId && !media.pmms.startupReadySent) {
                     if (!finishStartupAttempt(
@@ -2600,6 +2674,19 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
                     }
                 } else {
                     notifyLocalError(handle, options.url, diagnosticMessage, media.pmms.playbackToken);
+                    if (recoverable) {
+                        media.pmms.recovering = true;
+                        media.pmms.localRecoveryPending = true;
+                        media.classList.add('pmms-recovering');
+                        document.body.classList.add('pmms-recovering-source');
+                        showLoadingIcon();
+                        debugLog('dui_browser', 'recoverable local playback error reported without teardown', {
+                            handle: handle,
+                            url: redactUrlForDebug(options.url),
+                            message: diagnosticMessage
+                        });
+                        return;
+                    }
                 }
 
                 removePlayer(media);
@@ -2791,6 +2878,11 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
 
                 if (options.visualization && !media.pmms.visualizationAdded) {
                     createAudioVisualization(media, options.visualization);
+                }
+
+                if (!media.pmms.eqAdded) {
+                    eqGraph.connectMedia(getMediaElementNode(media) || media);
+                    media.pmms.eqAdded = true;
                 }
             });
 
@@ -2985,6 +3077,16 @@ function startup(data) {
         resolver: data.options.resolver || null,
         startupTimeoutMs: data.options.startupTimeoutMs
     });
+
+    var existing = document.getElementById(getCanonicalPlayerId(data.handle));
+    if (existing && existing.pmms && existing.pmms.currentUrl && existing.pmms.currentUrl !== data.options.url) {
+        if (existing.pmms.localRecoveryPending || existing.pmms.recovering || isProviderBackedStartup(data.options, existing)) {
+            parkStalePlayerForRecovery(existing, data.handle);
+        } else {
+            removePlayer(existing);
+        }
+    }
+
     getPlayer(data.handle, data.options, data.attemptId, data.options.playbackToken, data.options.startupTimeoutMs);
 }
 
@@ -2993,6 +3095,7 @@ function stop(handle) {
     if (player) {
         removePlayer(player);
     }
+    removeStalePlayersForHandle(handle);
 }
 
 function update(data) {
@@ -3013,6 +3116,14 @@ function update(data) {
     }
 
     if (player.pmms && player.pmms.currentUrl && player.pmms.currentUrl !== data.options.url) {
+        if (player.pmms.startupAttemptId && !player.pmms.startupReadySent) {
+            debugLog('dui_browser', 'update ignored while replacement startup is loading', {
+                handle: data.handle,
+                currentUrl: redactUrlForDebug(player.pmms.currentUrl),
+                updateUrl: redactUrlForDebug(data.options.url)
+            });
+            return;
+        }
         removePlayer(player);
         player = getPlayer(data.handle, data.options, null, data.options.playbackToken || null, null);
         if (!player) {
@@ -3145,6 +3256,176 @@ function update(data) {
     setMediaDisplay(player, data.options.video !== false);
 }
 
+// ── EQ Audio Graph ─────────────────────────────────────────────────────────────
+var eqGraph = (function () {
+    var ctx = null;
+    var preamp = null;
+    var highpass = null;
+    var bands = [];
+    var compressor = null;
+    var analyser = null;
+    var analyserActive = false;
+    var analyserFrameId = null;
+    var BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+    var RAMP_TIME = 0.05; // seconds for smooth param changes
+
+    function getCtx() {
+        if (!ctx) {
+            try {
+                ctx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (_) {}
+        }
+        return ctx;
+    }
+
+    function ensureGraph() {
+        var actx = getCtx();
+        if (!actx || preamp) return;
+        preamp = actx.createGain();
+        preamp.gain.value = 1.0;
+
+        highpass = actx.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 80;
+        highpass.Q.value = 0.7;
+
+        var prev = preamp;
+        // bypass highpass initially – connect directly
+        prev.connect(actx.destination); // placeholder, rewired below
+
+        for (var i = 0; i < 10; i++) {
+            var f = actx.createBiquadFilter();
+            f.type = i === 0 ? 'lowshelf' : i === 9 ? 'highshelf' : 'peaking';
+            f.frequency.value = BAND_FREQS[i];
+            f.gain.value = 0;
+            f.Q.value = 1.2;
+            bands.push(f);
+        }
+
+        compressor = actx.createDynamicsCompressor();
+        compressor.threshold.value = -18;
+        compressor.knee.value = 6;
+        compressor.ratio.value = 3;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        analyser = actx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+
+        // Connect: preamp → (optional highpass) → bands[0..9] → (optional compressor) → analyser → destination
+        rebuildChain(false, false);
+    }
+
+    function rebuildChain(hpEnabled, compEnabled) {
+        var actx = getCtx();
+        if (!actx || !preamp) return;
+        // Disconnect all
+        try { preamp.disconnect(); } catch (_) {}
+        try { if (highpass) highpass.disconnect(); } catch (_) {}
+        for (var i = 0; i < bands.length; i++) {
+            try { bands[i].disconnect(); } catch (_) {}
+        }
+        try { if (compressor) compressor.disconnect(); } catch (_) {}
+
+        var chain = [preamp];
+        if (hpEnabled && highpass) chain.push(highpass);
+        for (var j = 0; j < bands.length; j++) chain.push(bands[j]);
+        if (compEnabled && compressor) chain.push(compressor);
+        chain.push(analyser);
+
+        for (var k = 0; k < chain.length - 1; k++) {
+            chain[k].connect(chain[k + 1]);
+        }
+        analyser.connect(actx.destination);
+    }
+
+    function dbToGain(db) {
+        return Math.pow(10, db / 20);
+    }
+
+    function ramp(param, value, actx) {
+        var now = actx.currentTime;
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(param.value, now);
+        param.linearRampToValueAtTime(value, now + RAMP_TIME);
+    }
+
+    function applyProfile(profile) {
+        ensureGraph();
+        var actx = getCtx();
+        if (!actx || !preamp) return;
+
+        if (!profile || !profile.enabled) {
+            // Neutral: flat preamp, flat bands
+            ramp(preamp.gain, 1.0, actx);
+            for (var i = 0; i < bands.length; i++) {
+                ramp(bands[i].gain, 0, actx);
+            }
+            return;
+        }
+
+        var preampDb = Number(profile.preampDb) || 0;
+        ramp(preamp.gain, dbToGain(preampDb), actx);
+
+        var profileBands = Array.isArray(profile.bands) ? profile.bands : [];
+        for (var j = 0; j < bands.length; j++) {
+            ramp(bands[j].gain, Number(profileBands[j]) || 0, actx);
+        }
+
+        rebuildChain(profile.highpassEnabled === true, profile.compressorEnabled === true);
+    }
+
+    function connectMedia(mediaEl) {
+        ensureGraph();
+        var actx = getCtx();
+        if (!actx || !preamp) return null;
+        try {
+            var src = actx.createMediaElementSource(mediaEl);
+            src.connect(preamp);
+            return src;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function startAnalyserStream() {
+        if (analyserFrameId) return;
+        var buf = null;
+        function frame() {
+            if (!analyserActive || !analyser) { analyserFrameId = null; return; }
+            if (!buf || buf.length !== analyser.frequencyBinCount) {
+                buf = new Float32Array(analyser.frequencyBinCount);
+            }
+            analyser.getFloatFrequencyData(buf);
+            // Post to parent window (NUI) via fetch postMessage bridge
+            try {
+                window.parent.postMessage({ type: 'eqAnalyserFrame', bins: Array.from(buf) }, '*');
+            } catch (_) {}
+            analyserFrameId = requestAnimationFrame(frame);
+        }
+        analyserFrameId = requestAnimationFrame(frame);
+    }
+
+    function stopAnalyserStream() {
+        if (analyserFrameId) {
+            cancelAnimationFrame(analyserFrameId);
+            analyserFrameId = null;
+        }
+    }
+
+    return {
+        applyProfile: applyProfile,
+        connectMedia: connectMedia,
+        setAnalyserActive: function (active) {
+            analyserActive = !!active;
+            if (analyserActive) startAnalyserStream();
+            else stopAnalyserStream();
+        },
+    };
+})();
+// ──────────────────────────────────────────────────────────────────────────────
+
 window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data || !data.type) {
@@ -3164,8 +3445,15 @@ window.addEventListener('message', function (event) {
         case 'DuiBrowser:init':
             sendMessage('DuiBrowser:initDone', { handle: data.handle });
             break;
+        case 'applyEqProfile':
+            eqGraph.applyProfile(data.profile);
+            break;
+        case 'setEqAnalyserActive':
+            eqGraph.setAnalyserActive(data.active);
+            break;
     }
 });
+
 
 window.addEventListener('load', function () {
     setResourceNameFromUrl();

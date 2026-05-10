@@ -1,6 +1,7 @@
 local mediaPlayerStates = {}
 local startupStates = {}
 local deviceSessions = {}
+local adminSyncState = nil
 local modelSettings = {}
 local defaultMediaPlayers = {}
 local disabledStaticEmitters = {}
@@ -11,6 +12,14 @@ local failedPlayers = {}
 local handleRangeState = {}
 local cachedUsableMediaPlayers = {}
 local lastUsableMediaPlayersBuild = 0
+local lastUiOpenSignature = nil
+local lastUiClosedSignature = nil
+local lastUiOpenSendAt = 0
+local lastUiClosedSendAt = 0
+local lastUiPayloadSize = 0
+local hudEnabled = GetResourceKvpInt("pmms_hud_enabled") ~= 0
+local lastHudUpdateAt = 0
+local lastHudSignature = nil
 
 local function countTableEntries(value)
     local count = 0
@@ -20,6 +29,154 @@ local function countTableEntries(value)
         end
     end
     return count
+end
+
+local function appendSortedStateSummary(parts, prefix, value, mapper)
+    local rows = {}
+    if type(value) == "table" then
+        for key, item in pairs(value) do
+            rows[#rows + 1] = tostring(mapper(key, item))
+        end
+    end
+    table.sort(rows)
+    parts[#parts + 1] = prefix .. ":" .. table.concat(rows, ",")
+end
+
+local function permissionSignature(permissions)
+    local parts = {}
+    for _, key in ipairs({ "interact", "anyEntity", "customUrl", "anyUrl", "manage", "overrideDevice" }) do
+        parts[#parts + 1] = key .. "=" .. (permissions and permissions[key] and "1" or "0")
+    end
+    return table.concat(parts, ";")
+end
+
+local function buildUiStateSignature(isOpen, activeMediaPlayersUI, usableMediaPlayers, permissions)
+    local parts = {
+        isOpen and "open" or "closed",
+        "vol=" .. tostring(math.floor(tonumber(GetBaseVolume()) or 100)),
+        "perms=" .. permissionSignature(permissions),
+    }
+
+    appendSortedStateSummary(parts, "startup", startupStates, function(handle, state)
+        return table.concat({
+            tostring(handle),
+            tostring(state and state.phase or ""),
+            tostring(state and state.attemptId or ""),
+            tostring(state and state.playbackToken or ""),
+            tostring(state and state.retryCount or 0),
+        }, "|")
+    end)
+
+    appendSortedStateSummary(parts, "failed", failedPlayers, function(handle, state)
+        return table.concat({
+            tostring(handle),
+            tostring(type(state) == "table" and state.playbackToken or ""),
+            tostring(type(state) == "table" and state.retryCount or 0),
+            tostring(type(state) == "table" and state.message or state or ""),
+        }, "|")
+    end)
+
+    appendSortedStateSummary(parts, "sessions", deviceSessions, function(handle, session)
+        local queueCount = type(session and session.queue) == "table" and #session.queue or 0
+        local historyCount = tonumber(session and session.historyCount) or (type(session and session.history) == "table" and #session.history or 0)
+        return table.concat({
+            tostring(handle),
+            tostring(session and session.stateRevision or 0),
+            tostring(queueCount),
+            tostring(historyCount),
+            tostring(session and session.locked and 1 or 0),
+        }, "|")
+    end)
+
+    if isOpen then
+        if type(adminSyncState) == "table" and type(adminSyncState.devices) == "table" then
+            appendSortedStateSummary(parts, "adminDevices", adminSyncState.devices, function(_, row)
+                return table.concat({
+                    tostring(row and row.handle or ""),
+                    tostring(row and row.label or ""),
+                    tostring(row and row.active and 1 or 0),
+                    tostring(row and row.persistent and 1 or 0),
+                    tostring(row and row.requestMode or ""),
+                    tostring(row and row.pendingCount or 0),
+                    tostring(row and row.stateRevision or 0),
+                }, "|")
+            end)
+            local logs = type(adminSyncState.logs) == "table" and adminSyncState.logs or {}
+            local lastLog = logs[#logs]
+            parts[#parts + 1] = "adminLog:" .. tostring(lastLog and lastLog.id or 0)
+        end
+
+        appendSortedStateSummary(parts, "active", activeMediaPlayersUI, function(handle, row)
+            local info = row and row.info or {}
+            local roundedOffset = math.floor((tonumber(row and row.offset) or tonumber(info and info.offset) or 0) * 2) / 2
+            return table.concat({
+                tostring(handle),
+                tostring(info and info.playbackToken or ""),
+                tostring(info and info.stateRevision or 0),
+                tostring(info and info.paused and 1 or 0),
+                tostring(info and info.muted and 1 or 0),
+                tostring(info and info.volume or ""),
+                tostring(roundedOffset),
+                tostring(math.floor(tonumber(row and row.distance) or -1)),
+                tostring(row and row.canInteract and 1 or 0),
+            }, "|")
+        end)
+
+        local deviceRows = {}
+        for _, row in ipairs(usableMediaPlayers or {}) do
+            deviceRows[#deviceRows + 1] = table.concat({
+                tostring(row.handle or ""),
+                tostring(row.label or ""),
+                tostring(row.type or ""),
+                tostring(row.active and 1 or 0),
+                tostring(math.floor(tonumber(row.distance) or -1)),
+                tostring(row.visibleBecause or ""),
+            }, "|")
+        end
+        table.sort(deviceRows)
+        parts[#parts + 1] = "usable:" .. table.concat(deviceRows, ",")
+    end
+
+    return table.concat(parts, "\n")
+end
+
+local function sendUiUpdateIfChanged(isOpen, payload, signature, heartbeatMs)
+    local now = GetGameTimer()
+    local lastSignature = isOpen and lastUiOpenSignature or lastUiClosedSignature
+    local lastSendAt = isOpen and lastUiOpenSendAt or lastUiClosedSendAt
+
+    if signature == lastSignature and (now - lastSendAt) < heartbeatMs then
+        return false
+    end
+
+    SendNUIMessage(payload)
+    local ok, encoded = pcall(json.encode, payload)
+    lastUiPayloadSize = ok and encoded and #encoded or 0
+    if isOpen then
+        lastUiOpenSignature = signature
+        lastUiOpenSendAt = now
+    else
+        lastUiClosedSignature = signature
+        lastUiClosedSendAt = now
+    end
+    return true
+end
+
+function GetUiPerfStats()
+    return {
+        lastPayloadBytes = lastUiPayloadSize,
+        lastOpenSendAt = lastUiOpenSendAt,
+        lastClosedSendAt = lastUiClosedSendAt,
+        cachedUsable = #cachedUsableMediaPlayers,
+    }
+end
+
+function InvalidateUiUpdateSignature()
+    lastUiOpenSignature = nil
+    lastUiClosedSignature = nil
+    lastUiOpenSendAt = 0
+    lastUiClosedSendAt = 0
+    lastUpdateUi = 0
 end
 
 local function redactUrlForDebug(url)
@@ -55,6 +212,10 @@ end
 
 function GetDeviceSessions()
     return deviceSessions
+end
+
+function GetAdminSyncState()
+    return adminSyncState
 end
 
 function GetFailedPlayers()
@@ -158,21 +319,32 @@ local function findEntityForHandle(handle, info)
 end
 
 local function getHandleDistance(playerPos, handle, info, knownEntity)
+    local bestDistance = nil
     if info.coords then
         local coords = vector3(info.coords.x, info.coords.y, info.coords.z)
-        return #(playerPos - coords)
+        bestDistance = #(playerPos - coords)
+    elseif knownEntity and DoesEntityExist(knownEntity) then
+        bestDistance = #(playerPos - GetEntityCoords(knownEntity))
+    else
+        local player = GetActivePlayer(handle)
+        if player and player.entity and DoesEntityExist(player.entity) then
+            bestDistance = #(playerPos - GetEntityCoords(player.entity))
+        end
     end
 
-    if knownEntity and DoesEntityExist(knownEntity) then
-        return #(playerPos - GetEntityCoords(knownEntity))
+    if type(info) == "table" and type(info.linkedSpeakers) == "table" then
+        for _, speaker in ipairs(info.linkedSpeakers) do
+            local coords = speaker and speaker.coords or speaker
+            if type(coords) == "table" and coords.x and coords.y and coords.z then
+                local speakerDistance = #(playerPos - vector3(coords.x, coords.y, coords.z))
+                if not bestDistance or speakerDistance < bestDistance then
+                    bestDistance = speakerDistance
+                end
+            end
+        end
     end
 
-    local player = GetActivePlayer(handle)
-    if player and player.entity and DoesEntityExist(player.entity) then
-        return #(playerPos - GetEntityCoords(player.entity))
-    end
-
-    return -1
+    return bestDistance or -1
 end
 
 local function getHandleRangeState(handle)
@@ -365,6 +537,72 @@ local function getClosestActiveHandle(maxDistance)
     return nil
 end
 
+local function updateMiniHud(playerPos)
+    if not hudEnabled then
+        if lastHudSignature ~= "hidden" then
+            SendNUIMessage({ type = "miniHud", enabled = false })
+            lastHudSignature = "hidden"
+        end
+        return
+    end
+
+    local now = GetGameTimer()
+    if (now - lastHudUpdateAt) < 750 then
+        return
+    end
+    lastHudUpdateAt = now
+
+    local nearest = nil
+    local nearestDistance = math.huge
+    for handle, info in pairs(mediaPlayerStates) do
+        local player = GetActivePlayer(handle)
+        local entity, _, entityType = findEntityForHandle(handle, info)
+        if not entity and player and player.entity and DoesEntityExist(player.entity) then
+            entity = player.entity
+            entityType = player.entityType
+        end
+        local distance = getHandleDistance(playerPos, handle, info, entity)
+        if isHandleAudibleForNearby(handle, info, distance, entity, entityType) and distance < nearestDistance then
+            nearestDistance = distance
+            nearest = {
+                handle = handle,
+                info = info,
+                distance = distance,
+                label = resolveActiveLabel(handle, info, player),
+            }
+        end
+    end
+
+    local signature = nearest and table.concat({
+        tostring(nearest.handle),
+        tostring(nearest.info and nearest.info.title or ""),
+        tostring(nearest.info and nearest.info.paused and 1 or 0),
+        tostring(nearest.info and nearest.info.muted and 1 or 0),
+        tostring(math.floor(nearest.distance or -1)),
+        tostring(math.floor(tonumber(GetBaseVolume()) or 100)),
+    }, "|") or "empty"
+
+    if signature == lastHudSignature then
+        return
+    end
+    lastHudSignature = signature
+
+    SendNUIMessage({
+        type = "miniHud",
+        enabled = true,
+        media = nearest and {
+            handle = nearest.handle,
+            title = nearest.info and (nearest.info.title or nearest.info.url) or "Media",
+            device = nearest.label,
+            source = nearest.info and nearest.info.source or nil,
+            paused = nearest.info and nearest.info.paused == true,
+            muted = nearest.info and nearest.info.muted == true,
+            volume = GetBaseVolume(),
+            distance = nearest.distance,
+        } or nil,
+    })
+end
+
 RegisterNetEvent("pmms:startupAttempt", function(payload)
     if type(payload) ~= "table" or not payload.handle or not payload.attemptId or type(payload.resolvedOptions) ~= "table" then
         PMMSDebug("player", "client startup attempt ignored: invalid payload", {
@@ -438,10 +676,12 @@ RegisterNetEvent("pmms:sync", function(payload)
         mediaPlayerStates = payload.mediaPlayers or {}
         startupStates = payload.startupStates or {}
         deviceSessions = payload.deviceSessions or {}
+        adminSyncState = payload.admin
     else
         mediaPlayerStates = payload or {}
         startupStates = {}
         deviceSessions = {}
+        adminSyncState = nil
     end
     local now = GetGameTimer()
     PMMSDebug("player", "client sync received", {
@@ -592,7 +832,8 @@ Citizen.CreateThread(function()
         local rangeBuffer = 5.0
         local nowMs = GetGameTimer()
         local permissions = GetPermissions() or {}
-        local discoveryDistance = tonumber(Config.maxDiscoveryDistance) or 30.0
+        local defaultDiscovery = tonumber(Config.maxDiscoveryDistance) or 30.0
+        local discoveryDistance = (permissions.admin and Config.adminMaxRange) and math.max(defaultDiscovery, Config.adminMaxRange) or defaultDiscovery
 
         for handle, info in pairs(mediaPlayerStates) do
             local player = GetActivePlayer(handle)
@@ -782,6 +1023,29 @@ Citizen.CreateThread(function()
                     end
                 end
 
+                if type(adminSyncState) == "table" and type(adminSyncState.devices) == "table" then
+                    for _, dev in ipairs(adminSyncState.devices) do
+                        local handle = tostring(dev.handle or GetHandleFromCoords(dev.position))
+                        if not visibleHandles[handle] and dev.position then
+                            local devPos = vector3(dev.position.x, dev.position.y, dev.position.z)
+                            local dist = #(uiPlayerPos - devPos)
+                            if dist <= discoveryDistance then
+                                usableMediaPlayers[#usableMediaPlayers + 1] = {
+                                    handle = handle,
+                                    label = dev.label,
+                                    type = dev.mode == "interaction" and "interaction" or "prop",
+                                    distance = dist,
+                                    active = mediaPlayerStates[handle] ~= nil or startupStates[handle] ~= nil,
+                                    hasVideo = false,
+                                    visibleBecause = "admin",
+                                    coords = dev.position,
+                                }
+                                visibleHandles[handle] = true
+                            end
+                        end
+                    end
+                end
+
                 table.sort(usableMediaPlayers, function(a, b)
                     local aDistance = tonumber(a and a.distance) or math.huge
                     local bDistance = tonumber(b and b.distance) or math.huge
@@ -821,7 +1085,7 @@ Citizen.CreateThread(function()
                 }
             end
 
-            SendNUIMessage({
+            local payload = {
                 type = "updateUi",
                 uiIsOpen = true,
                 activeMediaPlayers = activeMediaPlayersUI,
@@ -831,18 +1095,79 @@ Citizen.CreateThread(function()
                 failedPlayers = failedPlayers,
                 permissions = permissions,
                 baseVolume = GetBaseVolume(),
-            })
-        elseif (uiNow - lastUpdateUi) > 3000 then
+                admin = adminSyncState,
+            }
+            sendUiUpdateIfChanged(true, payload, buildUiStateSignature(true, activeMediaPlayersUI, usableMediaPlayers, permissions), 1500)
+        elseif (uiNow - lastUpdateUi) > 1000 then
             lastUpdateUi = uiNow
-            SendNUIMessage({
+            local payload = {
                 type = "updateUi",
                 uiIsOpen = false,
                 startupStates = startupStates,
                 deviceSessions = deviceSessions,
                 failedPlayers = failedPlayers,
                 permissions = permissions,
-            })
+            }
+            sendUiUpdateIfChanged(false, payload, buildUiStateSignature(false, nil, nil, permissions), 5000)
         end
+
+        updateMiniHud(playerPos)
+    end
+end)
+
+RegisterNetEvent("pmms:setHudEnabled", function(enabled)
+    hudEnabled = enabled == true
+    SetResourceKvpInt("pmms_hud_enabled", hudEnabled and 1 or 0)
+    lastHudSignature = nil
+    updateMiniHud(GetEntityCoords(PlayerPedId()))
+end)
+
+RegisterNetEvent("pmms:perf:request", function()
+    local duiStats = type(GetDuiBrowserPerfStats) == "function" and GetDuiBrowserPerfStats() or {}
+    local entityStats = type(GetEntityCacheStats) == "function" and GetEntityCacheStats() or {}
+    local uiStats = GetUiPerfStats()
+    local message = (
+        "DUI total=%s renderable=%s rendered=%s lastFrame=%sms | entities cached=%s networked=%s scan=%sms | UI payload=%s bytes"
+    ):format(
+        tostring(duiStats.total or 0),
+        tostring(duiStats.renderable or 0),
+        tostring(duiStats.rendered or 0),
+        tostring(duiStats.lastFrameMs or 0),
+        tostring(entityStats.cached or 0),
+        tostring(entityStats.networkedCount or 0),
+        tostring(entityStats.lastScanMs or 0),
+        tostring(uiStats.lastPayloadBytes or 0)
+    )
+    print("[7-pmms][perf] " .. message)
+    ShowNotification(message, "7-PMMS Perf")
+end)
+
+Citizen.CreateThread(function()
+    while true do
+        local sleep = 1000
+        local ped = PlayerPedId()
+        local pos = GetEntityCoords(ped)
+        local usableMediaPlayers = cachedUsableMediaPlayers or {}
+
+        for _, mp in ipairs(usableMediaPlayers) do
+            if mp.type == "interaction" and mp.coords then
+                local mpPos = vector3(mp.coords.x, mp.coords.y, mp.coords.z)
+                local dist = #(pos - mpPos)
+                if dist < 5.0 then
+                    sleep = 0
+                    DrawMarker(27, mpPos.x, mpPos.y, mpPos.z - 0.95, 0, 0, 0, 0, 0, 0, 1.0, 1.0, 1.0, 104, 216, 166, 100, false, false, 2, false, nil, nil, false)
+                    if dist < 1.5 then
+                        SetTextComponentFormat("STRING")
+                        AddTextComponentString("Press ~INPUT_CONTEXT~ to open " .. tostring(mp.label))
+                        DisplayHelpTextFromStringLabel(0, 0, 1, -1)
+                        if IsControlJustPressed(0, 38) then
+                            TriggerEvent("pmms:openUiForHandle", mp.handle)
+                        end
+                    end
+                end
+            end
+        end
+        Wait(sleep)
     end
 end)
 

@@ -149,7 +149,7 @@ end
 
 RegisterNetEvent("pmms:saveModel", function(model, data)
     local src = source
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to save model defaults")
         return
     end
@@ -159,7 +159,7 @@ end)
 
 RegisterNetEvent("pmms:saveEntity", function(coords, data)
     local src = source
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to save entity defaults")
         return
     end
@@ -169,7 +169,7 @@ end)
 
 RegisterNetEvent("pmms:deleteModel", function(model)
     local src = source
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to delete model defaults")
         return
     end
@@ -181,7 +181,7 @@ end)
 
 RegisterNetEvent("pmms:deleteEntity", function(coords)
     local src = source
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to delete entity defaults")
         return
     end

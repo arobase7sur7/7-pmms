@@ -190,6 +190,21 @@ local function setupQbTarget()
                     end
                     return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
                 end),
+                {
+                    type = "client",
+                    icon = "fas fa-trash",
+                    label = "Remove Speaker",
+                    action = function(entity)
+                        local handle, id = GetSpeakerPropHandleAndId(entity)
+                        if handle and id then
+                            TriggerServerEvent("pmms:removeLinkedSpeaker", handle, id)
+                        end
+                    end,
+                    canInteract = function(entity)
+                        local handle, id = GetSpeakerPropHandleAndId(entity)
+                        return handle ~= nil and id ~= nil
+                    end,
+                }
             },
             distance = targetCfg.distance,
         })
@@ -325,6 +340,25 @@ local function setupOxTarget()
                 end
                 return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
             end),
+            {
+                name = TARGET_OPTION_NAME .. "_remove_speaker",
+                icon = "fas fa-trash",
+                label = "Remove Speaker",
+                distance = targetCfg.distance,
+                canInteract = function(entity)
+                    local handle, id = GetSpeakerPropHandleAndId(entity)
+                    return handle ~= nil and id ~= nil
+                end,
+                onSelect = function(data)
+                    local entity = data and data.entity or nil
+                    if entity then
+                        local handle, id = GetSpeakerPropHandleAndId(entity)
+                        if handle and id then
+                            TriggerServerEvent("pmms:removeLinkedSpeaker", handle, id)
+                        end
+                    end
+                end,
+            }
         })
     end)
 

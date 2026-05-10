@@ -256,6 +256,10 @@ local function clearSessionLock(handle)
     end
 end
 
+function ForceClearSessionLock(handle)
+    clearSessionLock(tonumber(handle) or handle)
+end
+
 local function isSessionLockOwner(lock, src)
     if not lock then
         return false
@@ -286,7 +290,7 @@ function CanAccessSessionLock(src, handle, bypassManage)
         return true, nil
     end
 
-    if bypassManage ~= false and IsPlayerAceAllowed(src, "pmms.manage") then
+    if bypassManage ~= false and HasPmmsPermission(src, "manage") then
         touchSessionLock(handle, src)
         return true, lock
     end
@@ -306,7 +310,7 @@ local function buildSessionLockStateForPlayer(src, handle)
     end
 
     local isOwner = isSessionLockOwner(lock, src)
-    local isAuthorized = IsPlayerAceAllowed(src, "pmms.manage")
+    local isAuthorized = HasPmmsPermission(src, "manage")
         or isOwner
         or isSessionPinAuthorized(lock, src)
 
@@ -364,7 +368,7 @@ local function setSessionLockPin(handle, src, pin)
         return false, "No active session lock exists."
     end
 
-    if not (IsPlayerAceAllowed(src, "pmms.manage") or isSessionLockOwner(lock, src)) then
+    if not (HasPmmsPermission(src, "manage") or isSessionLockOwner(lock, src)) then
         return false, "Only the lock owner can change the PIN."
     end
 
@@ -415,7 +419,7 @@ local function unlockSessionLock(handle, src)
         return false, "No active session lock exists."
     end
 
-    if not (IsPlayerAceAllowed(src, "pmms.manage") or isSessionLockOwner(lock, src)) then
+    if not (HasPmmsPermission(src, "manage") or isSessionLockOwner(lock, src)) then
         return false, "Only the lock owner can unlock this session."
     end
 
@@ -433,6 +437,8 @@ function BuildMediaPlayersSyncStateForPlayer(src)
         copy.sessionLocked = sessionLock ~= nil
         copy.playbackMode = copy.video == false and "audio" or "video"
         copy.deviceCapability = getDeviceCapabilityState(copy, session)
+        copy.requestMode = type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or copy.requestMode
+        copy.linkedSpeakers = type(GetPmmsLinkedSpeakers) == "function" and GetPmmsLinkedSpeakers(handle) or copy.linkedSpeakers
         if session then
             copy.stateRevision = session.stateRevision
             copy.idleResetAt = session.idleResetAt
@@ -472,14 +478,23 @@ function BuildMediaPlayersSyncStateForPlayer(src)
             sessionLock = sessionLock,
             sessionLocked = sessionLock ~= nil,
             deviceCapability = getDeviceCapabilityState(nil, session),
+            requestMode = type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or nil,
+            linkedSpeakers = type(GetPmmsLinkedSpeakers) == "function" and GetPmmsLinkedSpeakers(handle) or nil,
+            pendingRequests = type(GetPmmsPendingRequestsForHandle) == "function" and GetPmmsPendingRequestsForHandle(handle) or {},
         }
     end
 
-    return {
+    local payload = {
         mediaPlayers = states,
         startupStates = startupStateCopy,
         deviceSessions = sessionStateCopy,
     }
+
+    if type(BuildPmmsAdminSyncState) == "function" then
+        payload.admin = BuildPmmsAdminSyncState(src)
+    end
+
+    return payload
 end
 
 pushImmediateSync = function(target)
@@ -513,15 +528,21 @@ function CleanupSessionLocks(now)
     end
 end
 
-local function requirePermission(src, handle, permission)
-    if not IsPlayerAceAllowed(src, "pmms." .. permission) then
+local function requirePermission(src, handle, permission, plate)
+    local isPublicInteract = permission == "interact"
+    if not isPublicInteract and not HasPmmsPermission(src, permission) then
         TriggerClientEvent("pmms:error", src, "You do not have permission for this action")
         return false
     end
 
     local mp = GetMediaPlayer(handle)
     local session = deviceSessions[handle]
-    if mp and mp.locked and not IsPlayerAceAllowed(src, "pmms.manage") then
+    if type(CanUsePmmsAdminLockedDevice) == "function" and not CanUsePmmsAdminLockedDevice(src, handle, plate) then
+        TriggerClientEvent("pmms:error", src, "This device is restricted by staff.")
+        return false
+    end
+
+    if mp and mp.locked and not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "This media player is locked")
         return false
     end
@@ -539,6 +560,14 @@ local function requirePermission(src, handle, permission)
     end
 
     return true
+end
+
+local function requireStaffDevicePermission(src, action)
+    if HasPmmsPermission(src, "manage") or HasPmmsPermission(src, "overrideDevice") then
+        return true
+    end
+    TriggerClientEvent("pmms:error", src, action or "Only staff can change advanced device settings.")
+    return false
 end
 
 local function isUrlAllowed(url)
@@ -713,7 +742,7 @@ local function getConfiguredAdminMaxRange()
 end
 
 local function getAllowedRangeForPlayer(src)
-    if IsPlayerAceAllowed(src, "pmms.overrideDevice") then
+    if HasPmmsPermission(src, "overrideDevice") then
         return getConfiguredAdminMaxRange()
     end
     return getConfiguredMaxRange()
@@ -776,6 +805,12 @@ local function buildRuntimeSettings(options)
         transitionSeconds = clampTransitionSeconds(options.transitionSeconds),
         isVehicle = options.isVehicle == true or Config.defaultVehicleMode == true,
         loopMode = NormalizeLoopMode(options.loopMode, options.loop),
+        label = options.label or options.name,
+        profile = options.profile,
+        requestMode = options.requestMode,
+        adminLock = cloneDeepTable(options.adminLock),
+        linkedSpeakers = cloneDeepTable(options.linkedSpeakers),
+        vehiclePlate = options.vehiclePlate,
     }
 end
 
@@ -829,6 +864,12 @@ local function applySessionSettingsToTarget(target, session)
     target.isVehicle = session.settings.isVehicle == true
     target.loopMode = NormalizeLoopMode(session.settings.loopMode, target.loop)
     target.loop = target.loopMode == "track"
+    target.label = session.settings.label or target.label
+    target.profile = session.settings.profile or target.profile
+    target.requestMode = session.settings.requestMode or target.requestMode
+    target.adminLock = cloneDeepTable(session.settings.adminLock or target.adminLock)
+    target.linkedSpeakers = cloneDeepTable(session.settings.linkedSpeakers or target.linkedSpeakers)
+    target.vehiclePlate = session.settings.vehiclePlate or target.vehiclePlate
 end
 
 local function syncActiveMediaPlayerWithSession(handle, session)
@@ -1430,7 +1471,7 @@ local function cancelStartupForSource(src, handle, attemptId, playbackToken)
         return false
     end
 
-    if startupContext.source ~= src and not IsPlayerAceAllowed(src, "pmms.manage") then
+    if startupContext.source ~= src and not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "This player is busy")
         PMMSDebug("player", "cancel startup rejected: source mismatch", {
             src = src,
@@ -1516,6 +1557,17 @@ local function classifyPlaybackError(message)
     local text = type(message) == "string" and message:lower() or ""
     if text == "" then
         return "unknown"
+    end
+    if text:find("pipeline_error_read", 1, true)
+        or text:find("ffmpegdemuxer", 1, true)
+        or text:find("data source error", 1, true)
+        or text:find("mediaerrorcode=2", 1, true)
+        or text:find("networkstate=3", 1, true)
+        or text:find("net::", 1, true)
+        or text:find("err_", 1, true)
+        or text:find("read failure", 1, true)
+        or text:find("failed to fetch", 1, true) then
+        return "stream_read_failure"
     end
     if text:find("youtube error 101", 1, true)
         or text:find("youtube error 150", 1, true)
@@ -1638,7 +1690,7 @@ local function getDirectLinkPlaybackMode(extension, contentType)
         return "video"
     end
 
-    if lowerExt == "mp3" or lowerExt == "wav" or lowerExt == "oga" then
+    if lowerExt == "mp3" or lowerExt == "m4a" or lowerExt == "aac" or lowerExt == "wav" or lowerExt == "oga" then
         return "audio"
     end
 
@@ -1735,6 +1787,23 @@ end
 
 local function validateAndTagDirectLink(url, prepared)
     if not isDirectLinkCandidate(url) then
+        local isRadioDirect = type(prepared) == "table" and (prepared.source == "radio" or prepared.radio == true)
+        if isRadioDirect and type(url) == "string" and url:match("^https?://") and not isYoutubeLikeUrl(url) and not isTwitchLikeUrl(url) then
+            local directLinkConfig = getDirectLinkConfig()
+            if directLinkConfig.requireHttps ~= false and not url:match("^https://") then
+                return false, "Direct radio links must use HTTPS on this server."
+            end
+            if isClearlyInvalidDirectLinkUrl(url) then
+                return false, "This radio stream URL looks unsafe or malformed."
+            end
+            prepared.directLink = {
+                candidate = true,
+                extension = (getUrlExtension(url) or "radio"):lower(),
+                radio = true,
+            }
+            prepared.video = false
+            prepared.live = true
+        end
         return true, nil
     end
 
@@ -1909,6 +1978,14 @@ local function failPlaybackStart(handle, src, message, details)
         resolverReason = stateDetails.resolverReason,
         retryCount = stateDetails.retryCount,
     })
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("playback_start_failed", handle, src, {
+            message = finalMessage,
+            details = details,
+            provider = stateDetails.provider,
+            reason = stateDetails.resolverReason,
+        })
+    end
 
     clearStartContext(handle, true, true)
     ClearRestricted(handle)
@@ -1990,6 +2067,14 @@ local function failActiveLocalPlayback(handle, src, message, details)
         resolverReason = resolver.reason,
         retryCount = stateDetails.retryCount,
     })
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("dui_playback_error", handle, src, {
+            message = finalMessage,
+            details = details,
+            provider = resolver.provider,
+            reason = resolver.reason,
+        })
+    end
 
     if IsMediaPlayerActive(handle) then
         RemoveMediaPlayer(handle, true, { archiveCurrent = false })
@@ -2023,14 +2108,6 @@ local function validateAndPrepareStartOptions(src, options)
         return true, prepared
     end
 
-    if not IsPlayerAceAllowed(src, "pmms.customUrl") then
-        return false, nil, "You must select from one of the pre-defined songs"
-    end
-
-    if not (IsPlayerAceAllowed(src, "pmms.anyUrl") or isUrlAllowed(prepared.url)) then
-        return false, nil, "You do not have permission to play the specified URL"
-    end
-
     local nestedDirectUrl = extractNestedDirectLinkUrl(prepared.url)
     if nestedDirectUrl then
         prepared.proxyUrl = prepared.url
@@ -2060,11 +2137,13 @@ local function validateAndPrepareStartOptions(src, options)
 end
 
 function AddMediaPlayer(handle, options)
-    if IsMediaPlayerActive(handle) then
+    local replaceActive = type(options) == "table" and options.replaceActive == true
+    if IsMediaPlayerActive(handle) and not replaceActive then
         return
     end
 
     options = cloneDeepTable(options)
+    options.replaceActive = nil
     options.playbackToken = type(options.playbackToken) == "string" and options.playbackToken ~= ""
         and options.playbackToken
         or createPlaybackToken(handle)
@@ -2123,6 +2202,9 @@ function AddMediaPlayer(handle, options)
     options.queue = session.queue or {}
 
     cancelDeviceIdleReset(handle)
+    if replaceActive then
+        RemoveMediaPlayerEntry(handle)
+    end
     SetMediaPlayer(handle, options)
     setDeviceSessionCurrentTrack(handle, options)
     local liveSession = deviceSessions[handle]
@@ -2236,7 +2318,11 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
         return
     end
 
+    resolverOptions = type(resolverOptions) == "table" and resolverOptions or {}
+
     local context = beginStartContext(handle, src, intentOptions, 0)
+    context.replaceActiveOnReady = resolverOptions.replaceActiveOnReady == true
+    startContexts[handle] = context
     local attemptId = context.currentAttemptId
 
     setStartupState(handle, "resolving", "Resolving media source.", buildStartupStateDetails(context, intentOptions))
@@ -2497,7 +2583,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
         return
     end
 
-    if isLockedDefaultMediaPlayer(handle) and not IsPlayerAceAllowed(src, "pmms.manage") then
+    if isLockedDefaultMediaPlayer(handle) and not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "You do not have permission to play on a locked media player")
         return
     end
@@ -2510,7 +2596,18 @@ RegisterNetEvent("pmms:start", function(handle, options)
             url = redactUrlForDebug(type(options) == "table" and options.url or nil),
             error = errorMessage,
         })
+        if type(LogPmmsAdminEvent) == "function" then
+            LogPmmsAdminEvent("playback_start_rejected", handle, src, {
+                reason = errorMessage,
+                url = redactUrlForDebug(type(options) == "table" and options.url or nil),
+            })
+        end
         TriggerClientEvent("pmms:error", src, errorMessage)
+        return
+    end
+
+    if type(HandlePmmsDeviceRequestMode) == "function"
+        and not HandlePmmsDeviceRequestMode(src, handle, preparedOptions) then
         return
     end
 
@@ -2542,9 +2639,15 @@ RegisterNetEvent("pmms:start", function(handle, options)
             title = preparedOptions.title,
         })
         AddToQueue(handle, src, preparedOptions)
+        if type(LogPmmsAdminEvent) == "function" then
+            LogPmmsAdminEvent("playback_queued", handle, src, { title = preparedOptions.title })
+        end
         return
     end
 
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("playback_start_requested", handle, src, { title = preparedOptions.title })
+    end
     startMediaPlayerForClient(handle, src, preparedOptions, {})
 end)
 
@@ -2557,11 +2660,12 @@ RegisterNetEvent("pmms:playPlaylistTracks", function(handle, playlistId, tracks)
         return
     end
 
-    if not requirePermission(src, handle, "interact") then
+    local requestedPlate = type(options) == "table" and options.vehiclePlate or nil
+    if not requirePermission(src, handle, "interact", requestedPlate) then
         return
     end
 
-    if isLockedDefaultMediaPlayer(handle) and not IsPlayerAceAllowed(src, "pmms.manage") then
+    if isLockedDefaultMediaPlayer(handle) and not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "You do not have permission to play on a locked media player")
         return
     end
@@ -2591,6 +2695,19 @@ RegisterNetEvent("pmms:playPlaylistTracks", function(handle, playlistId, tracks)
     if #preparedTracks <= 0 then
         TriggerClientEvent("pmms:error", src, "No valid playlist tracks could be played.")
         return
+    end
+
+    if type(GetPmmsDeviceRequestMode) == "function" and not HasPmmsPermission(src, "manage") then
+        local requestMode = GetPmmsDeviceRequestMode(handle)
+        if requestMode == "disabled" then
+            TriggerClientEvent("pmms:error", src, "Requests are disabled on this device.")
+            return
+        elseif requestMode == "pending" and type(HandlePmmsDeviceRequestMode) == "function" then
+            for _, prepared in ipairs(preparedTracks) do
+                HandlePmmsDeviceRequestMode(src, handle, prepared)
+            end
+            return
+        end
     end
 
     local restricted = GetRestrictedHandles()
@@ -2705,6 +2822,7 @@ RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, play
         merged.selectedAudioTrack = cloneDeepTable(selectedAudioTrack)
     end
     applyPlaybackMetadata(merged, details)
+    merged.replaceActive = context.replaceActiveOnReady == true
 
     recordAutoProviderPlayback(merged, merged.resolver, "success", "startup_ready", context)
     AddMediaPlayer(handle, merged)
@@ -3110,7 +3228,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     end
 
     local lastSource = tonumber(mp.lastSource)
-    if lastSource and lastSource ~= tonumber(src) and not IsPlayerAceAllowed(src, "pmms.manage") then
+    if lastSource and lastSource ~= tonumber(src) and not HasPmmsPermission(src, "manage") then
         PMMSDebug("player", "local playback error ignored: source mismatch", {
             src = src,
             handle = handle,
@@ -3175,8 +3293,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     retryOptions.startTime = nil
     retryOptions.pausedAt = nil
 
-    RemoveMediaPlayer(handle, true, { archiveCurrent = false })
-    setStartupState(handle, "retrying", "Retrying playback with a different provider.", {
+    setStartupState(handle, "retrying", "Refreshing media source after a playback read failure.", {
         playbackToken = currentToken,
         retryCount = retryOptions.localPlaybackRetryCount,
         provider = currentResolver.provider,
@@ -3209,6 +3326,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         allowFallback = true,
         allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
         allowEmbedFallback = resolverConfig.allowEmbedFallback == true,
+        replaceActiveOnReady = true,
     })
 end)
 
@@ -3283,6 +3401,9 @@ RegisterNetEvent("pmms:stop", function(handle)
         src = src,
         handle = handle,
     })
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("playback_stopped", handle, src, {})
+    end
     RemoveMediaPlayer(handle)
 end)
 
@@ -3303,6 +3424,9 @@ RegisterNetEvent("pmms:setVolume", function(handle, volume)
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
+    if not requireStaffDevicePermission(src) then
+        return
+    end
     if not requirePermission(src, handle, "interact") then
         return
     end
@@ -3312,6 +3436,9 @@ RegisterNetEvent("pmms:setVolume", function(handle, volume)
             mp.volume = settings.volume
         end
     end)
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("volume_changed", handle, src, { volume = tonumber(volume) })
+    end
 end)
 
 RegisterNetEvent("pmms:setAudioTrack", function(handle, audioTrack)
@@ -3403,12 +3530,14 @@ RegisterNetEvent("pmms:setRange", function(handle, range)
             mp.range = settings.range
         end
     end)
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("range_changed", handle, src, { range = tonumber(range) })
+    end
 end)
 
 RegisterNetEvent("pmms:forceResetDevice", function(handle)
     local src = source
-    if not IsPlayerAceAllowed(src, "pmms.overrideDevice") then
-        TriggerClientEvent("pmms:error", src, "You do not have permission for this action")
+    if not requireStaffDevicePermission(src) then
         return
     end
 
@@ -3432,6 +3561,9 @@ RegisterNetEvent("pmms:forceResetDevice", function(handle)
     end
 
     ClearRestricted(handle)
+    if type(LogPmmsAdminEvent) == "function" then
+        LogPmmsAdminEvent("device_force_reset", handle, src, {})
+    end
     TriggerClientEvent("pmms:notify", src, {
         title = "Device Settings",
         text = "Live device session cleared.",
@@ -3475,6 +3607,9 @@ RegisterNetEvent("pmms:setScaleform", function(handle, scaleform)
     local src = source
     local mp = GetMediaPlayer(handle)
     if not mp then
+        return
+    end
+    if not requireStaffDevicePermission(src) then
         return
     end
     if not requirePermission(src, handle, "interact") then
@@ -3578,8 +3713,12 @@ RegisterNetEvent("pmms:lockSession", function(handle, pin)
         return
     end
 
-    if not IsPlayerAceAllowed(src, "pmms.interact") then
+    if not HasPmmsPermission(src, "interact") then
         TriggerClientEvent("pmms:error", src, "You do not have permission for this action")
+        return
+    end
+    if type(CanUsePmmsAdminLockedDevice) == "function" and not CanUsePmmsAdminLockedDevice(src, handle) then
+        TriggerClientEvent("pmms:error", src, "This device is restricted by staff.")
         return
     end
 
@@ -3597,7 +3736,7 @@ RegisterNetEvent("pmms:lockSession", function(handle, pin)
 
     local existingLock = sessionLocks[handle]
     if existingLock then
-        if not (IsPlayerAceAllowed(src, "pmms.manage") or isSessionLockOwner(existingLock, src)) then
+        if not (HasPmmsPermission(src, "manage") or isSessionLockOwner(existingLock, src)) then
             TriggerClientEvent("pmms:error", src, "Only the lock owner can change this session lock.")
             return
         end
@@ -3691,7 +3830,7 @@ RegisterNetEvent("pmms:lock", function(handle)
     if not IsMediaPlayerActive(handle) then
         return
     end
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "You do not have permission to lock media players")
         return
     end
@@ -3704,7 +3843,7 @@ RegisterNetEvent("pmms:unlock", function(handle)
     if not IsMediaPlayerActive(handle) then
         return
     end
-    if not IsPlayerAceAllowed(src, "pmms.manage") then
+    if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "You do not have permission to unlock media players")
         return
     end
@@ -3739,6 +3878,9 @@ end)
 RegisterNetEvent("pmms:setVideoSize", function(handle, size)
     local src = source
     if not IsMediaPlayerActive(handle) then
+        return
+    end
+    if not requireStaffDevicePermission(src) then
         return
     end
     if not requirePermission(src, handle, "interact") then
@@ -3857,14 +3999,14 @@ end)
 
 RegisterNetEvent("pmms:loadPermissions", function()
     local src = source
-    local permissions = {
-        interact = IsPlayerAceAllowed(src, "pmms.interact"),
-        anyEntity = IsPlayerAceAllowed(src, "pmms.anyEntity"),
-        customUrl = IsPlayerAceAllowed(src, "pmms.customUrl"),
-        anyUrl = IsPlayerAceAllowed(src, "pmms.anyUrl"),
-        manage = IsPlayerAceAllowed(src, "pmms.manage"),
-        overrideDevice = IsPlayerAceAllowed(src, "pmms.overrideDevice"),
-    }
+    local permissions = GetPmmsPermissions(src)
+    print(("^4[7-pmms] Sending permissions to %s (%s): manage=%s, staff=%s^7"):format(
+        GetPlayerName(src), 
+        src, 
+        tostring(permissions.manage), 
+        tostring(permissions.staff)
+    ))
+
     TriggerClientEvent("pmms:loadPermissions", src, permissions)
     TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
 end)

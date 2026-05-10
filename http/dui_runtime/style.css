@@ -16,6 +16,10 @@ body {
 	background: #000;
 }
 
+body.pmms-recovering-source #loading {
+	background: rgba(0, 0, 0, 0.18);
+}
+
 #loading img {
 	position: absolute;
 	inset: 0;
@@ -62,6 +66,15 @@ mediaelementwrapper > video,
 .pmms-youtube-embed iframe {
 	display: block;
 	border: 0;
+}
+
+.pmms-stale-recovery {
+	z-index: 3 !important;
+	pointer-events: none !important;
+}
+
+.pmms-recovering {
+	z-index: 2 !important;
 }
 
 iframe,

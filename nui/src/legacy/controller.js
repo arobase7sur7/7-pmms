@@ -5,6 +5,14 @@ var startupStates      = {};
 var deviceSessions     = {};
 var activePlayerHandle = null;
 var permissions        = {};
+var adminState         = null;
+var deviceProfiles     = [];
+var propModels         = [];
+var adminQuickActions  = {};
+var requestConfig      = {};
+var speakerConfig      = {};
+var selectedAdminDeviceHandle = null;
+var radioFavorites     = {};
 var searchSources      = {};
 var defaultSearchSource = 'youtube';
 var defaultTransitionSeconds = 5.0;
@@ -26,6 +34,8 @@ var deviceDefaults = {
 var authoritativePlaylists = [];
 var cachedPlaylists    = [];
 var cachedSharedPlaylists = [];
+var pendingPlaylistCreates = {};
+var pendingPlaylistCreateSeq = 0;
 var cachedFriends      = [];
 var currentPlaylistId  = null;
 var currentPlaylistName = '';
@@ -77,6 +87,7 @@ var _queuedUiData = null;
 var _uiFrameScheduled = false;
 var _uiVisible = false;
 var _lastUiUpdateSignature = '';
+var _hideUiDisplayTimer = null;
 
 var _lastGridHandles   = [];
 var _lastActiveHandle  = null;
@@ -119,6 +130,10 @@ var MAX_RENDERED_HISTORY_ITEMS = 30;
 
 function setUiVisible(visible) {
     _uiVisible = visible === true;
+    if (_hideUiDisplayTimer) {
+        clearTimeout(_hideUiDisplayTimer);
+        _hideUiDisplayTimer = null;
+    }
     document.body.style.display = 'block';
     document.body.classList.toggle('pmms-ui-visible', _uiVisible);
     document.body.classList.toggle('pmms-ui-hidden', !_uiVisible);
@@ -159,6 +174,21 @@ function getUiUpdateSignature(data) {
                     device && device.visibleBecause || ''
                 ].join(':');
             }).join('|')
+            : '',
+        data.admin && Array.isArray(data.admin.devices)
+            ? data.admin.devices.map(function(device) {
+                return [
+                    handleKey(device && device.handle),
+                    device && device.label || '',
+                    device && device.requestMode || '',
+                    device && device.pendingCount || 0,
+                    device && device.stateRevision || 0,
+                    device && device.active ? 1 : 0
+                ].join(':');
+            }).join('|')
+            : '',
+        data.admin && Array.isArray(data.admin.logs) && data.admin.logs.length
+            ? (data.admin.logs[data.admin.logs.length - 1].id || 0)
             : '',
         data.baseVolume !== undefined ? clampPercent(data.baseVolume, localBaseVolume) : ''
     ].join('~');
@@ -549,6 +579,89 @@ function safeText(str) {
     return d.innerHTML;
 }
 
+function isStaffUser() {
+    return permissions && (permissions.manage === true || permissions.overrideDevice === true || permissions.staff === true);
+}
+
+function isAdminUser() {
+    return permissions && permissions.manage === true;
+}
+
+function updateStaffVisibility() {
+    var isStaff = isStaffUser();
+    var isAdmin = isAdminUser();
+    document.body.classList.toggle('is-staff', isStaff);
+    document.body.classList.toggle('is-admin', isAdmin);
+    if (!isAdmin && currentViewId === 'view-admin') {
+        switchView('view-home');
+    }
+}
+
+
+
+function getProfileOptionsHtml(selected) {
+    var options = Array.isArray(deviceProfiles) ? deviceProfiles : [];
+    if (!options.length) {
+        return '<option value="">No profiles configured</option>';
+    }
+    return options.map(function(profile) {
+        var key = profile && profile.key ? String(profile.key) : '';
+        return '<option value="' + safeText(key) + '"' + (key === selected ? ' selected' : '') + '>' +
+            safeText((profile && profile.label) || key) +
+        '</option>';
+    }).join('');
+}
+
+function normalizeAdminHandle(handle) {
+    var numeric = Number(handle);
+    return Number.isFinite(numeric) ? String(numeric) : null;
+}
+
+function getAdminDevices() {
+    return adminState && Array.isArray(adminState.devices) ? adminState.devices : [];
+}
+
+function getAdminDeviceByHandle(handle) {
+    var key = normalizeAdminHandle(handle);
+    if (!key) return null;
+    var devices = getAdminDevices();
+    for (var i = 0; i < devices.length; i++) {
+        if (normalizeAdminHandle(devices[i] && devices[i].handle) === key) {
+            return devices[i];
+        }
+    }
+    return null;
+}
+
+function getRequestModeLabel(mode) {
+    if (mode === 'pending') return 'Pending approval';
+    if (mode === 'disabled') return 'Disabled';
+    return 'Direct queue';
+}
+
+function loadRadioFavorites() {
+    try {
+        var raw = window.localStorage && window.localStorage.getItem('pmms_radio_favorites:v1');
+        radioFavorites = raw ? JSON.parse(raw) || {} : {};
+    } catch (_) {
+        radioFavorites = {};
+    }
+}
+
+function saveRadioFavorites() {
+    try {
+        if (window.localStorage) {
+            window.localStorage.setItem('pmms_radio_favorites:v1', JSON.stringify(radioFavorites || {}));
+        }
+    } catch (_) {}
+}
+
+function getRadioFavoriteKey(station) {
+    return station && (station.stationId || station.id || station.url) ? String(station.stationId || station.id || station.url) : null;
+}
+
+loadRadioFavorites();
+
 function timeToString(time) {
     if (!time || isNaN(time) || time <= 0) return '0:00';
     var t = Math.round(time);
@@ -702,11 +815,21 @@ function applyYoutubeProviderPreference(options) {
     }
 
     var mode = getCurrentYoutubeProviderMode();
+    var currentSource = getCurrentSearchSource && getCurrentSearchSource();
+
+    // youtube_embed search source always forces embed mode
+    if (currentSource === 'youtube_embed' || next.source === 'youtube_embed') {
+        next.youtubeProvider = 'embed';
+        next.youtubeProviderExplicit = true;
+        next.resolverProvider = 'embed';
+        next.allowEmbedFallback = true;
+        return next;
+    }
+
     if (mode === 'auto') {
         return next;
     }
 
-    var currentSource = getCurrentSearchSource && getCurrentSearchSource();
     if (currentSource !== 'youtube' && next.source !== 'youtube') {
         return next;
     }
@@ -998,6 +1121,9 @@ function mergeMediaPlayerStates(incomingStates) {
 }
 
 function queueUiUpdate(data) {
+    if (!_uiVisible && data && data.uiIsOpen === true) {
+        return;
+    }
     var nextSignature = getUiUpdateSignature(data);
     if (nextSignature && nextSignature === _lastUiUpdateSignature) {
         return;
@@ -1054,6 +1180,9 @@ function reconcilePendingControls(states) {
 }
 
 function switchView(viewId) {
+    if (viewId === 'view-admin' && !isAdminUser()) {
+        viewId = 'view-home';
+    }
     currentViewId = viewId;
     document.querySelectorAll('.nav-item').forEach(function(el) {
         el.classList.toggle('active', el.dataset.target === viewId);
@@ -1066,6 +1195,20 @@ function switchView(viewId) {
         requestSharedPlaylists(false);
     } else if (viewId === 'view-social') {
         requestSocial(false);
+    } else if (viewId === 'view-admin') {
+        renderAdminPanel();
+    }
+}
+
+function closeTransientUiSurfaces() {
+    clearSearchResults();
+    hidePlayerSuggestions();
+    document.querySelectorAll('.modal-backdrop').forEach(function(modal) {
+        modal.style.display = 'none';
+    });
+    var notifications = document.getElementById('notification-container');
+    if (notifications) {
+        notifications.innerHTML = '';
     }
 }
 
@@ -1084,6 +1227,25 @@ function updateUi(data) {
             searchSources = data.searchSources;
             defaultSearchSource = data.defaultSearchSource || defaultSearchSource || 'youtube';
             populateSearchSources(searchSources, defaultSearchSource);
+        }
+        if (data.permissions) {
+            permissions = data.permissions;
+            updateStaffVisibility();
+        }
+        if (Array.isArray(data.deviceProfiles)) {
+            deviceProfiles = data.deviceProfiles;
+        }
+        if (Array.isArray(data.propModels)) {
+            propModels = data.propModels;
+        }
+        if (data.adminQuickActions) {
+            adminQuickActions = data.adminQuickActions || {};
+        }
+        if (data.requestConfig) {
+            requestConfig = data.requestConfig || {};
+        }
+        if (data.speakerConfig) {
+            speakerConfig = data.speakerConfig || {};
         }
         if (Number.isFinite(Number(data.defaultTransitionSeconds))) {
             defaultTransitionSeconds = Number(data.defaultTransitionSeconds);
@@ -1122,6 +1284,8 @@ function updateUi(data) {
     if (data.hideUi) {
         setUiVisible(false);
         _lastUiUpdateSignature = '';
+        _queuedUiData = null;
+        _uiFrameScheduled = false;
         pendingControlState = {};
         _activeSearchRequestId = null;
         clearTimeout(_searchRetryTimer);
@@ -1131,11 +1295,19 @@ function updateUi(data) {
         playerSuggestionState.visible = false;
         playerSuggestionState.suggestions = [];
         playerSuggestionState.pendingRequestId = null;
-        hidePlayerSuggestions();
+        closeTransientUiSurfaces();
         return;
     }
 
-    if (data.permissions) permissions = data.permissions;
+    if (data.permissions) {
+        permissions = data.permissions;
+        updateStaffVisibility();
+    }
+    if (data.admin !== undefined) {
+        adminState = data.admin || null;
+        renderAdminPanel();
+        dispatchAdminUpdate();
+    }
     if (data.startupStates) startupStates = copyStateMap(data.startupStates);
     if (data.deviceSessions) mergeDeviceSessions(data.deviceSessions);
     if (data.failedPlayers) localPlaybackFailures = copyStateMap(data.failedPlayers);
@@ -1183,9 +1355,28 @@ function updateUi(data) {
         if (adminModal && adminModal.style.display === 'flex') {
             refreshAdminModalFromState();
         }
+        dispatchAdminUpdate();
     }
 }
 
+function dispatchAdminUpdate() {
+    var speakerModelList = (speakerConfig && Array.isArray(speakerConfig.models) && speakerConfig.models.length > 0)
+        ? speakerConfig.models
+        : propModels;
+    window.dispatchEvent(new CustomEvent('pmms:adminUpdate', {
+        detail: {
+            adminState: adminState,
+            deviceSessions: deviceSessions,
+            usableMediaPlayers: usableMediaPlayers,
+            deviceProfiles: deviceProfiles,
+            propModels: propModels,
+            speakerModels: speakerModelList,
+            permissions: permissions,
+            activePlayerHandle: activePlayerHandle,
+            adminMaxRange: adminMaxRange || maxRange,
+        }
+    }));
+}
 
 'use strict';
 
@@ -2685,6 +2876,10 @@ function initSearch() {
             updateSearchPlaceholder();
             updateYoutubeProviderControl();
             clearSearchResults();
+            if (getCurrentSearchSource() === 'radio' && (!input.value || !input.value.trim())) {
+                renderRadioFavoriteResults();
+                return;
+            }
             if (!input.value || !input.value.trim()) return;
             if (getCurrentSearchSource() === 'direct') return;
             performSearch(true);
@@ -2697,6 +2892,9 @@ function initSearch() {
             clearTimeout(_searchDebounceTimer);
             clearSearchResults();
             _setSearchState('idle');
+            if (getCurrentSearchSource() === 'radio') {
+                renderRadioFavoriteResults();
+            }
             return;
         }
 
@@ -2818,7 +3016,14 @@ function performSearch(forceImmediate) {
             showNotification('Please select a nearby device first!', 'Play', '#ff4444');
             return;
         }
-        requestPlaybackOnHandle(_h(), { url: normalizeDirectInputUrl(q), label: getCurrentDeviceLabel(), video: true, source: source });
+        requestPlaybackOnHandle(_h(), {
+            url: normalizeDirectInputUrl(q),
+            label: getCurrentDeviceLabel(),
+            video: source === 'radio' ? false : true,
+            source: source,
+            live: source === 'radio',
+            radio: source === 'radio'
+        });
         if (input) input.value = '';
         clearSearchResults();
         return;
@@ -2869,6 +3074,19 @@ function clearSearchResults() {
         err.textContent = '';
     }
     _activeSearchRequestId = 'cleared:' + Date.now();
+}
+
+function renderRadioFavoriteResults() {
+    var favorites = Object.keys(radioFavorites || {}).map(function(key) {
+        var station = cloneValue(radioFavorites[key] || {});
+        station.stationId = station.stationId || key;
+        station.source = 'radio';
+        station.radio = true;
+        station.live = true;
+        return station;
+    });
+    if (!favorites.length) return;
+    renderSearchResults(favorites, null);
 }
 
 function handleSearchError(message, requestId, state, retryAfterMs) {
@@ -2941,13 +3159,22 @@ function renderSearchResults(results, requestId) {
         results.forEach(function(res) {
             var item = document.createElement('div');
             item.className = 'search-result';
+            var resultSource = res.source || getCurrentSearchSource();
+            var isRadioResult = resultSource === 'radio' || res.radio === true;
+            var favoriteKey = isRadioResult ? getRadioFavoriteKey(res) : null;
+            var isRadioFavorite = favoriteKey && radioFavorites[favoriteKey];
 
             var thumbSrc = normalizeRemoteAssetUrl(res.thumbnail || '');
             var thumbHtml = thumbSrc
                 ? '<div class="sr-thumb" style="background-image:url(' + encodeURI(thumbSrc) + ')"></div>'
-                : '<div class="sr-thumb sr-thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>';
+                : '<div class="sr-thumb sr-thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+                    (isRadioResult
+                        ? '<path d="M4.9 19.1A10 10 0 0 1 2 12a10 10 0 0 1 20 0 10 10 0 0 1-2.9 7.1"/><circle cx="12" cy="12" r="2"/><path d="M12 14v8"/>'
+                        : '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') +
+                    '</svg></div>';
 
             var sourceBadge = res.source ? '<span class="badge badge-source">' + safeText(res.source) + '</span>' : '';
+            var liveBadge = (res.live === true || isRadioResult) ? '<span class="badge badge-live">LIVE</span>' : '';
 
             item.innerHTML =
                 thumbHtml +
@@ -2956,10 +3183,15 @@ function renderSearchResults(results, requestId) {
                     '<div class="sr-meta">' +
                         safeText(res.author || 'Unknown') +
                         (res.duration ? ' - ' + timeToString(res.duration) : '') +
-                        ' ' + sourceBadge +
+                        ' ' + sourceBadge + liveBadge +
                     '</div>' +
                 '</div>' +
                 '<div class="sr-actions">' +
+                    (isRadioResult
+                        ? '<button class="btn-icon btn-sm sr-radio-fav-btn' + (isRadioFavorite ? ' active' : '') + '" data-tooltip="Favorite station" aria-label="Favorite station">' +
+                            '<svg width="16" height="16" viewBox="0 0 24 24" fill="' + (isRadioFavorite ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.2 16.8 14 18.2 21 12 17.4 5.8 21 7.2 14 2 9.2 9 8.5 12 2"/></svg>' +
+                        '</button>'
+                        : '') +
                     '<button class="btn-icon btn-sm sr-play-btn" data-tooltip="Play now" aria-label="Play now">' +
                         '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>' +
                     '</button>' +
@@ -2980,8 +3212,10 @@ function renderSearchResults(results, requestId) {
                     duration: res.duration,
                     author: res.author,
                     thumbnail: thumbSrc || res.thumbnail,
-                    source: res.source || getCurrentSearchSource(),
-                    video: true
+                    source: resultSource,
+                    radio: isRadioResult,
+                    live: res.live === true || isRadioResult,
+                    video: isRadioResult ? false : res.video !== false
                 });
                 clearSearchResults();
                 var input = document.getElementById('search-input');
@@ -2997,6 +3231,34 @@ function renderSearchResults(results, requestId) {
                 e.stopPropagation();
                 openAddToPlaylistModal(res);
             };
+            var favBtn = item.querySelector('.sr-radio-fav-btn');
+            if (favBtn && favoriteKey) {
+                favBtn.onclick = function(e) {
+                    e.stopPropagation();
+                    if (radioFavorites[favoriteKey]) {
+                        delete radioFavorites[favoriteKey];
+                        favBtn.classList.remove('active');
+                        var icon = favBtn.querySelector('svg');
+                        if (icon) icon.setAttribute('fill', 'none');
+                        showNotification('Radio station removed from favorites.', 'Radio');
+                    } else {
+                        radioFavorites[favoriteKey] = {
+                            title: res.title,
+                            url: res.url,
+                            author: res.author,
+                            thumbnail: res.thumbnail,
+                            source: 'radio',
+                            live: true,
+                            radio: true
+                        };
+                        favBtn.classList.add('active');
+                        var filledIcon = favBtn.querySelector('svg');
+                        if (filledIcon) filledIcon.setAttribute('fill', 'currentColor');
+                        showNotification('Radio station saved locally.', 'Radio');
+                    }
+                    saveRadioFavorites();
+                };
+            }
 
             tray.appendChild(item);
         });
@@ -3015,9 +3277,17 @@ function openCreatePlaylist() {
         showNotification('You have reached the maximum of ' + displaySummary.maxPlaylists + ' playlists.', 'Library', '#ff4444');
         return;
     }
-    showPrompt('New Playlist', 'Enter playlist name...', function(name) {
-        if (name && name.trim().length > 0 && name.trim().length <= 100) {
-            sendMessage('createPlaylist', { name: name.trim() });
+    showPrompt('New Playlist', 'Enter playlist name... (max 50 chars)', function(name) {
+        var trimmed = name && name.trim();
+        if (trimmed && trimmed.length > 0 && trimmed.length <= 50) {
+            if (!addPendingPlaylistCreate(trimmed)) {
+                showNotification('Playlist creation is already pending.', 'Library');
+                return;
+            }
+            showNotification('Creating playlist...', 'Library');
+            sendMessage('createPlaylist', { name: trimmed });
+        } else if (trimmed && trimmed.length > 50) {
+            showNotification('Playlist name too long (max 50 characters).', 'Library', '#ff4444');
         }
     });
 }
@@ -3126,6 +3396,50 @@ function clonePlaylistEntry(playlist) {
     return copy;
 }
 
+function getPendingPlaylistCreateRows() {
+    return Object.keys(pendingPlaylistCreates).map(function(key) {
+        return pendingPlaylistCreates[key];
+    }).sort(function(a, b) {
+        return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+}
+
+function normalizePlaylistNameKey(name) {
+    return String(name || '').trim().toLowerCase();
+}
+
+function clearPendingPlaylistCreateByName(name) {
+    var key = normalizePlaylistNameKey(name);
+    var pending = pendingPlaylistCreates[key];
+    if (!pending) return;
+    if (pending.timeoutId) clearTimeout(pending.timeoutId);
+    delete pendingPlaylistCreates[key];
+}
+
+function addPendingPlaylistCreate(name) {
+    var key = normalizePlaylistNameKey(name);
+    if (!key || pendingPlaylistCreates[key]) {
+        return false;
+    }
+
+    pendingPlaylistCreateSeq += 1;
+    pendingPlaylistCreates[key] = {
+        id: 'pending-playlist-' + pendingPlaylistCreateSeq,
+        name: String(name || '').trim(),
+        pendingCreate: true,
+        createdAt: Date.now(),
+        timeoutId: setTimeout(function() {
+            if (!pendingPlaylistCreates[key]) return;
+            delete pendingPlaylistCreates[key];
+            refreshPlaylistsDisplay({ quiet: false });
+            showNotification('Playlist creation was not confirmed. Refreshed library state.', 'Library', '#ff4444');
+            requestPlaylists(true);
+        }, 8000)
+    };
+    refreshPlaylistsDisplay({ quiet: true });
+    return true;
+}
+
 function normalizeFavoritePayloadValue(payload) {
     if (!payload || typeof payload !== 'object') return null;
     if (payload.isFavorite === true || payload.isFavorite === false) {
@@ -3196,6 +3510,12 @@ function commitCanonicalPlaylists(playlists, summary, libraryRevision) {
     syncLibrarySummary(summary);
     authoritativePlaylists = (Array.isArray(playlists) ? playlists : []).map(function(pl) {
         return clonePlaylistEntry(pl);
+    });
+
+    authoritativePlaylists.forEach(function(pl) {
+        if (pl && pl.name) {
+            clearPendingPlaylistCreateByName(pl.name);
+        }
     });
 
     Object.keys(pendingFavoriteState).forEach(function(key) {
@@ -3650,17 +3970,23 @@ function populatePlaylists(lists, targetId, options) {
     if (!grid) return;
     grid.classList.toggle('playlist-grid-quiet', quiet);
 
-    if (!lists || lists.length === 0) {
+    var renderLists = Array.isArray(lists) ? lists.slice() : [];
+    if (targetId === 'playlists-grid') {
+        renderLists = renderLists.concat(getPendingPlaylistCreateRows());
+    }
+
+    if (!renderLists.length) {
         grid.innerHTML = '<div class="empty-state"><p>No playlists here.</p></div>';
         return;
     }
 
     grid.innerHTML = '';
-    lists.forEach(function(pl) {
+    renderLists.forEach(function(pl) {
+        var isPendingCreate = pl && pl.pendingCreate === true;
         var isFavorite = isPlaylistFavorite(pl);
         var isFavoritePending = !!pendingFavoriteState[normalizePlaylistId(pl.id)];
         var card = document.createElement('div');
-        card.className = 'playlist-card' + (isFavorite ? ' favorite-active' : '') + (isFavoritePending ? ' favorite-pending' : '');
+        card.className = 'playlist-card' + (isFavorite ? ' favorite-active' : '') + (isFavoritePending ? ' favorite-pending' : '') + (isPendingCreate ? ' playlist-pending-create' : '');
         card.dataset.playlistId = normalizePlaylistId(pl.id) || '';
         card.innerHTML =
             '<div class="playlist-card-icon">' +
@@ -3668,20 +3994,21 @@ function populatePlaylists(lists, targetId, options) {
             '</div>' +
             '<div class="playlist-card-body">' +
                 '<div class="playlist-name">' + safeText(pl.name) + '</div>' +
-                '<div class="playlist-sub">' + (isFavorite ? 'Pinned favorite' : 'Playlist') + '</div>' +
+                '<div class="playlist-sub">' + (isPendingCreate ? 'Creating...' : (isFavorite ? 'Pinned favorite' : 'Playlist')) + '</div>' +
             '</div>' +
             '<div class="playlist-card-actions">' +
-                (allowFavorite
+                (allowFavorite && !isPendingCreate
                     ? '<button class="btn-icon btn-sm playlist-pin-btn' + (isFavorite ? ' active' : '') + (isFavoritePending ? ' favorite-pending' : '') + '" title="' + (isFavorite ? 'Unpin Favorite' : 'Pin Favorite') + '"' + (isFavoritePending ? ' disabled' : '') + '>' +
                         '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.1L22 9.3l-5 4.8L18.2 22 12 18.7 5.8 22 7 14.1 2 9.3l7.1-1.2z"/></svg>' +
                     '</button>'
                     : '') +
-                '<button class="btn-icon btn-sm playlist-share-btn" title="Share">' +
+                (!isPendingCreate ? '<button class="btn-icon btn-sm playlist-share-btn" title="Share">' +
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' +
-                '</button>' +
+                '</button>' : '<span class="search-status-spinner" aria-hidden="true"></span>') +
             '</div>';
 
         card.onclick = function(e) {
+            if (isPendingCreate) return;
             if (e.target.closest('.playlist-share-btn') || e.target.closest('.playlist-pin-btn')) return;
             openPlaylist(pl.id, pl.name);
         };
@@ -3694,10 +4021,13 @@ function populatePlaylists(lists, targetId, options) {
             };
         }
 
-        card.querySelector('.playlist-share-btn').onclick = function(e) {
-            e.stopPropagation();
-            openShareModal(pl.id);
-        };
+        var shareBtn = card.querySelector('.playlist-share-btn');
+        if (shareBtn) {
+            shareBtn.onclick = function(e) {
+                e.stopPropagation();
+                openShareModal(pl.id);
+            };
+        }
 
         grid.appendChild(card);
     });
@@ -3723,7 +4053,7 @@ function populatePlaylistTracks(pid, tracks) {
                 '<div class="list-item-num">' + (idx + 1) + '</div>' +
                 '<div>' +
                     '<div class="list-item-title">' + safeText(tr.title || 'Untitled') + '</div>' +
-                    '<div class="list-item-sub">' + timeToString(tr.duration) + '</div>' +
+                    '<div class="list-item-sub">' + (tr.live === true ? 'LIVE' : timeToString(tr.duration)) + '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="list-item-right">' +
@@ -3737,7 +4067,7 @@ function populatePlaylistTracks(pid, tracks) {
 
         item.querySelector('.track-play-btn').onclick = function(e) {
             e.stopPropagation();
-            playTrack(tr.url, tr.title);
+            playTrack(tr);
         };
         item.querySelector('.track-remove-btn').onclick = function(e) {
             e.stopPropagation();
@@ -3749,12 +4079,23 @@ function populatePlaylistTracks(pid, tracks) {
     applyStaticTooltips();
 }
 
-function playTrack(url, title) {
+function playTrack(track) {
     if (!activePlayerHandle) {
         showNotification('Select a device first!', 'Play', '#ff4444');
         return;
     }
-    requestPlaybackOnHandle(_h(), { url: url, title: title, video: true });
+    if (!track || !track.url) return;
+    requestPlaybackOnHandle(_h(), {
+        url: track.url,
+        title: track.title || track.url,
+        duration: track.duration,
+        author: track.author,
+        thumbnail: track.thumbnail,
+        source: track.source,
+        live: track.live === true,
+        radio: track.radio === true,
+        video: track.video !== false
+    });
 }
 
 function playPlaylist() {
@@ -3772,6 +4113,9 @@ function playPlaylist() {
             duration: track.duration,
             author: track.author,
             thumbnail: track.thumbnail,
+            source: track.source,
+            live: track.live === true,
+            radio: track.radio === true,
             video: track.video !== false,
             audioTrack: cloneValue(track.audioTrack || track.selectedAudioTrack),
             selectedAudioTrack: cloneValue(track.selectedAudioTrack || track.audioTrack)
@@ -3823,7 +4167,17 @@ function openAddToPlaylistModal(track) {
         item.onclick = function() {
             sendMessage('addTrack', {
                 playlistId: pl.id,
-                trackData: { title: pendingTrackForPlaylist.title, url: pendingTrackForPlaylist.url, duration: pendingTrackForPlaylist.duration }
+                trackData: {
+                    title: pendingTrackForPlaylist.title,
+                    url: pendingTrackForPlaylist.url,
+                    duration: pendingTrackForPlaylist.duration,
+                    author: pendingTrackForPlaylist.author,
+                    thumbnail: pendingTrackForPlaylist.thumbnail,
+                    source: pendingTrackForPlaylist.source,
+                    live: pendingTrackForPlaylist.live === true,
+                    radio: pendingTrackForPlaylist.radio === true,
+                    video: pendingTrackForPlaylist.video !== false
+                }
             });
             modal.style.display = 'none';
             pendingTrackForPlaylist = null;
@@ -4128,6 +4482,253 @@ function bindAdminLockButtons(handle, body) {
     }
 }
 
+function selectAdminDevice(handle) {
+    var key = normalizeAdminHandle(handle);
+    if (!key) return;
+    selectedAdminDeviceHandle = key;
+    if (currentViewId !== 'view-admin') {
+        switchView('view-admin');
+    } else {
+        renderAdminPanel();
+    }
+    // Dispatch to React AdminView so it can pre-select the correct device.
+    try {
+        window.dispatchEvent(new CustomEvent('pmms:adminSelectHandle', { detail: { handle: key } }));
+    } catch (_) {}
+}
+
+function formatAdminCoords(coords) {
+    if (!coords) return 'Unknown position';
+    var x = Number(coords.x);
+    var y = Number(coords.y);
+    var z = Number(coords.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        return 'Unknown position';
+    }
+    return x.toFixed(1) + ', ' + y.toFixed(1) + ', ' + z.toFixed(1);
+}
+
+function getAdminLockMode(device) {
+    var lock = device && device.adminLock;
+    return lock && lock.mode ? String(lock.mode) : 'public';
+}
+
+function renderPendingRequestsHtml(device) {
+    var pending = device && Array.isArray(device.pendingRequests) ? device.pendingRequests : [];
+    if (!pending.length) {
+        return '<div class="admin-empty-small">No pending requests.</div>';
+    }
+    return pending.map(function(request) {
+        var options = request && request.options ? request.options : {};
+        return '<div class="admin-pending-row" data-request-id="' + safeText(String(request.id || '')) + '">' +
+            '<div class="admin-pending-main">' +
+                '<strong>' + safeText(options.title || options.url || 'Requested media') + '</strong>' +
+                '<span>' + safeText(request.playerName || ('Player ' + (request.source || ''))) + '</span>' +
+            '</div>' +
+            '<div class="admin-pending-actions">' +
+                '<button class="btn-outline btn-sm" data-admin-approve-next="' + safeText(String(request.id || '')) + '">Next</button>' +
+                '<button class="btn-outline btn-sm" data-admin-approve="' + safeText(String(request.id || '')) + '">Queue</button>' +
+                '<button class="btn-danger btn-sm" data-admin-reject="' + safeText(String(request.id || '')) + '">Reject</button>' +
+            '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function renderLinkedSpeakersHtml(device) {
+    var speakers = device && Array.isArray(device.linkedSpeakers) ? device.linkedSpeakers : [];
+    if (!speakers.length) {
+        return '<div class="admin-empty-small">No linked speakers.</div>';
+    }
+    return speakers.map(function(speaker, index) {
+        return '<div class="admin-speaker-row">' +
+            '<div class="admin-speaker-info">' +
+                '<span>Speaker ' + (index + 1) + '</span>' +
+                '<span>' + safeText(formatAdminCoords(speaker.coords || speaker.position)) + '</span>' +
+                (speaker.persistent ? '<span class="badge badge-source">Persistent</span>' : '<span class="badge badge-type">Session</span>') +
+            '</div>' +
+            '<button class="btn-icon btn-sm btn-danger-sm" data-admin-remove-speaker="' + safeText(String(speaker.id || '')) + '" title="Remove speaker">' +
+                '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M9 6V4h6v2"/></svg>' +
+            '</button>' +
+        '</div>';
+    }).join('');
+}
+
+function renderAdminLogsHtml() {
+    var logs = adminState && Array.isArray(adminState.logs) ? adminState.logs : [];
+    if (!logs.length) {
+        return '<div class="admin-empty-small">No logs yet.</div>';
+    }
+    return logs.slice(-30).reverse().map(function(log) {
+        var details = log && log.data ? JSON.stringify(log.data) : '';
+        return '<div class="admin-log-row">' +
+            '<div><strong>' + safeText(log.event || 'event') + '</strong><span>#' + safeText(String(log.id || '')) + ' handle ' + safeText(String(log.handle || '')) + '</span></div>' +
+            '<small>' + safeText(details.length > 120 ? details.substring(0, 117) + '...' : details) + '</small>' +
+        '</div>';
+    }).join('');
+}
+
+function renderAdminPanel() {
+    // Admin panel is now rendered via React AdminView.tsx
+}
+
+function parseAdminGrades(value) {
+    return String(value || '').split(',').map(function(part) {
+        var grade = Number(part.trim());
+        return Number.isFinite(grade) ? grade : null;
+    }).filter(function(grade) {
+        return grade !== null;
+    });
+}
+
+function buildAdminLockFromDetail() {
+    var modeEl = document.getElementById('admin-detail-lock-mode');
+    var jobEl = document.getElementById('admin-detail-lock-job');
+    var gradeEl = document.getElementById('admin-detail-lock-grade');
+    var gradesEl = document.getElementById('admin-detail-lock-grades');
+    var mode = modeEl ? modeEl.value : 'public';
+    var lock = { mode: mode };
+    var job = jobEl ? String(jobEl.value || '').trim() : '';
+    if (job) lock.job = job;
+    var grade = gradeEl ? Number(gradeEl.value) : NaN;
+    if (mode === 'job_grade' && Number.isFinite(grade)) lock.exactGrade = grade;
+    if (mode === 'job_min_grade' && Number.isFinite(grade)) lock.minGrade = grade;
+    if (mode === 'job_grades') lock.grades = parseAdminGrades(gradesEl ? gradesEl.value : '');
+    return lock;
+}
+
+function bindAdminDetailActions(handle) {
+    var saveBtn = document.getElementById('admin-detail-save-main');
+    if (saveBtn) {
+        saveBtn.onclick = function() {
+            var nameEl = document.getElementById('admin-detail-name');
+            var profileEl = document.getElementById('admin-detail-profile');
+            var requestModeEl = document.getElementById('admin-detail-request-mode');
+            var rangeEl = document.getElementById('admin-detail-range');
+            var volumeEl = document.getElementById('admin-detail-volume');
+            var transitionEl = document.getElementById('admin-detail-transition');
+            if (nameEl && nameEl.value.trim()) {
+                sendMessage('adminRenameDevice', { handle: handle, name: nameEl.value.trim() });
+            }
+            if (profileEl && profileEl.value) {
+                sendMessage('adminApplyProfile', { handle: handle, profile: profileEl.value });
+            }
+            if (requestModeEl) {
+                sendMessage('adminSetRequestMode', { handle: handle, mode: requestModeEl.value });
+            }
+            sendMessage('adminSetDeviceSettings', {
+                handle: handle,
+                settings: {
+                    range: rangeEl ? Number(rangeEl.value) : undefined,
+                    volume: volumeEl ? Number(volumeEl.value) : undefined,
+                    transitionSeconds: transitionEl ? Number(transitionEl.value) : undefined
+                }
+            });
+            sendMessage('adminSetLock', { handle: handle, lock: buildAdminLockFromDetail() });
+            showNotification('Admin settings sent.', 'Admin');
+        };
+    }
+
+    var settingsBtn = document.getElementById('admin-detail-open-settings');
+    if (settingsBtn) settingsBtn.onclick = function() { openAdminModal(handle); };
+
+    var resetBtn = document.getElementById('admin-detail-force-reset');
+    if (resetBtn) resetBtn.onclick = function() {
+        showConfirm('Force reset device?', 'This clears the live runtime state for this device.', function(ok) {
+            if (ok) sendMessage('forceResetDevice', { handle: handle });
+        });
+    };
+
+    var linkBtn = document.getElementById('admin-detail-link-speaker');
+    if (linkBtn) linkBtn.onclick = function() {
+        sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: true });
+    };
+
+    var clearSpeakersBtn = document.getElementById('admin-detail-clear-speakers');
+    if (clearSpeakersBtn) clearSpeakersBtn.onclick = function() {
+        sendMessage('adminClearLinkedSpeakers', { handle: handle });
+    };
+
+    var clearPendingBtn = document.getElementById('admin-detail-clear-pending');
+    if (clearPendingBtn) clearPendingBtn.onclick = function() {
+        sendMessage('adminClearRequests', { handle: handle });
+    };
+
+    var removePersistentBtn = document.getElementById('admin-detail-remove-persistent');
+    if (removePersistentBtn) removePersistentBtn.onclick = function() {
+        showConfirm('Remove persistent device?', 'This removes the saved device entry from the resource data.', function(ok) {
+            if (ok) sendMessage('adminRemovePersistentDevice', { handle: handle });
+        });
+    };
+
+    document.querySelectorAll('[data-admin-approve]').forEach(function(btn) {
+        btn.onclick = function() {
+            sendMessage('adminApproveRequest', { handle: handle, requestId: this.dataset.adminApprove, playNext: false });
+        };
+    });
+    document.querySelectorAll('[data-admin-approve-next]').forEach(function(btn) {
+        btn.onclick = function() {
+            sendMessage('adminApproveRequest', { handle: handle, requestId: this.dataset.adminApproveNext, playNext: true });
+        };
+    });
+    document.querySelectorAll('[data-admin-reject]').forEach(function(btn) {
+        btn.onclick = function() {
+            sendMessage('adminRejectRequest', { handle: handle, requestId: this.dataset.adminReject });
+        };
+    });
+
+    document.querySelectorAll('[data-admin-remove-speaker]').forEach(function(btn) {
+        btn.onclick = function() {
+            var speakerId = this.dataset.adminRemoveSpeaker;
+            showConfirm('Remove linked speaker?', 'This will remove the physical speaker prop.', function(ok) {
+                if (ok) sendMessage('removeLinkedSpeaker', { handle: handle, speakerId: speakerId });
+            });
+        };
+    });
+}
+
+function bindAdminCreateButtons() {
+    var interactionBtn = document.getElementById('admin-add-interaction-btn');
+    if (interactionBtn && !interactionBtn.dataset.bound) {
+        interactionBtn.dataset.bound = '1';
+        interactionBtn.onclick = function() {
+            promptCreatePersistentDevice('interaction');
+        };
+    }
+    var propBtn = document.getElementById('admin-add-prop-btn');
+    if (propBtn && !propBtn.dataset.bound) {
+        propBtn.dataset.bound = '1';
+        propBtn.onclick = function() {
+            promptCreatePersistentDevice('prop');
+        };
+    }
+}
+
+function promptCreatePersistentDevice(mode) {
+    showPrompt(mode === 'prop' ? 'New Prop Device' : 'New Interaction Point', 'Device name', function(name) {
+        if (name == null) return;
+        showPrompt('Device Profile', 'public, club, cinema, radio...', function(profile) {
+            if (profile == null) return;
+            var profileKey = String(profile || '').trim() || 'public';
+            var payload = {
+                mode: mode,
+                label: String(name || '').trim() || (mode === 'prop' ? 'Persistent Prop' : 'Interaction Point'),
+                profile: profileKey,
+                requestMode: (requestConfig && requestConfig.defaultMode) || 'queue',
+                adminLock: { mode: 'public' },
+            };
+            if (mode === 'prop') {
+                showPrompt('Prop Model', 'prop_tv_flat_01', function(propModel) {
+                    if (propModel == null) return;
+                    payload.propModel = String(propModel || '').trim();
+                    sendMessage('adminAddPersistentDevice', payload);
+                });
+            } else {
+                sendMessage('adminAddPersistentDevice', payload);
+            }
+        });
+    });
+}
+
 function getAdminStateFromInfo(info) {
     var defaults = getGlobalDeviceDefaults();
     var state = {
@@ -4332,6 +4933,7 @@ function openAdminModal(forcedHandle) {
         var info = lockState.info;
         var canEdit = lockState.canEdit;
         var canInteract = lockState.canInteract;
+        var canEditAdvanced = canEdit; // All players with interact permission can adjust device settings
         var session = getEffectiveDeviceSession(handle);
         var defaults = getAdminDefaultsFromPayload(defaultsPayload);
         var state = getAdminStateFromInfo(info);
@@ -4344,7 +4946,8 @@ function openAdminModal(forcedHandle) {
         var maxAllowedRange = allowAdminRange ? adminMaxRange : maxRange;
         var rangeSliderMax = allowAdminRange ? 1000 : Math.round(maxRange);
         var rangeSliderValue = getRangeSliderValue(state.range, allowAdminRange);
-        var showForceReset = permissions.overrideDevice === true;
+        var showForceReset = permissions.overrideDevice === true || permissions.manage === true;
+        var showStaffQuick = isStaffUser();
 
         body.dataset.handle = String(handle);
         body.dataset.lockSignature = lockState.signature;
@@ -4363,56 +4966,113 @@ function openAdminModal(forcedHandle) {
             '<label class="admin-label">Session Lock</label>' +
             '<div class="admin-lock-status" id="admin-lock-status">' + safeText(lockState.lockStatusText) + '</div>' +
             '<div class="admin-lock-actions" id="admin-lock-actions">' + lockState.lockActionsHtml + '</div>' +
-        '</div>' +
+        '</div>';
 
-        '<div class="admin-section">' +
-            '<div class="admin-row"><label>Idle Reset</label><span class="admin-val" id="admin-reset-countdown">' + safeText(resetStatusText) + '</span></div>' +
-            '<div class="admin-row"><label>History</label><span class="admin-val" id="admin-history-count">' + safeText(String(historyCount)) + '</span></div>' +
-            '<div class="admin-row"><label>Queue</label><span class="admin-val" id="admin-queue-count">' + safeText(String(queueCount)) + '</span></div>' +
-        '</div>' +
+        /* ── Speaker section (visible to all interacting players) ── */
+        var speakerList = (session && session.settings && Array.isArray(session.settings.linkedSpeakers))
+            ? session.settings.linkedSpeakers
+            : (session && Array.isArray(session.linkedSpeakers) ? session.linkedSpeakers : []);
+        var speakerHtml = '';
+        if (speakerList.length > 0) {
+            speakerHtml = '<div class="admin-speaker-list" id="admin-speaker-list">';
+            speakerList.forEach(function(spk) {
+                var canDeleteSpk = isStaffUser() || (spk.createdBy && spk.createdBy === (permissions && permissions.identifier));
+                speakerHtml +=
+                    '<div class="admin-speaker-row" data-speaker-id="' + safeText(String(spk.id || '')) + '">' +
+                        '<div class="admin-speaker-info">' +
+                            '<span class="admin-speaker-name">' + safeText(spk.propModel || 'Speaker') + '</span>' +
+                            '<span class="admin-speaker-meta">' + safeText(spk.createdByName || '') + (spk.persistent ? ' · persistent' : '') + '</span>' +
+                        '</div>' +
+                        (canDeleteSpk
+                            ? '<button class="btn-danger btn-xs admin-speaker-remove" data-speaker-id="' + safeText(String(spk.id || '')) + '">Remove</button>'
+                            : '<span class="admin-speaker-locked">🔒</span>') +
+                    '</div>';
+            });
+            speakerHtml += '</div>';
+        } else {
+            speakerHtml = '<p class="admin-speaker-empty">No linked speakers.</p>';
+        }
 
-        '<div class="admin-section">' +
-            '<label class="admin-label">Range <span id="val-range">' + Math.round(state.range) + 'm</span></label>' +
-            '<input type="range" class="slider' + (allowAdminRange ? ' slider-admin-range' : '') + '" id="set-range" min="0" max="' + rangeSliderMax + '" value="' + rangeSliderValue + '"' + (canEdit ? '' : ' disabled') + '>' +
-            '<div class="admin-range-meta"><span>Normal max ' + Math.round(maxRange) + 'm</span>' + (allowAdminRange ? '<span class="admin-range-admin">Admin max ' + Math.round(maxAllowedRange) + 'm</span>' : '') + '</div>' +
-        '</div>' +
+        /* ── Staff quick actions pill-bar ── */
+        var staffPillsHtml = '';
+        if (showStaffQuick) {
+            staffPillsHtml =
+                '<div class="admin-section staff-pills">' +
+                '<label class="admin-label">Staff Actions</label>' +
+                '<div class="admin-pill-bar">' +
+                    (isAdminUser() ? '<button class="pill-btn" id="staff-open-admin-panel" title="Open Admin Panel">Admin Panel</button>' : '') +
+                    '<button class="pill-btn" id="staff-clear-session-lock" title="Remove session lock/PIN">Clear Lock</button>' +
+                    (adminQuickActions && adminQuickActions.applyProfiles
+                        ? '<select id="staff-profile-select" class="pill-select">' + getProfileOptionsHtml(info.profile || '') + '</select>' +
+                          '<button class="pill-btn" id="staff-apply-profile">Apply Profile</button>'
+                        : '') +
+                    '<button class="pill-btn" id="staff-link-persistent-speaker" title="Place a persistent speaker (stays after restart)">Persistent Speaker</button>' +
+                    (adminQuickActions && adminQuickActions.extendedRangeToggle
+                        ? '<button class="pill-btn" id="staff-extended-range" title="Enable extended range slider">Ext. Range</button>'
+                        : '') +
+                    (showForceReset ? '<button class="pill-btn pill-btn-danger" id="staff-force-reset" title="Force reset the live device session">Force Reset</button>' : '') +
+                '</div>' +
+                '</div>';
+        }
 
-        '<div class="admin-section">' +
-            '<label class="admin-label">Same-Room Attenuation <span id="val-att-same">' + state.attSame.toFixed(1) + '</span></label>' +
-            '<input type="range" class="slider" id="set-att-same" min="0" max="10" step="0.1" value="' + state.attSame.toFixed(1) + '"' + (canEdit ? '' : ' disabled') + '>' +
-        '</div>' +
 
-        '<div class="admin-section">' +
-            '<label class="admin-label">Diff-Room Attenuation <span id="val-att-diff">' + state.attDiff.toFixed(1) + '</span></label>' +
-            '<input type="range" class="slider" id="set-att-diff" min="0" max="10" step="0.1" value="' + state.attDiff.toFixed(1) + '"' + (canEdit ? '' : ' disabled') + '>' +
-        '</div>' +
 
-        '<div class="admin-section">' +
-            '<label class="admin-label">Diff-Room Volume <span id="val-diff-room">' + (state.diffRoomVolume * 100).toFixed(0) + '%</span></label>' +
-            '<input type="range" class="slider" id="set-diff-room" min="0" max="1" step="0.01" value="' + state.diffRoomVolume.toFixed(2) + '"' + (canEdit ? '' : ' disabled') + '>' +
-        '</div>' +
+        body.innerHTML +=
+            /* Speaker section */
+            '<div class="admin-section">' +
+                '<div class="admin-row">' +
+                    '<label>Speakers</label>' +
+                    '<button class="btn-outline btn-sm" id="link-speaker-btn"' + (canInteract ? '' : ' disabled') + '>Add Speaker</button>' +
+                '</div>' +
+                speakerHtml +
+            '</div>' +
 
-        '<div class="admin-section">' +
-            '<label class="admin-label">Transition <span id="val-transition">' + state.transitionSeconds.toFixed(1) + 's</span></label>' +
-            '<input type="range" class="slider" id="set-transition" min="0" max="' + maxTransitionSeconds.toFixed(1) + '" step="0.1" value="' + state.transitionSeconds.toFixed(1) + '"' + (canEdit ? '' : ' disabled') + '>' +
-        '</div>' +
+            /* Staff pills */
+            staffPillsHtml +
 
-        '<div class="admin-section admin-row" id="admin-reset-row" style="display:none;">' +
-            '<label>Defaults</label>' +
-            '<button class="btn-outline btn-sm" id="admin-reset-btn"' + (canEdit ? '' : ' disabled') + '>Reset to Defaults</button>' +
-        '</div>' +
+            /* Device settings (visible to all players with interact permission) */
+            '<div class="admin-section">' +
+                '<label class="admin-label">Range <span id="val-range">' + Math.round(state.range) + 'm</span></label>' +
+                '<input type="range" class="slider' + (allowAdminRange ? ' slider-admin-range' : '') + '" id="set-range" min="0" max="' + rangeSliderMax + '" value="' + rangeSliderValue + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
+                '<div class="admin-range-meta"><span>Normal max ' + Math.round(maxRange) + 'm</span>' + (allowAdminRange ? '<span class="admin-range-admin">Admin max ' + Math.round(maxAllowedRange) + 'm</span>' : '') + '</div>' +
+            '</div>' +
 
-        '<div class="admin-section admin-row">' +
-            '<label>Vehicle Mode</label>' +
-            '<button class="toggle-btn' + (state.isVehicle ? ' toggle-on' : '') + '" id="toggle-veh"' + (canEdit ? '' : ' disabled') + '>' + (state.isVehicle ? 'ON' : 'OFF') + '</button>' +
-        '</div>' +
+            '<div class="admin-section">' +
+                '<label class="admin-label">Same-Room Attenuation <span id="val-att-same">' + state.attSame.toFixed(1) + '</span></label>' +
+                '<input type="range" class="slider" id="set-att-same" min="0" max="10" step="0.1" value="' + state.attSame.toFixed(1) + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
+            '</div>' +
 
-        (showForceReset
-            ? '<div class="admin-section admin-row admin-danger-row">' +
-                '<label>Live Session</label>' +
-                '<button class="btn-danger btn-sm" id="admin-force-reset-btn">Delete Device</button>' +
-            '</div>'
-            : '');
+            '<div class="admin-section">' +
+                '<label class="admin-label">Diff-Room Attenuation <span id="val-att-diff">' + state.attDiff.toFixed(1) + '</span></label>' +
+                '<input type="range" class="slider" id="set-att-diff" min="0" max="10" step="0.1" value="' + state.attDiff.toFixed(1) + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
+            '</div>' +
+
+            '<div class="admin-section">' +
+                '<label class="admin-label">Diff-Room Volume <span id="val-diff-room">' + (state.diffRoomVolume * 100).toFixed(0) + '%</span></label>' +
+                '<input type="range" class="slider" id="set-diff-room" min="0" max="1" step="0.01" value="' + state.diffRoomVolume.toFixed(2) + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
+            '</div>' +
+
+            '<div class="admin-section">' +
+                '<label class="admin-label">Transition <span id="val-transition">' + state.transitionSeconds.toFixed(1) + 's</span></label>' +
+                '<input type="range" class="slider" id="set-transition" min="0" max="' + maxTransitionSeconds.toFixed(1) + '" step="0.1" value="' + state.transitionSeconds.toFixed(1) + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
+            '</div>' +
+
+            '<div class="admin-section admin-row" id="admin-reset-row" style="display:none;">' +
+                '<label>Defaults</label>' +
+                '<button class="btn-outline btn-sm" id="admin-reset-btn"' + (canEditAdvanced ? '' : ' disabled') + '>Reset to Defaults</button>' +
+            '</div>' +
+
+            '<div class="admin-section admin-row">' +
+                '<label>Vehicle Mode</label>' +
+                '<button class="toggle-btn' + (state.isVehicle ? ' toggle-on' : '') + '" id="toggle-veh"' + (canEditAdvanced ? '' : ' disabled') + '>' + (state.isVehicle ? 'ON' : 'OFF') + '</button>' +
+            '</div>' +
+
+            (showForceReset
+                ? '<div class="admin-section admin-row admin-danger-row">' +
+                    '<label>Live Session</label>' +
+                    '<button class="btn-danger btn-sm" id="admin-force-reset-btn">Delete Device</button>' +
+                  '</div>'
+                : '');
 
         var sendRange = function() {
         setPendingControlField(handle, 'range', state.range);
@@ -4432,7 +5092,7 @@ function openAdminModal(forcedHandle) {
         sendMessage('setTransition', { handle: handle, transitionSeconds: state.transitionSeconds });
         };
         var refreshResetControls = function() {
-        updateAdminResetControls(body, state, defaults, canEdit, function() {
+        updateAdminResetControls(body, state, defaults, canEditAdvanced, function() {
             var previous = {
                 range: state.range,
                 attSame: state.attSame,
@@ -4552,6 +5212,83 @@ function openAdminModal(forcedHandle) {
                     if (!ok) return;
                     sendMessage('forceResetDevice', { handle: handle });
                     closeAdminModal();
+                });
+            };
+        }
+        var linkSpeakerBtn = body.querySelector('#link-speaker-btn');
+        if (linkSpeakerBtn) {
+            linkSpeakerBtn.onclick = function() {
+                closeAdminModal();
+                sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: false });
+            };
+        }
+
+        // Speaker remove buttons
+        body.querySelectorAll('.admin-speaker-remove').forEach(function(btn) {
+            btn.onclick = function() {
+                var sid = btn.dataset.speakerId;
+                if (!sid) return;
+                showConfirm('Remove Speaker?', 'This will remove the linked speaker from this device.', function(ok) {
+                    if (!ok) return;
+                    sendMessage('removeLinkedSpeaker', { handle: handle, speakerId: sid });
+                    var row = body.querySelector('.admin-speaker-row[data-speaker-id="' + sid + '"]');
+                    if (row) row.remove();
+                });
+            };
+        });
+
+        var staffOpenPanelBtn = body.querySelector('#staff-open-admin-panel');
+        if (staffOpenPanelBtn) {
+            staffOpenPanelBtn.onclick = function() {
+                closeAdminModal();
+                selectAdminDevice(handle);
+            };
+        }
+
+        var staffClearLockBtn = body.querySelector('#staff-clear-session-lock');
+        if (staffClearLockBtn) {
+            staffClearLockBtn.onclick = function() {
+                sendMessage('adminClearSessionLock', { handle: handle });
+            };
+        }
+
+        var staffApplyProfileBtn = body.querySelector('#staff-apply-profile');
+        if (staffApplyProfileBtn) {
+            staffApplyProfileBtn.onclick = function() {
+                var select = body.querySelector('#staff-profile-select');
+                if (select && select.value) {
+                    sendMessage('adminApplyProfile', { handle: handle, profile: select.value });
+                }
+            };
+        }
+
+        var staffExtendedRangeBtn = body.querySelector('#staff-extended-range');
+        if (staffExtendedRangeBtn) {
+            staffExtendedRangeBtn.onclick = function() {
+                var rangeInput = body.querySelector('#set-range');
+                if (!rangeInput) return;
+                rangeInput.disabled = false;
+                rangeInput.focus();
+                showNotification('Extended range control enabled for this edit.', 'Device Settings');
+            };
+        }
+
+        var staffPersistentSpeakerBtn = body.querySelector('#staff-link-persistent-speaker');
+        if (staffPersistentSpeakerBtn) {
+            staffPersistentSpeakerBtn.onclick = function() {
+                closeAdminModal();
+                sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: true });
+            };
+        }
+
+        var staffForceResetBtn = body.querySelector('#staff-force-reset');
+        if (staffForceResetBtn) {
+            staffForceResetBtn.onclick = function() {
+                showConfirm('Force reset device?', 'This clears the live runtime state for this device.', function(ok) {
+                    if (ok) {
+                        sendMessage('forceResetDevice', { handle: handle });
+                        closeAdminModal();
+                    }
                 });
             };
         }
@@ -4708,14 +5445,14 @@ function ensureUiEnhancements() {
         '[data-tooltip]{position:relative;}' +
         '[data-tooltip]:hover::after,[data-tooltip]:focus-visible::after{' +
             'content:attr(data-tooltip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);' +
-            'background:rgba(8,8,12,0.96);color:#f0f0f8;border:1px solid rgba(255,255,255,0.12);' +
-            'border-radius:8px;padding:6px 9px;font-size:11px;white-space:nowrap;pointer-events:none;z-index:1200;' +
-            'box-shadow:0 10px 28px rgba(0,0,0,0.45);' +
+            'background:rgba(13,17,16,0.98);color:var(--text-primary);border:1px solid var(--border-hover);' +
+            'border-radius:6px;padding:6px 9px;font-size:11px;white-space:nowrap;pointer-events:none;z-index:1200;' +
+            'box-shadow:var(--shadow-sm);' +
         '}' +
         '#friend-suggestions{' +
             'position:absolute;left:0;right:0;top:calc(100% + 8px);display:none;flex-direction:column;gap:4px;' +
-            'padding:8px;background:rgba(18,18,28,0.98);border:1px solid rgba(255,255,255,0.08);border-radius:12px;' +
-            'box-shadow:0 18px 42px rgba(0,0,0,0.45);z-index:1000;max-height:260px;overflow-y:auto;' +
+            'padding:8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;' +
+            'box-shadow:var(--shadow);z-index:1000;max-height:260px;overflow-y:auto;' +
         '}' +
         '.add-friend-bar{position:relative;}' +
         '.friend-suggestion{' +
@@ -4884,6 +5621,7 @@ export function initLegacyUi() {
     initPlayerControls();
     initSocialAutocomplete();
     renderSidebarFavorites();
+    setUiVisible(false);
 
     document.addEventListener('keydown', function(e) {
         if (e.key !== 'Escape') return;
@@ -4939,6 +5677,12 @@ window.addEventListener('message', function(event) {
                 searchMinimumBusyMs: d.searchMinimumBusyMs,
                 deviceDefaults: d.deviceDefaults,
                 baseVolume: d.baseVolume,
+                permissions: d.permissions,
+                deviceProfiles: d.deviceProfiles,
+                propModels: d.propModels,
+                adminQuickActions: d.adminQuickActions,
+                requestConfig: d.requestConfig,
+                speakerConfig: d.speakerConfig,
                 debug: d.debug
             });
             break;
@@ -5035,6 +5779,8 @@ window.addEventListener('message', function(event) {
             favoriteRequestSeq = 0;
             favoriteResponseFloor = {};
             pendingControlState = {};
+            adminState = null;
+            selectedAdminDeviceHandle = null;
             librarySummary = {
                 playlistCount: 0,
                 favoriteCount: 0,

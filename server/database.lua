@@ -66,6 +66,7 @@ local function ensureSchemas()
             ensureIndex("pmms_playlists", "idx_pmms_playlists_owner_favorite", "INDEX `idx_pmms_playlists_owner_favorite` (`owner_license`, `is_favorite`, `created_at`)")
         end)
     end)
+    ensureColumn("pmms_playlist_tracks", "metadata", "LONGTEXT DEFAULT NULL")
     ensureTable("pmms_known_players", [[
         CREATE TABLE IF NOT EXISTS `pmms_known_players` (
           `license` varchar(64) NOT NULL,

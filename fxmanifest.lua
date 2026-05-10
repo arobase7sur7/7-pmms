@@ -20,6 +20,9 @@ server_scripts {
     "server/resolver.lua",
     "server/friends.lua",
     "server/playlists.lua",
+    "server/permissions.lua",
+    "server/equalizer.lua",
+    "server/admin.lua",
     "server/main.lua",
     "server/media.lua",
     "server/queue.lua",
@@ -33,6 +36,7 @@ client_scripts {
     "client/entities.lua",
     "client/target.lua",
     "client/media.lua",
+    "client/placement.lua",
     "client/nui.lua",
     "client/main.lua",
 }

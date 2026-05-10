@@ -435,6 +435,123 @@ local function searchYoutube(query, maxResults, callback)
     end)
 end
 
+local function searchRadio(query, maxResults, callback)
+    maxResults = math.max(1, math.min(50, tonumber(maxResults) or 20))
+    if type(query) == "string" and query:match("^https?://") then
+        callback(true, {
+            {
+                title = query,
+                url = query,
+                duration = 0,
+                live = true,
+                author = "Radio stream",
+                thumbnail = "",
+                source = "radio",
+                direct = true,
+                radio = true,
+                video = false,
+            },
+        })
+        return
+    end
+
+    local function mapStation(station)
+        if type(station) ~= "table" then
+            return nil
+        end
+        local streamUrl = normalizeRemoteAssetUrl(station.url_resolved or station.url)
+        if not streamUrl then
+            return nil
+        end
+        local meta = {}
+        if station.countrycode and station.countrycode ~= "" then meta[#meta + 1] = station.countrycode end
+        if station.language and station.language ~= "" then meta[#meta + 1] = station.language end
+        if station.tags and station.tags ~= "" then meta[#meta + 1] = station.tags end
+        local bitrate = tonumber(station.bitrate)
+        if bitrate and bitrate > 0 then meta[#meta + 1] = tostring(bitrate) .. "kbps" end
+
+        return {
+            title = station.name or streamUrl,
+            url = streamUrl,
+            originalUrl = station.url or streamUrl,
+            duration = 0,
+            live = true,
+            author = #meta > 0 and table.concat(meta, " | ") or "Radio station",
+            thumbnail = normalizeRemoteAssetUrl(station.favicon) or "",
+            source = "radio",
+            radio = true,
+            direct = true,
+            video = false,
+            stationUuid = station.stationuuid,
+            codec = station.codec,
+            bitrate = station.bitrate,
+            country = station.country,
+            countrycode = station.countrycode,
+            language = station.language,
+            tags = station.tags,
+        }
+    end
+
+    local base = "https://all.api.radio-browser.info/json/stations/search?"
+    local encoded = EncodeUrlString(query)
+    local suffix = "&limit=" .. tostring(maxResults) .. "&hidebroken=true&order=clickcount&reverse=true"
+    local urls = {
+        base .. "name=" .. encoded .. suffix,
+        base .. "country=" .. encoded .. suffix,
+        base .. "language=" .. encoded .. suffix,
+        base .. "tag=" .. encoded .. suffix,
+    }
+    local pending = #urls
+    local results = {}
+    local seen = {}
+    local hadHttpFailure = false
+
+    local function finish()
+        if pending > 0 then
+            return
+        end
+        if #results > 0 then
+            callback(true, results)
+        elseif hadHttpFailure then
+            callback(false, "Radio station search is unavailable right now.")
+        else
+            callback(false, "No radio stations found. Try a station name, country, language, or genre.")
+        end
+    end
+
+    for _, url in ipairs(urls) do
+        performDiscoveryGet(url, function(statusCode, response)
+            pending = pending - 1
+            if statusCode ~= 200 or not response then
+                hadHttpFailure = true
+                finish()
+                return
+            end
+
+            local ok, data = pcall(json.decode, response)
+            if not ok or type(data) ~= "table" then
+                finish()
+                return
+            end
+
+        for _, station in ipairs(data) do
+            if #results >= maxResults then
+                break
+            end
+
+            local mapped = mapStation(station)
+            local key = mapped and (mapped.stationUuid or mapped.url)
+            if mapped and key and not seen[key] then
+                seen[key] = true
+                results[#results + 1] = mapped
+            end
+        end
+
+            finish()
+        end)
+    end
+end
+
 function SearchMedia(query, searchSource, maxResults, callback)
     if searchSource == "direct" then
         if type(query) == "string" and query:match("^https?://") then
@@ -466,6 +583,11 @@ function SearchMedia(query, searchSource, maxResults, callback)
                 source = "twitch",
             },
         })
+        return
+    end
+
+    if searchSource == "radio" then
+        searchRadio(query, maxResults, callback)
         return
     end
 

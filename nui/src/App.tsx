@@ -1,5 +1,8 @@
+import React, { useEffect, useRef, useState } from 'react';
 import { legacyActions } from './legacy/controller';
 import { sendNuiMessage } from './nuiBridge';
+import { AdminView } from './AdminView';
+import { EqualizerView } from './EqualizerView';
 
 function closeModal(id: string) {
   const modal = document.getElementById(id);
@@ -43,6 +46,31 @@ function SocialIcon() {
       <circle cx="9" cy="7" r="4" />
       <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function AdminIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <path d="M9 12l2 2 4-5" />
+    </svg>
+  );
+}
+
+function EqIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="4" y1="21" x2="4" y2="14" />
+      <line x1="4" y1="10" x2="4" y2="3" />
+      <line x1="12" y1="21" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12" y2="3" />
+      <line x1="20" y1="21" x2="20" y2="16" />
+      <line x1="20" y1="12" x2="20" y2="3" />
+      <line x1="1" y1="14" x2="7" y2="14" />
+      <line x1="9" y1="8" x2="15" y2="8" />
+      <line x1="17" y1="16" x2="23" y2="16" />
     </svg>
   );
 }
@@ -192,6 +220,14 @@ function Sidebar() {
           <SocialIcon />
           Social
         </button>
+        <button className="nav-item" data-target="view-equalizer" onClick={() => legacyActions.switchView('view-equalizer')}>
+          <EqIcon />
+          Equalizer
+        </button>
+        <button className="nav-item staff-only" data-target="view-admin" onClick={() => legacyActions.switchView('view-admin')}>
+          <AdminIcon />
+          Admin
+        </button>
         <div className="nav-divider" />
 
         <div className="sidebar-favorites">
@@ -314,13 +350,17 @@ function SocialView() {
   );
 }
 
-function MainContent() {
+// AdminView moved to AdminView.tsx
+
+function MainContent({ eqConfig, analyserData }: { eqConfig: any; analyserData: Float32Array | null }) {
   return (
     <main id="main-content">
       <HomeView />
       <LibraryView />
       <PlaylistView />
       <SocialView />
+      <EqualizerView eqConfig={eqConfig} analyserData={analyserData} />
+      <AdminView />
     </main>
   );
 }
@@ -536,11 +576,35 @@ function Modals() {
 }
 
 export function App() {
+  const [eqConfig, setEqConfig] = useState<any>(null);
+  const [analyserData, setAnalyserData] = useState<Float32Array | null>(null);
+
+  useEffect(() => {
+    // NUI messages from Lua forwarded here
+    const handler = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || !data.type) return;
+
+      if (data.type === 'showUi' || data.type === 'startup') {
+        if (data.equalizerConfig) setEqConfig(data.equalizerConfig);
+      }
+      if (data.type === 'eqProfile') {
+        window.dispatchEvent(new CustomEvent('pmms:eqProfile', { detail: data }));
+      }
+      // Analyser frames streamed from DUI via postMessage relayed through NUI
+      if (data.type === 'eqAnalyserFrame' && data.bins) {
+        setAnalyserData(new Float32Array(data.bins));
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   return (
     <div id="app-container">
       <div className="app-body">
         <Sidebar />
-        <MainContent />
+        <MainContent eqConfig={eqConfig} analyserData={analyserData} />
       </div>
       <NowPlayingBar />
       <Modals />

@@ -16,11 +16,20 @@ local function parseOptions(args, requiredArguments, fn)
     end
 end
 
+local function requireCommandPermission(source, permission)
+    if source == 0 or HasPmmsPermission(source, permission) then
+        return true
+    end
+    TriggerClientEvent("pmms:error", source, "You do not have permission for this command")
+    return false
+end
+
 RegisterCommand(Config.commandPrefix, function(source)
     TriggerClientEvent("pmms:showControls", source)
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "play", function(source, args)
+    if not requireCommandPermission(source, "interact") then return end
     if #args > 0 then
         local options = {}
         local requiredArguments = {
@@ -59,50 +68,93 @@ RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "play", funct
     else
         TriggerClientEvent("pmms:pauseClosestMediaPlayer", source)
     end
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "pause", function(source)
+    if not requireCommandPermission(source, "interact") then return end
     TriggerClientEvent("pmms:pauseClosestMediaPlayer", source)
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "stop", function(source)
+    if not requireCommandPermission(source, "interact") then return end
     TriggerClientEvent("pmms:stopClosestMediaPlayer", source)
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "status", function(source)
+    if not requireCommandPermission(source, "interact") then return end
     TriggerClientEvent("pmms:toggleStatus", source)
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "presets", function(source)
+    if not requireCommandPermission(source, "interact") then return end
     TriggerClientEvent("pmms:listPresets", source)
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "vol", function(source, args)
+    if not requireCommandPermission(source, "interact") then return end
     if #args < 1 then
         TriggerClientEvent("pmms:showBaseVolume", source)
     else
         local volume = tonumber(args[1])
         if volume then TriggerClientEvent("pmms:setBaseVolume", source, volume) end
     end
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "add", function(source, args)
+    if not requireCommandPermission(source, "manage") then return end
     local model = args[1]
     local label = args[2]
     local renderTarget = args[3]
     AddModelPermanently(GetHashKey(model), { label = label, renderTarget = renderTarget })
-end, true)
+end, false)
 
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "fix", function(source)
+    if not requireCommandPermission(source, "interact") then return end
     TriggerClientEvent("pmms:reset", source)
-end, true)
+end, false)
 
-RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "refresh_perms", function()
+RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "refresh_perms", function(source)
+    if not requireCommandPermission(source, "manage") then return end
+    if type(ClearPmmsPermissionCache) == "function" then
+        ClearPmmsPermissionCache()
+    end
     TriggerClientEvent("pmms:refreshPermissions", -1)
-end, true)
+end, false)
+
+local function printPermissionStats(source, args)
+    local target = source
+    if source == 0 and args and args[1] then
+        target = tonumber(args[1]) or 0
+    elseif source ~= 0 and args and args[1] and HasPmmsPermission(source, "manage") then
+        target = tonumber(args[1]) or source
+    end
+
+    if type(ClearPmmsPermissionCache) == "function" then
+        ClearPmmsPermissionCache(target ~= 0 and target or nil)
+    end
+
+    if type(PrintPmmsPermissionDiagnostic) == "function" then
+        PrintPmmsPermissionDiagnostic(source, target)
+    else
+        local message = "[7-pmms] Permission diagnostics are unavailable."
+        if source == 0 then print(message) else TriggerClientEvent("pmms:notify", source, { title = "PMMS Permissions", text = message }) end
+    end
+
+    if target ~= 0 then
+        TriggerClientEvent("pmms:refreshPermissions", target)
+    end
+end
+
+RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "perms", function(source, args)
+    printPermissionStats(source, args)
+end, false)
+
+RegisterCommand("pmmsperms", function(source, args)
+    printPermissionStats(source, args)
+end, false)
 
 local function printProviderStats(source)
-    if source ~= 0 and not IsPlayerAceAllowed(source, "pmms.manage") then
+    if source ~= 0 and not HasPmmsPermission(source, "manage") then
         TriggerClientEvent("pmms:error", source, "You do not have permission for this command")
         return
     end
@@ -155,7 +207,38 @@ RegisterCommand("pmmsproviders", function(source)
     printProviderStats(source)
 end, false)
 
+local function countActiveMediaPlayers()
+    local count = 0
+    for _ in pairs(GetMediaPlayers()) do
+        count = count + 1
+    end
+    return count
+end
+
+local function printPerfStats(source)
+    if source ~= 0 and not HasPmmsPermission(source, "manage") then
+        TriggerClientEvent("pmms:error", source, "You do not have permission for this command")
+        return
+    end
+
+    local message = ("[7-pmms] Server perf: activeMediaPlayers=%d"):format(countActiveMediaPlayers())
+    print(message)
+
+    if source ~= 0 then
+        TriggerClientEvent("pmms:perf:request", source)
+    end
+end
+
+RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "perf", function(source)
+    printPerfStats(source)
+end, false)
+
+RegisterCommand("pmmsperf", function(source)
+    printPerfStats(source)
+end, false)
+
 RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "ctl", function(source, args)
+    if not requireCommandPermission(source, "manage") then return end
     if #args < 1 then
         print("Usage:")
         print("  ctl list | lock | unlock | mute | unmute | loop | next | pause | stop <handle>")
@@ -201,4 +284,4 @@ RegisterCommand(Config.commandPrefix .. Config.commandSeparator .. "ctl", functi
             MarkDirty()
         end
     end
-end, true)
+end, false)

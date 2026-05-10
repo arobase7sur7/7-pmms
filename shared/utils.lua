@@ -187,6 +187,11 @@ function getEntityNetworkId(entity)
     return NetworkGetNetworkIdFromEntity(entity)
 end
 
+function getExistingEntityNetworkId(entity)
+    if not DoesEntityExist(entity) or not NetworkGetEntityIsNetworked(entity) then return nil end
+    return NetworkGetNetworkIdFromEntity(entity)
+end
+
 local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 function Base64Encode(data)
     return ((data:gsub('.', function(x) 

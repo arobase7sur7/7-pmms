@@ -61,6 +61,63 @@ local function GetEntityFromDataHandle(handle)
     return nil
 end
 
+local function getVehiclePlateForHandle(handle)
+    local entity = GetEntityFromDataHandle(handle)
+    if entity and DoesEntityExist(entity) and IsEntityAVehicle(entity) then
+        local plate = GetVehicleNumberPlateText(entity)
+        if plate and plate ~= "" then
+            return plate
+        end
+    end
+    return nil
+end
+
+local function buildDeviceProfilesForClient()
+    local rows = {}
+    for key, profile in pairs(Config.deviceProfiles or {}) do
+        if type(profile) == "table" then
+            rows[#rows + 1] = {
+                key = key,
+                label = profile.label or key,
+                range = profile.range,
+                volume = profile.volume,
+                transitionSeconds = profile.transitionSeconds
+            }
+        end
+    end
+    table.sort(rows, function(a, b) return tostring(a.label) < tostring(b.label) end)
+    return rows
+end
+
+local function buildPropModelsForClient()
+    local models = {}
+    for key, data in pairs(Config.models or {}) do
+        if type(data) == "table" and data.isPlaceable == true then
+            models[#models + 1] = {
+                model = key,
+                label = data.label or "Prop",
+                isTv  = data.renderTarget ~= nil,
+            }
+        end
+    end
+    table.sort(models, function(a, b) return tostring(a.label) < tostring(b.label) end)
+    return models
+end
+
+-- Admin discovery range (expanded when admin panel is open).
+local adminDiscoveryRange = nil
+
+RegisterNUICallback("setAdminDiscoveryRange", function(data, cb)
+    local range = tonumber(data and data.range)
+    adminDiscoveryRange = (range and range > 0) and range or nil
+    cb(json.encode({}))
+end)
+
+function GetAdminDiscoveryRange()
+    return adminDiscoveryRange
+end
+
+
 local function buildGlobalDeviceDefaults()
     return {
         volume = tonumber(Config.defaultVolume) or 100,
@@ -137,6 +194,13 @@ RegisterNUICallback("startup", function(_, cb)
         deviceDefaults             = buildGlobalDeviceDefaults(),
         baseVolume                 = GetBaseVolume(),
         debug                      = Config.debug,
+        permissions                = permissions,
+        deviceProfiles             = buildDeviceProfilesForClient(),
+        propModels                 = buildPropModelsForClient(),
+        adminQuickActions          = Config.admin and Config.admin.quickActions or {},
+        requestConfig              = Config.requests,
+        speakerConfig              = Config.speakers,
+        equalizerConfig            = Config.equalizer,
     }))
 end)
 
@@ -153,6 +217,7 @@ RegisterNUICallback("play", function(data, cb)
         youtubeProvider = data and data.options and (data.options.youtubeProvider or data.options.resolverProvider) or nil,
     })
     if data.options and data.options.url and data.options.url ~= "" then
+        data.options.vehiclePlate = data.options.vehiclePlate or getVehiclePlateForHandle(data.handle)
         TriggerServerEvent("pmms:start", data.handle, data.options)
     elseif data.handle then
         TriggerServerEvent("pmms:play", data.handle)
@@ -331,6 +396,134 @@ RegisterNUICallback("forceResetDevice", function(data, cb)
     cb(json.encode({}))
 end)
 
+RegisterNUICallback("adminApplyProfile", function(data, cb)
+    TriggerServerEvent("pmms:adminApplyProfile", data.handle, data.profile)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminSetRequestMode", function(data, cb)
+    TriggerServerEvent("pmms:adminSetRequestMode", data.handle, data.mode)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminSetLock", function(data, cb)
+    TriggerServerEvent("pmms:adminSetLock", data.handle, data.lock, getVehiclePlateForHandle(data.handle))
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminSetDeviceSettings", function(data, cb)
+    TriggerServerEvent("pmms:adminSetDeviceSettings", data.handle, data.settings or {})
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminRenameDevice", function(data, cb)
+    TriggerServerEvent("pmms:adminRenameDevice", data.handle, data.name)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminApproveRequest", function(data, cb)
+    TriggerServerEvent("pmms:adminApproveRequest", data.handle, data.requestId, data.playNext)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminRejectRequest", function(data, cb)
+    TriggerServerEvent("pmms:adminRejectRequest", data.handle, data.requestId)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminClearRequests", function(data, cb)
+    TriggerServerEvent("pmms:adminClearRequests", data.handle)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminClearSessionLock", function(data, cb)
+    TriggerServerEvent("pmms:adminClearSessionLock", data.handle)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("addLinkedSpeakerHere", function(data, cb)
+    -- Close the UI first, then start placement mode
+    HideUi()
+    StartSpeakerPlacementMode(data.handle, data.persistent == true, data.propModel)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminAddSpeaker", function(data, cb)
+    HideUi()
+    StartSpeakerPlacementMode(data.handle, false, data.propModel)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminAddPersistentSpeaker", function(data, cb)
+    HideUi()
+    StartSpeakerPlacementMode(data.handle, true, data.propModel)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminClearLinkedSpeakers", function(data, cb)
+    TriggerServerEvent("pmms:adminClearLinkedSpeakers", data.handle)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("removeLinkedSpeaker", function(data, cb)
+    TriggerServerEvent("pmms:removeLinkedSpeaker", data.handle, data.speakerId)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminResetProfile", function(data, cb)
+    TriggerServerEvent("pmms:adminResetProfile", data.handle)
+    cb(json.encode({}))
+end)
+
+-- ── EQ ───────────────────────────────────────────────────────────────────────
+
+RegisterNUICallback("saveEqProfile", function(data, cb)
+    TriggerServerEvent("pmms:saveEqProfile", data)
+    -- Forward immediately to all DUI browsers so audio updates live.
+    if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
+        for _, browser in pairs(DuiBrowser.pool) do
+            if type(browser.sendMessage) == "function" then
+                browser:sendMessage({ type = "applyEqProfile", profile = data })
+            end
+        end
+    end
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("loadEqProfile", function(_, cb)
+    TriggerServerEvent("pmms:loadEqProfile")
+    cb(json.encode({}))
+end)
+
+-- Tell the DUI browser to toggle the AnalyserNode data stream.
+RegisterNUICallback("setEqAnalyserActive", function(data, cb)
+    if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
+        for _, browser in pairs(DuiBrowser.pool) do
+            if type(browser.sendMessage) == "function" then
+                browser:sendMessage({ type = "setEqAnalyserActive", active = data.active == true })
+            end
+        end
+    end
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminAddPersistentDevice", function(data, cb)
+    -- Close the UI first, then start placement mode
+    HideUi()
+    StartDevicePlacementMode(data)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("adminRemovePersistentDevice", function(data, cb)
+    TriggerServerEvent("pmms:adminRemovePersistentDevice", data.handle)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("setHudEnabled", function(data, cb)
+    TriggerEvent("pmms:setHudEnabled", data and data.enabled == true)
+    cb(json.encode({}))
+end)
+
 RegisterNUICallback("setAttenuation", function(data, cb)
     TriggerServerEvent("pmms:setAttenuation", data.handle, data.sameRoom, data.diffRoom)
     cb(json.encode({}))
@@ -460,8 +653,14 @@ end)
 
 function ShowUi(selectedHandle)
     uiIsOpen = true
+    if type(InvalidateUiUpdateSignature) == "function" then
+        InvalidateUiUpdateSignature()
+    end
+    TriggerServerEvent("pmms:loadPermissions")
     SetNuiFocus(true, true)
     TriggerServerEvent("pmms:markMenuOpened")
+    -- Request EQ profile from server so NUI has latest state on open.
+    TriggerServerEvent("pmms:loadEqProfile")
     SendNUIMessage({
         type = "showUi",
         presets = Config.presets,
@@ -475,12 +674,21 @@ function ShowUi(selectedHandle)
         deviceDefaults = buildGlobalDeviceDefaults(),
         baseVolume = type(GetBaseVolume) == "function" and GetBaseVolume() or 100,
         debug = Config.debug,
+        permissions = permissions,
+        deviceProfiles = buildDeviceProfilesForClient(),
+        adminQuickActions = Config.admin and Config.admin.quickActions or {},
+        requestConfig = Config.requests,
+        speakerConfig = Config.speakers,
         selectedHandle = selectedHandle,
+        equalizerConfig = Config.equalizer,
     })
 end
 
 function HideUi()
     uiIsOpen = false
+    if type(InvalidateUiUpdateSignature) == "function" then
+        InvalidateUiUpdateSignature()
+    end
     SetNuiFocus(false, false)
     SendNUIMessage({ type = "hideUi" })
 end
@@ -507,6 +715,17 @@ end)
 
 RegisterNetEvent("pmms:loadPermissions", function(perms)
     permissions = perms
+    PMMSDebug("permissions", "permissions received on client", {
+        manage = permissions and permissions.manage,
+        overrideDevice = permissions and permissions.overrideDevice,
+        staff = permissions and permissions.staff,
+    })
+    if IsUiOpen() then
+        SendNUIMessage({
+            type = "updateUi",
+            permissions = permissions,
+        })
+    end
 end)
 
 RegisterNetEvent("pmms:refreshPermissions", function()
@@ -519,6 +738,18 @@ end)
 
 RegisterNetEvent("pmms:notify", function(data)
     ShowNotification(data.text, data.title, data.color, data.duration)
+end)
+
+RegisterNetEvent("pmms:eqProfile", function(profile)
+    SendNUIMessage({ type = "eqProfile", profile = profile })
+    -- Also apply to DUI browsers immediately so audio is up-to-date.
+    if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
+        for _, browser in pairs(DuiBrowser.pool) do
+            if type(browser.sendMessage) == "function" then
+                browser:sendMessage({ type = "applyEqProfile", profile = profile })
+            end
+        end
+    end
 end)
 
 RegisterNetEvent("pmms:listPresets", function()

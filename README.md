@@ -62,6 +62,8 @@ Direct links are accepted only when they are both safe and realistically playabl
 Supported direct-link extensions:
 
 - `mp3`
+- `m4a`
+- `aac`
 - `mp4`
 - `m4v`
 - `webm`
@@ -97,6 +99,18 @@ Config.dui.hlsCanvasMaxFps = 30
 
 This only downscales video that FiveM CEF can already decode. It cannot transcode HEVC/HDR/DRM streams into H.264/AAC.
 
+## Radio Source
+
+The NUI includes a `Radio` source when `Config.searchSources.radio.enabled = true`.
+
+- Search supports station name, country, language, and genre/tag lookups through the public Radio Browser API.
+- Pasted radio stream URLs are accepted as live audio streams when they pass the same safety/probe checks as other direct links.
+- Radio streams are treated as `LIVE`: no duration, no seek bar control, and no automatic end event.
+- Favorite radio stations are saved locally in the player's browser storage.
+- Radio stations added to playlists store metadata in `pmms_playlist_tracks.metadata` so they remain audio/live streams when replayed later.
+
+Radio streams still need to be playable by FiveM CEF. If a station uses an unsupported codec or blocks browser playback, the resource will fail it like any other direct media source.
+
 ## Requirements
 
 - FiveM server with `fx_version "cerulean"` and GTA V
@@ -107,6 +121,7 @@ Optional integrations:
 
 - `qb-target`
 - `ox_target`
+- `qb-core` for optional QBCore permission mode
 - a local `yt-dlp` install for local extractor fallback
 
 ## NUI Development
@@ -324,6 +339,21 @@ Debug logging is controlled by `Config.debug`. Set `Config.debug.enabled = true`
 
 The bundled search UI supports the configured sources in `Config.searchSources`. The default configuration includes YouTube, SoundCloud, Twitch, and Direct for pasted media links.
 
+### Admin Devices, Requests, And Speakers
+
+Normal players can use public devices without ACE/QBCore permissions. Permissions now gate staff/admin tools only.
+
+Admin/staff additions:
+
+- Staff quick actions appear inside Device Settings only for staff/admins.
+- The Admin Panel tab appears only for `pmms.manage`.
+- Admins bypass session/admin locks and can manage known devices even when normal discovery would hide them.
+- Device profiles are configured in `Config.deviceProfiles` and can be applied without permanently locking the device.
+- Persistent admin locks, request mode, names, range, volume, and linked speakers can be saved on persistent devices.
+- Pending requests are controlled by `Config.requests`.
+- Linked speakers are controlled by `Config.speakers`; they extend the original device audio without creating a second playback source.
+- The optional mini HUD can be toggled by players and stores its preference with `pmms_hud_enabled`.
+
 ### Production Smoothness
 
 `Config.ui.maxHistorySyncItems` limits how many recent history rows are sent to each NUI refresh. The full per-device history count stays server-side, but only the newest rows are rendered to keep repeated open/close and long sessions smooth.
@@ -358,6 +388,18 @@ Common ACE permissions:
 
 Review the bundled defaults before using them in production.
 
+Optional QBCore permissions are available, but ACE stays the default for backwards compatibility. To use QBCore, set `Config.permissions.mode = "qbcore"` or `"hybrid"` and enable `Config.permissions.qbcore.enabled`. QBCore permission names are configured in `Config.permissions.qbcore.permissionMap`; job and gang grade rules can be added under `Config.permissions.qbcore.jobs` and `Config.permissions.qbcore.gangs`.
+
+Example:
+
+```lua
+Config.permissions.mode = "hybrid"
+Config.permissions.qbcore.enabled = true
+Config.permissions.qbcore.jobs = {
+    manage = { police = 4 },
+}
+```
+
 ## Commands
 
 With the default command settings:
@@ -373,6 +415,7 @@ With the default command settings:
 - `/pmms_ctl`
 - `/pmms_add`
 - `/pmms_refresh_perms`
+- `/pmmsperf`
 
 These names depend on `Config.commandPrefix` and `Config.commandSeparator`.
 
