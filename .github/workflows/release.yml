@@ -1,0 +1,61 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build UI
+        run: npm run build
+
+      - name: Prepare runtime package
+        run: |
+          mkdir release
+
+          cp -r client release/
+          cp -r server release/
+          cp -r shared release/
+          cp -r config release/
+          cp -r data release/
+          cp -r http release/
+          cp -r stream release/
+          cp -r ui release/
+
+          cp fxmanifest.lua release/
+          cp pmms.sql release/
+          cp README.md release/
+
+          if [ -f models.json ]; then cp models.json release/; fi
+          if [ -f defaultMediaPlayers.json ]; then cp defaultMediaPlayers.json release/; fi
+
+          rm -f release/data/provider_stats.json
+          rm -f release/data/admin_state.json
+
+      - name: Zip package
+        run: |
+          cd release
+          zip -r ../7-pmms-${{ github.ref_name }}.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: 7-pmms-${{ github.ref_name }}.zip
