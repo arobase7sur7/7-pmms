@@ -564,7 +564,7 @@ Config.searchSources = {
     },
     ["twitch"] = {
         label = "Twitch",
-        enabled = true,
+        enabled = false, -- Twitch search is disabled by default due to API requirements and potential rate limits. Enable if you have a reliable setup.
         icon = "twitch",
         placeholder = "Enter Twitch Username...",
         maxResults = 10,
