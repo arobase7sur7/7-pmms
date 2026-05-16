@@ -1,55 +1,55 @@
-Config = {}
+Config                                 = {}
 
 -- ═══════════════════════════════════════════════════════════════
 --  GENERAL
 -- ═══════════════════════════════════════════════════════════════
 
-Config.commandPrefix    = "pmms"
-Config.commandSeparator = "_"
+Config.commandPrefix                   = "pmms"
+Config.commandSeparator                = "_"
 
-Config.maxDiscoveryDistance = 30.0
-Config.defaultRange         = 30.0
-Config.maxRange             = 200.0
-Config.adminMaxRange        = 10000.0
-Config.deviceIdleResetSeconds = 300
-Config.defaultVolume        = 100
-Config.defaultVehicleMode   = false
-Config.defaultVideoSize     = 30
-Config.defaultSearchSource  = "youtube"
-Config.defaultTransitionSeconds = 5.0 
-Config.maxTransitionSeconds     = 15.0
+Config.maxDiscoveryDistance            = 30.0
+Config.defaultRange                    = 30.0
+Config.maxRange                        = 200.0
+Config.adminMaxRange                   = 10000.0
+Config.deviceIdleResetSeconds          = 300
+Config.defaultVolume                   = 100
+Config.defaultVehicleMode              = false
+Config.defaultVideoSize                = 30
+Config.defaultSearchSource             = "youtube"
+Config.defaultTransitionSeconds        = 5.0
+Config.maxTransitionSeconds            = 15.0
 
-Config.showNotifications    = true
-Config.notificationDuration = 5000
+Config.showNotifications               = true
+Config.notificationDuration            = 5000
 
-Config.allowPlayingFromVehicles  = true
-Config.autoDisableStaticEmitters = true
-Config.autoDisableIdleCam        = true
-Config.autoDisableVehicleRadio   = true
+Config.allowPlayingFromVehicles        = true
+Config.autoDisableStaticEmitters       = true
+Config.autoDisableIdleCam              = true
+Config.autoDisableVehicleRadio         = true
 
-Config.debug = {
+Config.debug                           = {
     -- Master switch. Leave false unless you are diagnosing an issue
     enabled = false,
 
     -- Set all = true to enable every debug category below
     all = false,
 
-    player = false,  
-    resolver = false, 
-    favorites = false, 
-    dui = false,      
-    nui = false,      
+    player = false,
+    resolver = false,
+    favorites = false,
+    dui = false,
+    nui = false,
     search = false,
     database = false,
     target = false,
     permissions = false,
 }
 
-Config.ui = {
+Config.ui                              = {
     maxHistorySyncItems = 30,
 }
 
-Config.admin = {
+Config.admin                           = {
     quickActions = {
         applyProfiles = true,
         extendedRangeToggle = true,
@@ -59,19 +59,19 @@ Config.admin = {
     },
 }
 
-Config.playlists = {
+Config.playlists                       = {
     maxCount = 50,
     maxFavorites = 10,
 }
 
-Config.search = {
+Config.search                          = {
     minimumBusyMs = 500,
     maxInstances = 8,
     instanceFailureCooldownSeconds = 600,
 }
 
-Config.directLinks = {
-    requireHttps = true, 
+Config.directLinks                     = {
+    requireHttps = true,
     probeTimeoutMs = 2500,
     allowedExtensions = {
         "mp3",
@@ -88,16 +88,16 @@ Config.directLinks = {
     },
 }
 
-Config.queue = {
+Config.queue                           = {
     lookaheadCount = 1,
 }
 
-Config.social = {
+Config.social                          = {
     recentPlayerExpiryDays = 30,
     maxSuggestions = 10,
 }
 
-Config.targeting = {
+Config.targeting                       = {
     -- "fallback" | "qb-target" | "ox_target"
     system = "qb-target",
     label = "Open Media",
@@ -105,7 +105,7 @@ Config.targeting = {
     distance = 2.0,
 }
 
-Config.permissions = {
+Config.permissions                     = {
     mode = "hybrid",
 
     adminAceFallbacks = { "command", "command.pmms", "god", "admin", "group.admin", "qbcore.god", "qbcore.admin", "command.tpm", "command.addpermission" },
@@ -118,7 +118,7 @@ Config.permissions = {
     },
 }
 
-Config.deviceProfiles = { -- these are only some examples but you can create as many as you want and edit them as you want 
+Config.deviceProfiles                  = { -- these are only some examples but you can create as many as you want and edit them as you want
     club = {
         label = "Club",
         range = 80.0,
@@ -179,58 +179,57 @@ Config.deviceProfiles = { -- these are only some examples but you can create as 
     },
 }
 
-Config.requests = {
+Config.requests                        = {
     enabled = true,
     defaultMode = "queue", -- queue | pending | disabled
     maxPendingPerPlayer = 3,
     pendingExpireSeconds = 600,
     hostCanApprove = true,
-    approverJobs = { 
+    approverJobs = {
         -- Example:
         -- police = 2,
     },
 }
 
-Config.speakers = {
+Config.speakers                        = {
     enabled = true,
     normalPlayerLimit = 3,
     staffLimit = -1, -- -1 = unlimited
     persistentForStaffDevices = true,
     avoidEcho = true,
-    propModel = Config.defaultModel or "sf_prop_sf_speaker_l_01a",
+    propModel = Config.defaultModel or "sf_prop_sf_speaker_l_01a", -- This is only a fallback but you can manage them on the SPEAKERS MODEL LIST below
 }
 
 -- ═══════════════════════════════════════════════════════════════
 --  AUDIO
 -- ═══════════════════════════════════════════════════════════════
 
-Config.defaultSameRoomAttenuation = 4.0
-Config.defaultDiffRoomAttenuation = 6.0
-Config.defaultDiffRoomVolume      = 0.25
-Config.enableFilterByDefault      = false
-Config.rangeCurveExponent         = 1.6
+Config.defaultSameRoomAttenuation      = 4.0
+Config.defaultDiffRoomAttenuation      = 6.0
+Config.defaultDiffRoomVolume           = 0.25
+Config.enableFilterByDefault           = false
+Config.rangeCurveExponent              = 1.6
 
 -- ═══════════════════════════════════════════════════════════════
 --  DUI
 -- ═══════════════════════════════════════════════════════════════
 
-Config.dui = {
-    screenWidth  = 1280,
-    screenHeight = 720,
-    timeout      = 30000,
-    renderMaxFps = 60,
-    renderIdleFps = 5,
+Config.dui                             = {
+    screenWidth          = 1280,
+    screenHeight         = 720,
+    timeout              = 30000,
+    renderMaxFps         = 60,
+    renderIdleFps        = 5,
     renderDistanceBuffer = 5.0,
-    cacheRuntimeAssets = true,
-    -- Draw decoded oversized HLS video through a capped canvas. This downscales; it does not transcode unsupported codecs.
-    hlsCanvasDownscale = true,
-    hlsCanvasMaxWidth = 1920,
-    hlsCanvasMaxHeight = 1080,
-    hlsCanvasMaxFps = 30,
+    cacheRuntimeAssets   = true,
+    hlsCanvasDownscale   = true,
+    hlsCanvasMaxWidth    = 1920,
+    hlsCanvasMaxHeight   = 1080,
+    hlsCanvasMaxFps      = 30,
 
-    urls = {},
+    urls                 = {},
 
-    probe = {
+    probe                = {
         enabled = false,
         timeout = 4500,
         order = { "local" },
@@ -238,15 +237,15 @@ Config.dui = {
     }
 }
 
-Config.resolver = {
+Config.resolver                        = {
     enabled = true,
     timeoutMs = 6000,
     cacheTtlSeconds = 1800,
     maxInstances = 6,
     parallelInstancesPerProvider = 2,
-    -- How long a failing resolver instance is skipped before retrying it.
+    -- How long a failing resolver instance is skipped before retrying it
     instanceFailureCooldownSeconds = 600,
-    -- Used when providers expose alternate audio metadata. First match wins.
+    -- Used when providers expose alternate audio metadata. First match wins
     audioLanguagePriority = { "original", "en", "en-US", "und" },
 
     extractor = {
@@ -270,8 +269,8 @@ Config.resolver = {
     },
 
     -- Optional Cobalt media downloader API endpoints. This is the most reliable
-    -- ad-free fallback when you cannot run yt-dlp inside the FiveM server process.
-    -- Self-host Cobalt or use a trusted private instance, then add its API root here.
+    -- ad-free fallback when you cannot run yt-dlp inside the FiveM server process
+    -- Self-host Cobalt or use a trusted private instance, then add its API root here
     cobalt = {
         enabled = true,
         endpoints = {
@@ -290,14 +289,17 @@ Config.resolver = {
         audioBitrate = "128",
     },
 
-    -- Optional static resolver instances used before public discovery.
-    -- Add your own reliable endpoints here for best results.
+    -- Optional static resolver instances used before public discovery
+    -- Add your own reliable endpoints here for best results
     instances = {
         invidious = {
             "https://inv.nadeko.net",
             "https://yewtu.be",
             "https://invidious.nerdvpn.de",
+            "https://yt.chocolatemoo53.com",
+            "https://inv.thepixora.com",
         },
+
         piped = {
             "https://api.piped.private.coffee",
             "https://pipedapi.kavin.rocks",
@@ -305,20 +307,33 @@ Config.resolver = {
             "https://pipedapi.adminforge.de",
             "https://piped-api.hostux.net",
             "https://pipedapi.qdi.fi",
+            "https://pipedapi.leptons.xyz",
+            "https://pipedapi.nosebs.ru",
+            "https://pipedapi.privacy.com.de",
+            "https://pipedapi.drgns.space",
+            "https://pipedapi.owo.si",
+            "https://pipedapi.ducks.party",
+            "https://piped-api.codespace.cz",
+            "https://pipedapi.reallyaweso.me",
+            "https://api.piped.private.coffee",
+            "https://pipedapi.darkness.services",
+            "https://pipedapi.orangenet.cc",
+            "https://pipedapi-libre.kavin.rocks",
         },
     },
 
-    -- If video resolution fails, try an ad-free audio-only stream before failing.
+
+    -- If video resolution fails, try an ad-free audio-only stream before failing
     allowAudioFallback = true,
 
-    -- Embedded YouTube can show ads or hang in DUI. Keep it opt-in.
+    -- Embedded YouTube can show ads or hang in DUI. Keep it opt-in so false if you see too many ads
     allowEmbedFallback = true,
 
-    -- Legacy switch for resolver fallback behavior. Embedded fallback still requires allowEmbedFallback.
+    -- Legacy switch for resolver fallback behavior. Embedded fallback still requires allowEmbedFallback
     fallbackOnFailure = true,
     warnOnFallback = false,
 
-    -- Retry resolution after an early playback failure.
+    -- Retry resolution after an early playback failure
     retryOnPlaybackError = true,
     retryAttempts = 4,
 
@@ -335,13 +350,13 @@ Config.resolver = {
 --  SCALEFORM
 -- ═══════════════════════════════════════════════════════════════
 
-Config.defaultScaleformName = "pmms_texture_renderer"
+Config.defaultScaleformName            = "pmms_texture_renderer"
 
 -- ═══════════════════════════════════════════════════════════════
 --  ALLOWED URLS (players without pmms.anyUrl)
 -- ═══════════════════════════════════════════════════════════════
 
-Config.allowedUrls = {
+Config.allowedUrls                     = { -- actually, because of direct url in config, you dont need this
     "^https?://w?w?w?%.?youtube.com/.*$",
     "^https?://w?w?w?%.?youtu.be/.*$",
     "^https?://w?w?w?%.?twitch.tv/.*$",
@@ -352,191 +367,191 @@ Config.allowedUrls = {
 --  ['key'] = { url = '...', title = '...', filter = bool, video = bool }
 -- ═══════════════════════════════════════════════════════════════
 
-Config.presets = {}
+Config.presets                         = {}
 
 -- ═══════════════════════════════════════════════════════════════
 --  DEFAULT MEDIA PLAYERS (auto-spawn / auto-play on resource start)
 -- ═══════════════════════════════════════════════════════════════
 
-Config.defaultMediaPlayers = {}
+Config.defaultMediaPlayers             = {}
 Config.defaultMediaPlayerSpawnDistance = Config.maxRange + 10.0
 
 -- ═══════════════════════════════════════════════════════════════
 --  DEFAULT MODEL
 -- ═══════════════════════════════════════════════════════════════
 
-Config.defaultModel = "sf_prop_sf_speaker_l_01a"
+Config.defaultModel                    = "sf_prop_sf_speaker_l_01a"
 
 -- ═══════════════════════════════════════════════════════════════
 --  ENTITY MODELS
 -- ═══════════════════════════════════════════════════════════════
 
-Config.models = {
+Config.models                          = {
     -- Audio devices
-    ["prop_radio_01"]         = { label = "Radio", width = 128, height = 128, isPlaceable = true },
-    ["prop_boombox_01"]       = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
-    ["prop_portable_hifi_01"] = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
-    ["prop_ghettoblast_01"]   = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
-    ["prop_ghettoblast_02"]   = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
-    ["prop_tapeplayer_01"]    = { label = "Tape Player", width = 128, height = 128, isPlaceable = true },
-    ["prop_mp3_dock"]         = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
-    ["v_res_mm_audio"]        = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
-    ["v_res_j_radio"]         = { label = "Radio", width = 128, height = 128, isPlaceable = true },
-    ["v_res_fa_radioalrm"]    = { label = "Alarm Clock", width = 128, height = 128, isPlaceable = true },
-    ["sm_prop_smug_radio_01"] = { label = "Radio", width = 128, height = 128, isPlaceable = true },
+    ["prop_radio_01"]                   = { label = "Radio", width = 128, height = 128, isPlaceable = true },
+    ["prop_boombox_01"]                 = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_portable_hifi_01"]           = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_ghettoblast_01"]             = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_ghettoblast_02"]             = { label = "Boombox", width = 128, height = 128, isPlaceable = true },
+    ["prop_tapeplayer_01"]              = { label = "Tape Player", width = 128, height = 128, isPlaceable = true },
+    ["prop_mp3_dock"]                   = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
+    ["v_res_mm_audio"]                  = { label = "MP3 Dock", width = 128, height = 128, isPlaceable = true },
+    ["v_res_j_radio"]                   = { label = "Radio", width = 128, height = 128, isPlaceable = true },
+    ["v_res_fa_radioalrm"]              = { label = "Alarm Clock", width = 128, height = 128, isPlaceable = true },
+    ["sm_prop_smug_radio_01"]           = { label = "Radio", width = 128, height = 128, isPlaceable = true },
 
     -- Jukeboxes
-    ["bkr_prop_clubhouse_jukebox_01a"] = { label = "Jukebox", isPlaceable = true },
-    ["bkr_prop_clubhouse_jukebox_01b"] = { label = "Jukebox", isPlaceable = true },
-    ["bkr_prop_clubhouse_jukebox_02a"] = { label = "Jukebox", isPlaceable = true },
-    ["ch_prop_arcade_jukebox_01a"]     = { label = "Jukebox", isPlaceable = true },
-    ["prop_50s_jukebox"]               = { label = "Jukebox", isPlaceable = true },
-    ["prop_jukebox_01"]                = { label = "Jukebox", isPlaceable = true },
+    ["bkr_prop_clubhouse_jukebox_01a"]  = { label = "Jukebox", isPlaceable = true },
+    ["bkr_prop_clubhouse_jukebox_01b"]  = { label = "Jukebox", isPlaceable = true },
+    ["bkr_prop_clubhouse_jukebox_02a"]  = { label = "Jukebox", isPlaceable = true },
+    ["ch_prop_arcade_jukebox_01a"]      = { label = "Jukebox", isPlaceable = true },
+    ["prop_50s_jukebox"]                = { label = "Jukebox", isPlaceable = true },
+    ["prop_jukebox_01"]                 = { label = "Jukebox", isPlaceable = true },
 
     -- TVs
-    ["ex_prop_ex_tv_flat_01"]  = { label = "TV", renderTarget = "ex_tvscreen", isPlaceable = true },
-    ["prop_tv_flat_01"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_02"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_02b"]       = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_03"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_03b"]       = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_michael"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_trev_tv_01"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_02"]             = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_tv_flat_01_screen"] = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["vw_prop_vw_cinema_tv_01"] = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["ch_prop_ch_tv_rt_01a"]   = { label = "TV", renderTarget = "ch_tv_rt_01a", isPlaceable = true },
+    ["ex_prop_ex_tv_flat_01"]           = { label = "TV", renderTarget = "ex_tvscreen", isPlaceable = true },
+    ["prop_tv_flat_01"]                 = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_02"]                 = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_02b"]                = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_03"]                 = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_03b"]                = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_michael"]            = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_trev_tv_01"]                 = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_02"]                      = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_tv_flat_01_screen"]          = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["vw_prop_vw_cinema_tv_01"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["ch_prop_ch_tv_rt_01a"]            = { label = "TV", renderTarget = "ch_tv_rt_01a", isPlaceable = true },
 
     -- Monitors
-    ["prop_monitor_w_large"]   = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
-    ["prop_monitor_02"]        = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_monitor_w_large"]            = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
+    ["prop_monitor_02"]                 = { label = "Monitor", renderTarget = "tvscreen", isPlaceable = true },
 
     -- Laptops
-    ["prop_laptop_lester2"]    = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
-    ["hei_prop_hst_laptop"]    = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
-    ["hei_bank_heist_laptop"]  = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
-    ["gr_prop_gr_laptop_01a"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_01a", isPlaceable = true },
-    ["gr_prop_gr_laptop_01b"]  = { label = "Laptop", renderTarget = "gr_bunker_laptop_sq_01a", isPlaceable = true },
-    ["imp_prop_impexp_lappy_01a"] = { label = "Laptop", renderTarget = "prop_impexp_lappy_01a", isPlaceable = true },
-    ["bkr_prop_clubhouse_laptop_01a"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_01a", isPlaceable = true },
-    ["bkr_prop_clubhouse_laptop_01b"] = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_square_01a", isPlaceable = true },
-    ["ba_prop_club_laptop_dj"]    = { label = "Laptop", renderTarget = "laptop_dj", isPlaceable = true },
-    ["ba_prop_club_laptop_dj_02"] = { label = "Laptop", renderTarget = "laptop_dj_02", isPlaceable = true },
+    ["prop_laptop_lester2"]             = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_prop_hst_laptop"]             = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_bank_heist_laptop"]           = { label = "Laptop", renderTarget = "tvscreen", isPlaceable = true },
+    ["gr_prop_gr_laptop_01a"]           = { label = "Laptop", renderTarget = "gr_bunker_laptop_01a", isPlaceable = true },
+    ["gr_prop_gr_laptop_01b"]           = { label = "Laptop", renderTarget = "gr_bunker_laptop_sq_01a", isPlaceable = true },
+    ["imp_prop_impexp_lappy_01a"]       = { label = "Laptop", renderTarget = "prop_impexp_lappy_01a", isPlaceable = true },
+    ["bkr_prop_clubhouse_laptop_01a"]   = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_01a", isPlaceable = true },
+    ["bkr_prop_clubhouse_laptop_01b"]   = { label = "Laptop", renderTarget = "prop_clubhouse_laptop_square_01a", isPlaceable = true },
+    ["ba_prop_club_laptop_dj"]          = { label = "Laptop", renderTarget = "laptop_dj", isPlaceable = true },
+    ["ba_prop_club_laptop_dj_02"]       = { label = "Laptop", renderTarget = "laptop_dj_02", isPlaceable = true },
 
     -- Tablets
-    ["hei_prop_dlc_tablet"]    = { label = "Tablet", renderTarget = "tablet", isPlaceable = true },
-    ["ba_prop_battle_hacker_screen"] = { label = "Tablet", renderTarget = "prop_battle_touchscreen_rt", isPlaceable = true },
+    ["hei_prop_dlc_tablet"]             = { label = "Tablet", renderTarget = "tablet", isPlaceable = true },
+    ["ba_prop_battle_hacker_screen"]    = { label = "Tablet", renderTarget = "prop_battle_touchscreen_rt", isPlaceable = true },
 
     -- Cinema screens
-    ["prop_big_cin_screen"]    = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
-    ["v_ilev_cin_screen"]      = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
+    ["prop_big_cin_screen"]             = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
+    ["v_ilev_cin_screen"]               = { label = "Cinema", renderTarget = "cinscreen", isPlaceable = true },
 
     -- Projectors
-    ["v_ilev_lest_bigscreen"]  = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
-    ["v_ilev_mm_screen"]       = { label = "Projector", renderTarget = "big_disp", isPlaceable = true },
-    ["v_ilev_mm_screen2"]      = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
-    ["hei_prop_dlc_heist_board"] = { label = "Projector", renderTarget = "heist_brd", isPlaceable = true },
+    ["v_ilev_lest_bigscreen"]           = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
+    ["v_ilev_mm_screen"]                = { label = "Projector", renderTarget = "big_disp", isPlaceable = true },
+    ["v_ilev_mm_screen2"]               = { label = "Projector", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_prop_dlc_heist_board"]        = { label = "Projector", renderTarget = "heist_brd", isPlaceable = true },
 
     -- Computers
     ["ba_prop_battle_club_computer_01"] = { label = "Computer", renderTarget = "club_computer", isPlaceable = true },
-    ["sm_prop_smug_monitor_01"] = { label = "Computer", renderTarget = "smug_monitor_01", isPlaceable = true },
-    ["ex_prop_monitor_01_ex"]  = { label = "Computer", renderTarget = "prop_ex_computer_screen", isPlaceable = true },
+    ["sm_prop_smug_monitor_01"]         = { label = "Computer", renderTarget = "smug_monitor_01", isPlaceable = true },
+    ["ex_prop_monitor_01_ex"]           = { label = "Computer", renderTarget = "prop_ex_computer_screen", isPlaceable = true },
 
     -- Large displays
-    ["prop_huge_display_01"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
-    ["prop_huge_display_02"]   = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
-    ["xs_prop_arena_bigscreen_01"] = { label = "Jumbotron", renderTarget = "bigscreen_01", width = 1920, height = 1080, isPlaceable = true },
+    ["prop_huge_display_01"]            = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
+    ["prop_huge_display_02"]            = { label = "Screen", renderTarget = "big_disp", width = 1920, height = 1080, isPlaceable = true },
+    ["xs_prop_arena_bigscreen_01"]      = { label = "Jumbotron", renderTarget = "bigscreen_01", width = 1920, height = 1080, isPlaceable = true },
 
     -- Bunker / Trailer monitors
-    ["gr_prop_gr_trailer_monitor_01"] = { label = "Monitor", renderTarget = "gr_trailer_monitor_01", isPlaceable = true },
-    ["gr_prop_gr_trailer_monitor_02"] = { label = "Monitor", renderTarget = "gr_trailer_monitor_02", isPlaceable = true },
-    ["gr_prop_gr_trailer_monitor_03"] = { label = "Monitor", renderTarget = "gr_trailer_monitor_03", isPlaceable = true },
-    ["gr_prop_gr_trailer_tv"]    = { label = "TV", renderTarget = "gr_trailertv_01", isPlaceable = true },
-    ["gr_prop_gr_trailer_tv_02"] = { label = "TV", renderTarget = "gr_trailertv_02", isPlaceable = true },
+    ["gr_prop_gr_trailer_monitor_01"]   = { label = "Monitor", renderTarget = "gr_trailer_monitor_01", isPlaceable = true },
+    ["gr_prop_gr_trailer_monitor_02"]   = { label = "Monitor", renderTarget = "gr_trailer_monitor_02", isPlaceable = true },
+    ["gr_prop_gr_trailer_monitor_03"]   = { label = "Monitor", renderTarget = "gr_trailer_monitor_03", isPlaceable = true },
+    ["gr_prop_gr_trailer_tv"]           = { label = "TV", renderTarget = "gr_trailertv_01", isPlaceable = true },
+    ["gr_prop_gr_trailer_tv_02"]        = { label = "TV", renderTarget = "gr_trailertv_02", isPlaceable = true },
 
     -- Heist / Special
-    ["hei_prop_hei_monitor_overlay"] = { label = "Monitor", renderTarget = "hei_mon", isPlaceable = true },
-    ["hei_prop_hei_muster_01"] = { label = "Whiteboard", renderTarget = "planning", isPlaceable = true },
-    ["xm_prop_orbital_cannon_table"] = { label = "Orbital Cannon", renderTarget = "orbital_table", isPlaceable = true },
-    ["sr_mp_spec_races_blimp_sign"] = { label = "Blimp", renderTarget = "blimp_text", isPlaceable = true },
-    ["xm_prop_x17_sec_panel_01"] = { label = "Panel", renderTarget = "prop_x17_p_01", isPlaceable = true },
+    ["hei_prop_hei_monitor_overlay"]    = { label = "Monitor", renderTarget = "hei_mon", isPlaceable = true },
+    ["hei_prop_hei_muster_01"]          = { label = "Whiteboard", renderTarget = "planning", isPlaceable = true },
+    ["xm_prop_orbital_cannon_table"]    = { label = "Orbital Cannon", renderTarget = "orbital_table", isPlaceable = true },
+    ["sr_mp_spec_races_blimp_sign"]     = { label = "Blimp", renderTarget = "blimp_text", isPlaceable = true },
+    ["xm_prop_x17_sec_panel_01"]        = { label = "Panel", renderTarget = "prop_x17_p_01", isPlaceable = true },
 
     -- Smuggler / Doomsday screens
-    ["xm_prop_x17_tv_flat_01"]   = { label = "TV", renderTarget = "tv_flat_01", isPlaceable = true },
-    ["sm_prop_smug_tv_flat_01"]  = { label = "TV", renderTarget = "tv_flat_01", isPlaceable = true },
-    ["xm_prop_x17_computer_02"]  = { label = "Monitor", renderTarget = "monitor_02", isPlaceable = true },
+    ["xm_prop_x17_tv_flat_01"]          = { label = "TV", renderTarget = "tv_flat_01", isPlaceable = true },
+    ["sm_prop_smug_tv_flat_01"]         = { label = "TV", renderTarget = "tv_flat_01", isPlaceable = true },
+    ["xm_prop_x17_computer_02"]         = { label = "Monitor", renderTarget = "monitor_02", isPlaceable = true },
     ["xm_prop_x17dlc_monitor_wall_01a"] = { label = "Screen", renderTarget = "prop_x17dlc_monitor_wall_01a", isPlaceable = true },
 
     -- Doomsday multi-screens
-    ["xm_prop_x17_screens_02a_01"] = { label = "Screen", renderTarget = "prop_x17_8scrn_01", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_02"] = { label = "Screen", renderTarget = "prop_x17_8scrn_02", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_03"] = { label = "Screen", renderTarget = "prop_x17_8scrn_03", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_04"] = { label = "Screen", renderTarget = "prop_x17_8scrn_04", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_05"] = { label = "Screen", renderTarget = "prop_x17_8scrn_05", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_06"] = { label = "Screen", renderTarget = "prop_x17_8scrn_06", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_07"] = { label = "Screen", renderTarget = "prop_x17_8scrn_07", isPlaceable = true },
-    ["xm_prop_x17_screens_02a_08"] = { label = "Screen", renderTarget = "prop_x17_8scrn_08", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_01"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_01", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_02"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_02", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_03"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_03", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_04"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_04", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_05"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_05", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_06"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_06", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_07"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_07", isPlaceable = true },
+    ["xm_prop_x17_screens_02a_08"]      = { label = "Screen", renderTarget = "prop_x17_8scrn_08", isPlaceable = true },
 
     -- Doomsday TVs
-    ["xm_prop_x17_tv_ceiling_scn_01"] = { label = "TV", renderTarget = "prop_x17_tv_ceil_scn_01", isPlaceable = true },
-    ["xm_prop_x17_tv_ceiling_scn_02"] = { label = "TV", renderTarget = "prop_x17_tv_ceil_scn_02", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_01"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_01", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_02"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_02", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_03"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_03", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_04"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_04", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_05"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_05", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_06"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_06", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_07"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_07", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_08"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_08", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_09"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_09", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_10"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_10", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_11"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_11", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_12"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_12", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_13"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_13", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_14"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_14", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_15"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_15", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_16"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_16", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_17"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_17", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_18"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_18", isPlaceable = true },
-    ["xm_prop_x17_tv_scrn_19"]  = { label = "TV", renderTarget = "prop_x17_tv_scrn_18", isPlaceable = true },
-    ["xm_screen_1"]             = { label = "Screen", renderTarget = "prop_x17_tv_ceiling_01", isPlaceable = true },
+    ["xm_prop_x17_tv_ceiling_scn_01"]   = { label = "TV", renderTarget = "prop_x17_tv_ceil_scn_01", isPlaceable = true },
+    ["xm_prop_x17_tv_ceiling_scn_02"]   = { label = "TV", renderTarget = "prop_x17_tv_ceil_scn_02", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_01"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_01", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_02"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_02", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_03"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_03", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_04"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_04", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_05"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_05", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_06"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_06", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_07"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_07", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_08"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_08", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_09"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_09", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_10"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_10", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_11"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_11", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_12"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_12", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_13"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_13", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_14"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_14", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_15"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_15", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_16"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_16", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_17"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_17", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_18"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_18", isPlaceable = true },
+    ["xm_prop_x17_tv_scrn_19"]          = { label = "TV", renderTarget = "prop_x17_tv_scrn_18", isPlaceable = true },
+    ["xm_screen_1"]                     = { label = "Screen", renderTarget = "prop_x17_tv_ceiling_01", isPlaceable = true },
 
     -- Arena War
-    ["xs_prop_arena_screen_tv_01"] = { label = "TV", renderTarget = "screen_tv_01" },
+    ["xs_prop_arena_screen_tv_01"]      = { label = "TV", renderTarget = "screen_tv_01" },
 
     -- Arcade machines
-    ["vw_prop_vw_arcade_01_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_01a_screen", isPlaceable = true },
-    ["vw_prop_vw_arcade_02_screen"]  = { label = "Arcade Machine", renderTarget = "arcade_02a_screen", isPlaceable = true },
-    ["vw_prop_vw_arcade_02b_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02b_screen", isPlaceable = true },
-    ["vw_prop_vw_arcade_02c_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02c_screen", isPlaceable = true },
-    ["vw_prop_vw_arcade_02d_screen"] = { label = "Arcade Machine", renderTarget = "arcade_02d_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_01_screen"]     = { label = "Arcade Machine", renderTarget = "arcade_01a_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02_screen"]     = { label = "Arcade Machine", renderTarget = "arcade_02a_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02b_screen"]    = { label = "Arcade Machine", renderTarget = "arcade_02b_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02c_screen"]    = { label = "Arcade Machine", renderTarget = "arcade_02c_screen", isPlaceable = true },
+    ["vw_prop_vw_arcade_02d_screen"]    = { label = "Arcade Machine", renderTarget = "arcade_02d_screen", isPlaceable = true },
 
     -- Apartments / High-end TVs
-    ["apa_mp_h_str_avunitl_01_b"] = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["apa_mp_h_str_avunitl_04"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["apa_mp_h_str_avunitm_01"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["apa_mp_h_str_avunitm_03"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["apa_mp_h_str_avunits_01"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["apa_mp_h_str_avunits_04"]   = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
-    ["hei_heist_str_avunitl_03"]  = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunitl_01_b"]       = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunitl_04"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunitm_01"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunitm_03"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunits_01"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["apa_mp_h_str_avunits_04"]         = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
+    ["hei_heist_str_avunitl_03"]        = { label = "TV", renderTarget = "tvscreen", isPlaceable = true },
 
     -- Phones
-    ["prop_phone_cs_frank"] = { label = "Phone", renderTarget = "npcphone" },
-    ["prop_phone_proto"]    = { label = "Phone", renderTarget = "npcphone" },
+    ["prop_phone_cs_frank"]             = { label = "Phone", renderTarget = "npcphone" },
+    ["prop_phone_proto"]                = { label = "Phone", renderTarget = "npcphone" },
 
     -- Misc
-    ["w_am_digiscanner"] = { label = "Digiscanner", renderTarget = "digiscanner" },
+    ["w_am_digiscanner"]                = { label = "Digiscanner", renderTarget = "digiscanner" },
 
     -- Vehicles
-    ["pbus2"]   = { attenuation = { sameRoom = 1.5, diffRoom = 6 }, range = 100, isVehicle = false },
-    ["blimp3"]  = { attenuation = { sameRoom = 0.6, diffRoom = 6 }, range = 150, isVehicle = false },
+    ["pbus2"]                           = { attenuation = { sameRoom = 1.5, diffRoom = 6 }, range = 100, isVehicle = false },
+    ["blimp3"]                          = { attenuation = { sameRoom = 0.6, diffRoom = 6 }, range = 150, isVehicle = false },
 }
 
 -- ═══════════════════════════════════════════════════════════════
 --  AUDIO VISUALIZATIONS
 -- ═══════════════════════════════════════════════════════════════
 
-Config.searchSources = {
+Config.searchSources                   = {
     ["youtube"] = {
         label = "YouTube",
         enabled = true,
@@ -564,7 +579,7 @@ Config.searchSources = {
     },
     ["twitch"] = {
         label = "Twitch",
-        enabled = false, -- Twitch search is disabled by default due to API requirements and potential rate limits. Enable if you have a reliable setup.
+        enabled = true,
         icon = "twitch",
         placeholder = "Enter Twitch Username...",
         maxResults = 10,
@@ -593,26 +608,26 @@ Config.searchSources = {
 -- ═══════════════════════════════════════════════════════════════
 --  EQUALIZER
 -- ═══════════════════════════════════════════════════════════════
-Config.equalizer = {
-    enabled = true,
+Config.equalizer                       = {
+    enabled           = true,
 
-    maxCustomPresets = 5,
+    maxCustomPresets  = 5,
 
     defaultEnabled    = false,
     defaultPreampDb   = 0.0,
     defaultHighpass   = false,
     defaultCompressor = false,
 
-    bands = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 },
+    bands             = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 },
 
-    defaultBands = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    defaultBands      = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 
-    bandMinDb = -15,
-    bandMaxDb = 15,
-    preampMinDb = -8,
-    preampMaxDb = 8,
+    bandMinDb         = -15,
+    bandMaxDb         = 15,
+    preampMinDb       = -8,
+    preampMaxDb       = 8,
 
-    presets = {
+    presets           = {
         {
             id = "flat",
             label = "Flat",
@@ -773,33 +788,37 @@ Config.equalizer = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
---  SPEAKERS MODEL LIST (for admin picker)
+--  SPEAKERS MODEL LIST
 -- ═══════════════════════════════════════════════════════════════
 
-Config.speakers.models = Config.speakers.models or {
-    { model = "sf_prop_sf_speaker_l_01a", label = "Large Speaker" },
-    { model = "prop_speaker_01a",         label = "Speaker" },
+Config.speakers.models                 = Config.speakers.models or {
+    { model = "sf_prop_sf_speaker_l_01a",       label = "Large Speaker" },
+    { model = "ba_prop_battle_club_speaker_dj", label = "Extra Large Speaker" },
+    { model = "h4_prop_battle_dj_kit_speaker",  label = "Speaker in a box" },
+    { model = "prop_speaker_02",                label = "Thin Speaker" },
+    { model = "prop_speaker_05",                label = "Wooden Large Speaker" },
+    { model = "sf_prop_sf_speaker_stand_01a",   label = "Speaker Stand" },
 }
 
-Config.audioVisualizations = {
-    ["bars"]         = { name = "Bars" },
-    ["bars blocks"]  = { name = "Blocky Bars" },
-    ["cubes"]        = { name = "Cubes" },
-    ["dualbars"]     = { name = "Dual Bars" },
+Config.audioVisualizations             = {
+    ["bars"]            = { name = "Bars" },
+    ["bars blocks"]     = { name = "Blocky Bars" },
+    ["cubes"]           = { name = "Cubes" },
+    ["dualbars"]        = { name = "Dual Bars" },
     ["dualbars blocks"] = { name = "Blocky Dual Bars" },
-    ["fireworks"]    = { name = "Fireworks" },
-    ["flower"]       = { name = "Flower" },
-    ["flower blocks"] = { name = "Blocky Flower" },
-    ["orbs"]         = { name = "Orbs" },
-    ["ring"]         = { name = "Ring" },
-    ["rings"]        = { name = "Rings" },
-    ["round wave"]   = { name = "Round Wave" },
-    ["shine"]        = { name = "Shine" },
-    ["shine rings"]  = { name = "Shine Rings" },
-    ["shockwave"]    = { name = "Shockwave" },
-    ["star"]         = { name = "Star" },
-    ["static"]       = { name = "Static" },
-    ["stitches"]     = { name = "Stitches" },
-    ["web"]          = { name = "Web" },
-    ["wave"]         = { name = "Wave" },
+    ["fireworks"]       = { name = "Fireworks" },
+    ["flower"]          = { name = "Flower" },
+    ["flower blocks"]   = { name = "Blocky Flower" },
+    ["orbs"]            = { name = "Orbs" },
+    ["ring"]            = { name = "Ring" },
+    ["rings"]           = { name = "Rings" },
+    ["round wave"]      = { name = "Round Wave" },
+    ["shine"]           = { name = "Shine" },
+    ["shine rings"]     = { name = "Shine Rings" },
+    ["shockwave"]       = { name = "Shockwave" },
+    ["star"]            = { name = "Star" },
+    ["static"]          = { name = "Static" },
+    ["stitches"]        = { name = "Stitches" },
+    ["web"]             = { name = "Web" },
+    ["wave"]            = { name = "Wave" },
 }

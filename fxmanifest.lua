@@ -1,10 +1,10 @@
 fx_version "cerulean"
 game "gta5"
 
-name        "7-pmms"
+name "7-pmms"
 description "Synchronized media player for FiveM"
-author      "kibukj (base script) & arobase7sur7 (full rework)"
-version     "3.0.0"
+author "kibukj (base script) & arobase7sur7 (full rework)"
+version "0.1.1"
 
 
 shared_scripts {

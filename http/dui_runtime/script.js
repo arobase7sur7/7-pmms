@@ -177,6 +177,32 @@ function getMediaElementNode(player) {
     return player;
 }
 
+function getCompanionAudioNode(player) {
+    return player && player.pmms && player.pmms.audioCompanion
+        ? player.pmms.audioCompanion
+        : null;
+}
+
+function hasCompanionAudio(player) {
+    var audio = getCompanionAudioNode(player);
+    return !!(audio && audio.src);
+}
+
+function getAudioPlaybackNode(player) {
+    return getCompanionAudioNode(player) || getMediaElementNode(player) || player;
+}
+
+function getCompanionAudioReady(audio) {
+    if (!audio) {
+        return false;
+    }
+
+    var readyState = Number(audio.readyState);
+    var duration = Number(audio.duration);
+    return (Number.isFinite(readyState) && readyState >= 2)
+        || (Number.isFinite(duration) && duration > 0);
+}
+
 function getPlaybackSourceUrl(options) {
     return resolveUrl(options && options.url ? options.url : '');
 }
@@ -414,6 +440,18 @@ function getAvailableAudioTracks(media) {
         return tracks;
     }
 
+    if (hasCompanionAudio(media)) {
+        return [{
+            index: 0,
+            id: 'resolved-companion-audio',
+            label: 'Resolved audio',
+            language: '',
+            selected: true,
+            default: true,
+            source: 'companion'
+        }];
+    }
+
     if (media.hlsPlayer && (Array.isArray(media.hlsPlayer.audioTracks) || Array.isArray(media.hlsPlayer.allAudioTracks))) {
         media.pmms = media.pmms || {};
         media.pmms.hlsAudioTrackMap = {};
@@ -516,6 +554,11 @@ function getPlaybackNodeState(media) {
 
     var node = getMediaElementNode(media) || media;
     var fallback = node === media ? null : media;
+    var audioNode = getCompanionAudioNode(media);
+    var audioReadyState = Number(audioNode && audioNode.readyState);
+    var audioNetworkState = Number(audioNode && audioNode.networkState);
+    var audioDuration = Number(audioNode && audioNode.duration);
+    var audioCurrentTime = Number(audioNode && audioNode.currentTime);
 
     var readyState = Number(node && node.readyState);
     if (!Number.isFinite(readyState) && fallback) {
@@ -534,10 +577,16 @@ function getPlaybackNodeState(media) {
     if ((!Number.isFinite(duration) || duration <= 0) && fallback) {
         duration = Number(fallback.duration);
     }
+    if ((!Number.isFinite(duration) || duration <= 0) && Number.isFinite(audioDuration) && audioDuration > 0) {
+        duration = audioDuration;
+    }
 
     var currentTime = Number(node && node.currentTime);
     if (!Number.isFinite(currentTime) && fallback) {
         currentTime = Number(fallback.currentTime);
+    }
+    if (!Number.isFinite(currentTime) && Number.isFinite(audioCurrentTime)) {
+        currentTime = audioCurrentTime;
     }
 
     var videoWidth = Number(node && node.videoWidth) || 0;
@@ -554,7 +603,13 @@ function getPlaybackNodeState(media) {
         videoHeight: videoHeight,
         decodedFrames: decodedFrames,
         hasVideoSize: videoWidth > 0 || videoHeight > 0,
-        hasDecodedFrames: Number.isFinite(decodedFrames) && decodedFrames > 0
+        hasDecodedFrames: Number.isFinite(decodedFrames) && decodedFrames > 0,
+        hasCompanionAudio: !!audioNode,
+        audioReadyState: Number.isFinite(audioReadyState) ? audioReadyState : 0,
+        audioNetworkState: Number.isFinite(audioNetworkState) ? audioNetworkState : 0,
+        audioDuration: Number.isFinite(audioDuration) ? audioDuration : 0,
+        audioCurrentTime: Number.isFinite(audioCurrentTime) ? audioCurrentTime : 0,
+        hasAudioReady: getCompanionAudioReady(audioNode)
     };
 }
 
@@ -573,6 +628,7 @@ function callMediaPlaybackMethod(media, methodName) {
     }
 
     var node = getMediaElementNode(media);
+    var companionAudio = getCompanionAudioNode(media);
     var called = false;
 
     if (node && node !== media && typeof node[methodName] === 'function') {
@@ -585,6 +641,24 @@ function callMediaPlaybackMethod(media, methodName) {
     if (media && typeof media[methodName] === 'function') {
         try {
             media[methodName]();
+            called = true;
+        } catch (_) {}
+    }
+
+    if (companionAudio && typeof companionAudio[methodName] === 'function') {
+        try {
+            if (methodName === 'play') {
+                var primaryNode = node || media;
+                var primaryTime = Number(primaryNode && primaryNode.currentTime);
+                var audioTime = Number(companionAudio.currentTime);
+                if (Number.isFinite(primaryTime) && (!Number.isFinite(audioTime) || Math.abs(primaryTime - audioTime) > 0.35)) {
+                    companionAudio.currentTime = primaryTime;
+                }
+            }
+            var companionResult = companionAudio[methodName]();
+            if (companionResult && typeof companionResult.catch === 'function') {
+                companionResult.catch(function() {});
+            }
             called = true;
         } catch (_) {}
     }
@@ -621,7 +695,51 @@ function setMediaCurrentTime(media, value) {
         } catch (_) {}
     }
 
+    var companionAudio = getCompanionAudioNode(media);
+    if (companionAudio) {
+        try {
+            companionAudio.currentTime = numericValue;
+            applied = true;
+        } catch (_) {}
+    }
+
     return applied;
+}
+
+function syncCompanionAudio(media, force) {
+    var companionAudio = getCompanionAudioNode(media);
+    if (!companionAudio) {
+        return false;
+    }
+
+    var primaryNode = getMediaElementNode(media) || media;
+    if (!primaryNode || primaryNode === companionAudio) {
+        return false;
+    }
+
+    var primaryTime = Number(primaryNode.currentTime);
+    var audioTime = Number(companionAudio.currentTime);
+    if (Number.isFinite(primaryTime) && (force || !Number.isFinite(audioTime) || Math.abs(primaryTime - audioTime) > 0.35)) {
+        try {
+            companionAudio.currentTime = primaryTime;
+        } catch (_) {}
+    }
+
+    var primaryPaused = primaryNode.paused === true || primaryNode.ended === true;
+    if (primaryPaused && companionAudio.paused !== true) {
+        try {
+            companionAudio.pause();
+        } catch (_) {}
+    } else if (!primaryPaused && companionAudio.paused === true) {
+        try {
+            var playResult = companionAudio.play();
+            if (playResult && typeof playResult.catch === 'function') {
+                playResult.catch(function() {});
+            }
+        } catch (_) {}
+    }
+
+    return true;
 }
 
 function setMediaDisplay(media, visible) {
@@ -976,6 +1094,12 @@ function applyPreferredAudioTrack(media, options, useDefaultFallback) {
         return false;
     }
 
+    if (hasCompanionAudio(media)) {
+        media.pmms = media.pmms || {};
+        media.pmms.audioTrack = tracks[selectedIndex] || tracks[0];
+        return true;
+    }
+
     if (media.hlsPlayer && (Array.isArray(media.hlsPlayer.audioTracks) || Array.isArray(media.hlsPlayer.allAudioTracks))) {
         var selectedTrack = tracks[selectedIndex] || {};
         var hlsTrackIndex = Number.isFinite(Number(selectedTrack.hlsTrackIndex)) ? Number(selectedTrack.hlsTrackIndex) : selectedIndex;
@@ -1150,6 +1274,44 @@ function setupHlsPlayback(media, options, completeMediaInitialization, reportPla
     });
     hls.attachMedia(hlsMediaElement);
     return true;
+}
+
+function setupCompanionAudio(media, options, reportPlaybackFailure) {
+    if (!media || !options || options.pairedStreams !== true || typeof options.audioUrl !== 'string' || options.audioUrl === '') {
+        return null;
+    }
+
+    var audio = document.createElement('audio');
+    audio.preload = 'auto';
+    audio.src = resolveUrl(options.audioUrl);
+    audio.style.display = 'none';
+    audio.dataset.pmmsCompanionAudio = '1';
+    audio.dataset.handle = media.dataset && media.dataset.handle ? media.dataset.handle : '';
+    audio.volume = 0;
+    audio.muted = true;
+
+    media.pmms = media.pmms || {};
+    media.pmms.audioCompanion = audio;
+    media.pmms.audioUrl = options.audioUrl;
+    media.pmms.pairedStreams = true;
+
+    audio.addEventListener('error', function() {
+        if (!media.pmms || media.pmms.removed === true || typeof reportPlaybackFailure !== 'function') {
+            return;
+        }
+        reportPlaybackFailure(getPlaybackErrorMessage(audio, 'Companion audio playback failed.'));
+    });
+
+    audio.addEventListener('playing', function() {
+        syncCompanionAudio(media, false);
+    });
+
+    document.body.appendChild(audio);
+    try {
+        audio.load();
+    } catch (_) {}
+
+    return audio;
 }
 
 function getPlayerDocument(player) {
@@ -1376,28 +1538,35 @@ function canFinishStartupReady(media, signal) {
 
     var state = getPlaybackNodeState(media);
     var readyState = state.readyState;
-    if (signal === 'canplay' || signal === 'playing' || signal === 'youtube_ready') {
+    var needsCompanionAudio = !!(media.pmms && media.pmms.pairedStreams && getCompanionAudioNode(media));
+    var companionReady = !needsCompanionAudio || state.hasAudioReady;
+
+    if (signal === 'youtube_ready') {
         return true;
     }
 
+    if (signal === 'canplay' || signal === 'playing') {
+        return companionReady;
+    }
+
     if (signal === 'hls_buffered') {
-        return readyState >= 2 || state.hasDecodedFrames || state.hasVideoSize;
+        return companionReady && (readyState >= 2 || state.hasDecodedFrames || state.hasVideoSize);
     }
 
     if (signal === 'loadedmetadata') {
-        return readyState >= 1 || state.hasVideoSize;
+        return companionReady && (readyState >= 1 || state.hasVideoSize);
     }
 
     if (signal === 'poll') {
-        if (readyState >= 2) {
+        if (readyState >= 2 && companionReady) {
             return true;
         }
 
-        if (state.hasDecodedFrames || state.hasVideoSize) {
+        if (companionReady && (state.hasDecodedFrames || state.hasVideoSize)) {
             return true;
         }
 
-        if (readyState >= 1 && state.duration > 0) {
+        if (companionReady && readyState >= 1 && state.duration > 0) {
             return true;
         }
 
@@ -1423,10 +1592,10 @@ function canFinishStartupReady(media, signal) {
             return false;
         }
 
-        if (readyState >= 1) {
+        if (readyState >= 1 && companionReady) {
             return true;
         }
-        if (Number.isFinite(state.networkState) && state.networkState > 0 && state.networkState < 3) {
+        if (companionReady && Number.isFinite(state.networkState) && state.networkState > 0 && state.networkState < 3) {
             return true;
         }
 
@@ -1434,10 +1603,10 @@ function canFinishStartupReady(media, signal) {
     }
 
     if (signal === 'bootstrap') {
-        return readyState >= 2
+        return companionReady && (readyState >= 2
             || state.hasDecodedFrames
             || state.hasVideoSize
-            || (readyState >= 1 && state.duration > 0);
+            || (readyState >= 1 && state.duration > 0));
     }
 
     return false;
@@ -1784,7 +1953,7 @@ function applyAudioFilter(player, config) {
     }
 
     try {
-        var mediaNode = getMediaElementNode(player);
+        var mediaNode = getAudioPlaybackNode(player);
         if (!mediaNode) {
             return false;
         }
@@ -1840,7 +2009,7 @@ function applyRadioFilter(player) {
 function createAudioVisualization(player, visualization) {
     cleanupVisualization(player);
 
-    var mediaNode = getMediaElementNode(player);
+    var mediaNode = getAudioPlaybackNode(player);
     if (!mediaNode) {
         return false;
     }
@@ -1947,7 +2116,7 @@ function describeYouTubeError(code) {
     if (numeric === 2) return 'YouTube error 2: Invalid video request.';
     if (numeric === 5) return 'YouTube error 5: HTML5 playback error.';
     if (numeric === 100) return 'YouTube error 100: Video not found or private.';
-    if (numeric === 101 || numeric === 150) return 'YouTube error ' + numeric + ': Video owner blocked embedded playback.';
+    if (numeric === 101 || numeric === 150) return 'Embedded YouTube playback is blocked by the video owner.';
     if (Number.isFinite(numeric)) return 'YouTube error ' + numeric + '.';
     return 'YouTube playback error.';
 }
@@ -2037,6 +2206,29 @@ function getMediaDiagnostics(media) {
             parts.push('host=' + current.host);
             parts.push('path=' + current.pathname);
         } catch (_) {}
+    }
+    var companionAudio = getCompanionAudioNode(media);
+    if (companionAudio) {
+        if (companionAudio.readyState !== undefined) {
+            parts.push('audioReadyState=' + companionAudio.readyState);
+        }
+        if (companionAudio.networkState !== undefined) {
+            parts.push('audioNetworkState=' + companionAudio.networkState);
+        }
+        if (companionAudio.error) {
+            if (companionAudio.error.code !== undefined && companionAudio.error.code !== null) {
+                parts.push('audioErrorCode=' + companionAudio.error.code);
+            }
+            if (companionAudio.error.message) {
+                parts.push('audioError=' + companionAudio.error.message);
+            }
+        }
+        if (companionAudio.currentSrc) {
+            try {
+                var audioCurrent = new URL(companionAudio.currentSrc);
+                parts.push('audioHost=' + audioCurrent.host);
+            } catch (_) {}
+        }
     }
     return parts.length ? '[' + parts.join(' ') + ']' : '';
 }
@@ -2154,6 +2346,24 @@ function removePlayer(player) {
     disposePlayerEnhancements(player);
 
     callMediaPlaybackMethod(player, 'pause');
+    var companionAudio = getCompanionAudioNode(player);
+    if (companionAudio) {
+        try {
+            companionAudio.pause();
+        } catch (_) {}
+        try {
+            companionAudio.removeAttribute('src');
+            if (typeof companionAudio.load === 'function') {
+                companionAudio.load();
+            }
+        } catch (_) {}
+        if (companionAudio.parentNode) {
+            companionAudio.remove();
+        }
+        if (player.pmms) {
+            player.pmms.audioCompanion = null;
+        }
+    }
     try {
         if (player.hlsPlayer && typeof player.hlsPlayer.destroy === 'function') {
             player.hlsPlayer.destroy();

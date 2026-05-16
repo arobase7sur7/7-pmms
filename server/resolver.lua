@@ -1828,6 +1828,110 @@ shouldAvoidUrl = function(streamUrl, avoidResolvedUrl)
         and streamUrl == avoidResolvedUrl
 end
 
+local function getStreamUrl(stream)
+    if type(stream) ~= "table" or type(stream.url) ~= "string" or stream.url == "" then
+        return nil
+    end
+    return stream.url
+end
+
+local function getStreamMime(stream)
+    if type(stream) ~= "table" then
+        return ""
+    end
+    return tostring(stream.type or stream.mimeType or stream.format or stream.codec or "")
+end
+
+local function streamLooksAudio(stream)
+    local mime = getStreamMime(stream):lower()
+    local height = tonumber(stream and stream.height)
+    local width = tonumber(stream and stream.width)
+    return mime:find("audio/", 1, true) ~= nil
+        or height == 0
+        or (width == 0 and tostring(stream and stream.videoOnly) ~= "true")
+end
+
+local function streamLooksVideo(stream)
+    local mime = getStreamMime(stream):lower()
+    local height = tonumber(stream and stream.height)
+    local width = tonumber(stream and stream.width)
+    return mime:find("video/", 1, true) ~= nil
+        or (height ~= nil and height > 0)
+        or (width ~= nil and width > 0)
+end
+
+local function getStreamResolutionScore(stream)
+    if type(stream) ~= "table" then
+        return 0
+    end
+
+    local height = tonumber(stream.height) or tonumber(tostring(stream.quality or stream.qualityLabel or ""):match("(%d+)")) or 0
+    if height <= 0 then
+        return 0
+    end
+
+    local capped = math.min(height, 1080)
+    local oversizePenalty = math.max(0, height - 1080) / 4
+    return capped - oversizePenalty
+end
+
+local function scoreVideoStream(stream)
+    if type(stream) ~= "table" then
+        return -999999
+    end
+
+    return codecScore(getStreamMime(stream))
+        + getStreamResolutionScore(stream)
+        + ((tonumber(stream.bitrate) or 0) / 100000)
+end
+
+local function scoreAudioStream(stream)
+    if type(stream) ~= "table" then
+        return -999999
+    end
+
+    return codecScore(getStreamMime(stream))
+        + audioLanguageScore(stream)
+        + ((tonumber(stream.bitrate) or tonumber(stream.audioSampleRate) or 0) / 1000)
+end
+
+local function chooseBestStream(streams, predicate, scorer, avoidResolvedUrl)
+    if type(streams) ~= "table" then
+        return nil
+    end
+
+    local best = nil
+    local bestScore = -999999
+    for _, stream in ipairs(streams) do
+        local url = getStreamUrl(stream)
+        if url and not shouldAvoidUrl(url, avoidResolvedUrl) and predicate(stream) then
+            local score = scorer(stream)
+            if score > bestScore then
+                best = stream
+                bestScore = score
+            end
+        end
+    end
+
+    return best
+end
+
+local function buildPairedStream(videoStream, audioStream)
+    local videoUrl = getStreamUrl(videoStream)
+    local audioUrl = getStreamUrl(audioStream)
+    if not videoUrl or not audioUrl then
+        return nil
+    end
+
+    return {
+        playableUrl = videoUrl,
+        audioUrl = audioUrl,
+        pairedStreams = true,
+        videoMime = getStreamMime(videoStream),
+        audioMime = getStreamMime(audioStream),
+    }
+end
+
 local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
     if type(data) ~= "table" then
         return nil
@@ -1835,7 +1939,7 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
 
     if wantVideo and type(data.hlsUrl) == "string" and data.hlsUrl ~= "" then
         if not shouldAvoidUrl(data.hlsUrl, avoidResolvedUrl) then
-            return data.hlsUrl
+            return { playableUrl = data.hlsUrl }
         end
     end
 
@@ -1857,39 +1961,28 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
                 end
                 if quality > bestQuality then
                     bestQuality = quality
-                    best = stream.url
+                    best = stream
                 end
             end
             ::continue_format_stream::
         end
-        if best then return best end
+        if best then return { playableUrl = best.url } end
     end
 
     if type(data.adaptiveFormats) == "table" then
-        local best
-        local bestScore = -999999
-        for _, stream in ipairs(data.adaptiveFormats) do
-            if type(stream) == "table" and type(stream.url) == "string" then
-                local mime = tostring(stream.type or "")
-                local isVideo = mime:find("video/", 1, true) ~= nil
-                local isAudio = mime:find("audio/", 1, true) ~= nil
-                if shouldAvoidUrl(stream.url, avoidResolvedUrl) then
-                    goto continue_adaptive
-                end
-
-                if (not wantVideo and isAudio) or (wantVideo and isVideo and isAudio) then
-                    local score = codecScore(mime)
-                        + audioLanguageScore(stream)
-                        + (tonumber(stream.bitrate) or tonumber(stream.audioSampleRate) or 0) / 1000
-                    if score > bestScore then
-                        best = stream.url
-                        bestScore = score
-                    end
-                end
+        if wantVideo then
+            local video = chooseBestStream(data.adaptiveFormats, streamLooksVideo, scoreVideoStream, avoidResolvedUrl)
+            local audio = chooseBestStream(data.adaptiveFormats, streamLooksAudio, scoreAudioStream, nil)
+            local paired = buildPairedStream(video, audio)
+            if paired then
+                return paired
             end
-            ::continue_adaptive::
+        else
+            local audio = chooseBestStream(data.adaptiveFormats, streamLooksAudio, scoreAudioStream, avoidResolvedUrl)
+            if audio then
+                return { playableUrl = audio.url }
+            end
         end
-        if best then return best end
     end
 
     return nil
@@ -1903,7 +1996,7 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
     if wantVideo then
         if type(data.hls) == "string" and data.hls ~= "" then
             if not shouldAvoidUrl(data.hls, avoidResolvedUrl) then
-                return data.hls
+                return { playableUrl = data.hls }
             end
         end
 
@@ -1921,39 +2014,23 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
                         + audioLanguageScore(stream)
                         + (tonumber(stream.bitrate) or tonumber(stream.quality and tostring(stream.quality):match("(%d+)")) or 0) / 1000
                     if score > bestScore then
-                        best = stream.url
+                        best = stream
                         bestScore = score
                     end
                 end
                 ::continue_video_stream::
             end
-            if best then return best end
+            if best then return { playableUrl = best.url } end
         end
 
-        return nil
+        local video = chooseBestStream(data.videoStreams, streamLooksVideo, scoreVideoStream, avoidResolvedUrl)
+        local audio = chooseBestStream(data.audioStreams, streamLooksAudio, scoreAudioStream, nil)
+        return buildPairedStream(video, audio)
     end
 
     if type(data.audioStreams) == "table" then
-        local best
-        local bestScore = -999999
-        for _, stream in ipairs(data.audioStreams) do
-            if type(stream) == "table" and type(stream.url) == "string" then
-                if shouldAvoidUrl(stream.url, avoidResolvedUrl) then
-                    goto continue_audio_stream
-                end
-
-                local mime = stream.mimeType or stream.format or stream.codec
-                local score = codecScore(mime)
-                    + audioLanguageScore(stream)
-                    + (tonumber(stream.bitrate) or 0) / 1000
-                if score > bestScore then
-                    best = stream.url
-                    bestScore = score
-                end
-            end
-            ::continue_audio_stream::
-        end
-        if best then return best end
+        local audio = chooseBestStream(data.audioStreams, streamLooksAudio, scoreAudioStream, avoidResolvedUrl)
+        if audio then return { playableUrl = audio.url } end
     end
 
     return nil
@@ -2166,7 +2243,8 @@ local function resolveInvidiousInstance(baseUrl, videoId, wantVideo, avoidResolv
             return
         end
 
-        local streamUrl = chooseInvidiousStream(decoded, wantVideo, avoidResolvedUrl)
+        local stream = chooseInvidiousStream(decoded, wantVideo, avoidResolvedUrl)
+        local streamUrl = stream and stream.playableUrl
         if type(streamUrl) == "string" and streamUrl ~= "" then
             markInstanceHealthy("invidious", baseUrl)
             PMMSDebug("resolver", "invidious instance resolved media", {
@@ -2174,9 +2252,14 @@ local function resolveInvidiousInstance(baseUrl, videoId, wantVideo, avoidResolv
                 videoId = videoId,
                 wantVideo = wantVideo,
                 streamUrl = redactUrlForDebug(streamUrl),
+                pairedStreams = stream.pairedStreams == true,
             })
             callback({
                 playableUrl = streamUrl,
+                audioUrl = stream.audioUrl,
+                pairedStreams = stream.pairedStreams == true,
+                videoMime = stream.videoMime,
+                audioMime = stream.audioMime,
                 title = decoded.title,
                 author = decoded.author,
                 duration = normalizeDuration(decoded.lengthSeconds),
@@ -2244,7 +2327,8 @@ local function resolvePipedInstance(baseUrl, videoId, wantVideo, avoidResolvedUr
             return
         end
 
-        local streamUrl = choosePipedStream(decoded, wantVideo, avoidResolvedUrl)
+        local stream = choosePipedStream(decoded, wantVideo, avoidResolvedUrl)
+        local streamUrl = stream and stream.playableUrl
         if type(streamUrl) == "string" and streamUrl ~= "" then
             markInstanceHealthy("piped", baseUrl)
             PMMSDebug("resolver", "piped instance resolved media", {
@@ -2252,9 +2336,14 @@ local function resolvePipedInstance(baseUrl, videoId, wantVideo, avoidResolvedUr
                 videoId = videoId,
                 wantVideo = wantVideo,
                 streamUrl = redactUrlForDebug(streamUrl),
+                pairedStreams = stream.pairedStreams == true,
             })
             callback({
                 playableUrl = streamUrl,
+                audioUrl = stream.audioUrl,
+                pairedStreams = stream.pairedStreams == true,
+                videoMime = stream.videoMime,
+                audioMime = stream.audioMime,
                 title = decoded.title,
                 author = decoded.uploader or decoded.uploaderName,
                 duration = normalizeDuration(decoded.duration),
@@ -2872,6 +2961,18 @@ function ResolvePlaybackOptions(options, resolverOptions, callback)
             trace = result.trace or {},
             resolvedAt = os.time(),
         }
+
+        if type(result.audioUrl) == "string" and result.audioUrl ~= "" then
+            resolved.audioUrl = result.audioUrl
+            resolved.pairedStreams = result.pairedStreams == true
+            resolved.videoMime = result.videoMime
+            resolved.audioMime = result.audioMime
+        else
+            resolved.audioUrl = nil
+            resolved.pairedStreams = nil
+            resolved.videoMime = nil
+            resolved.audioMime = nil
+        end
 
         if (not resolved.title or resolved.title == "" or resolved.title == sourceUrl) and type(result.title) == "string" and result.title ~= "" then
             resolved.title = result.title

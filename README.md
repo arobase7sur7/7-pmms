@@ -33,7 +33,7 @@ Supports multiple playback backends:
 - Cobalt
 - Invidious
 - Piped
-- optional YouTube Embed fallback
+- optional YouTube Embed fallback (disabled by default because owners can block embeds)
 
 Includes caching, retries, failover handling, adaptive provider ranking, and concurrency limits.
 

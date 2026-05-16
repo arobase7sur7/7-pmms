@@ -1229,6 +1229,35 @@ local function buildEffectiveResolverOptions(options, resolverOptions)
     return effective
 end
 
+local function isEmbedResolver(resolver)
+    if type(resolver) ~= "table" then
+        return false
+    end
+
+    return resolver.provider == "embed"
+        or resolver.instance == "youtube_embed"
+        or resolver.status == "fallback"
+end
+
+local function isExplicitEmbedProvider(options)
+    local provider, explicit = getRequestedYoutubeResolverProvider(options)
+    return explicit == true and provider == "embed"
+end
+
+local function isRetryableEmbedFallbackFailure(reason, options, resolver)
+    return reason == "youtube_embed_blocked"
+        and isEmbedResolver(resolver)
+        and not isExplicitEmbedProvider(options)
+end
+
+local function getRetryMaxInstances(resolverConfig, widenSearch)
+    local configured = tonumber(resolverConfig and resolverConfig.maxInstances) or 6
+    if widenSearch then
+        return math.max(12, configured)
+    end
+    return math.max(6, configured)
+end
+
 local function recordAutoProviderPlayback(options, resolver, outcome, reason, context)
     if type(RecordResolverProviderPlayback) ~= "function"
         or type(options) ~= "table"
@@ -1322,6 +1351,10 @@ local function applyResolvedMetadata(target, source)
     target.resolverReason = target.resolver.reason or target.resolverReason or "unknown"
     target.resolverWarning = target.resolver.warning or target.resolverWarning
     target.resolverFallback = target.resolverStatus == "fallback"
+    target.audioUrl = source.audioUrl or target.audioUrl
+    target.pairedStreams = source.pairedStreams == true or target.pairedStreams == true
+    target.videoMime = source.videoMime or target.videoMime
+    target.audioMime = source.audioMime or target.audioMime
     if type(source.audioTracks) == "table" then
         target.audioTracks = cloneDeepTable(source.audioTracks)
     end
@@ -1642,6 +1675,8 @@ local function classifyPlaybackError(message)
     if text:find("youtube error 101", 1, true)
         or text:find("youtube error 150", 1, true)
         or text:find("blocked embedded", 1, true)
+        or text:find("embedded youtube playback is blocked", 1, true)
+        or text:find("youtube playback is blocked", 1, true)
         or text:find("video unavailable", 1, true) then
         return "youtube_embed_blocked"
     end
@@ -3201,6 +3236,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     local currentResolver = type(currentOptions.resolver) == "table" and currentOptions.resolver or {}
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
     local playbackFailureReason = classifyPlaybackError(failedMessage)
+    local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, context.options, currentResolver)
 
     recordAutoProviderPlayback(currentOptions, currentResolver, "failure", playbackFailureReason, context)
 
@@ -3235,7 +3271,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
 
     if resolverConfig.retryOnPlaybackError == false
         or currentResolver.status == "bypass"
-        or currentResolver.status == "fallback"
+        or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
         or not isYoutubeLikeUrl(context.options.originalUrl or context.options.url)
         or (tonumber(context.retries) or 0) >= retryAttempts then
         PMMSDebug("player", "startup retry skipped", {
@@ -3244,6 +3280,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
             retryOnPlaybackError = resolverConfig.retryOnPlaybackError ~= false,
             resolverStatus = currentResolver.status,
             isYoutubeLike = isYoutubeLikeUrl(context.options.originalUrl or context.options.url),
+            retryEmbedFallbackFailure = retryEmbedFallbackFailure,
             retries = context.retries,
             retryAttempts = retryAttempts,
         })
@@ -3288,11 +3325,11 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         avoidResolvedUrl = failedUrl,
         avoidProvider = retryContext.lastProvider,
         avoidInstance = retryContext.lastInstance,
-        maxInstances = math.max(6, tonumber(resolverConfig.maxInstances) or 6),
+        maxInstances = getRetryMaxInstances(resolverConfig, retryEmbedFallbackFailure),
         notifyOnFailure = false,
         allowFallback = true,
         allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
-        allowEmbedFallback = resolverConfig.allowEmbedFallback == true,
+        allowEmbedFallback = retryEmbedFallbackFailure and false or resolverConfig.allowEmbedFallback == true,
     }
 
     resolvePlaybackAndNotify(src, retryContext.options, resolverRetryOptions, function(ok, resolvedOptions, warning)
@@ -3378,6 +3415,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
     local retryCount = tonumber(mp.localPlaybackRetryCount) or 0
     local playbackFailureReason = classifyPlaybackError(failedMessage)
+    local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, mp, currentResolver)
 
     recordAutoProviderPlayback(mp, currentResolver, "failure", playbackFailureReason, nil)
 
@@ -3390,7 +3428,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     if resolverConfig.retryOnPlaybackError == false
         or not isYoutubeLikeUrl(sourceUrl)
         or currentResolver.status == "bypass"
-        or currentResolver.status == "fallback"
+        or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
         or retryCount >= retryAttempts then
         PMMSDebug("player", "local playback retry skipped", {
             src = src,
@@ -3403,6 +3441,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
             resolverStatus = currentResolver.status,
             provider = currentResolver.provider,
             instance = currentResolver.instance,
+            retryEmbedFallbackFailure = retryEmbedFallbackFailure,
             retryCount = retryCount,
             retryAttempts = retryAttempts,
         })
@@ -3455,11 +3494,11 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         avoidResolvedUrl = failedUrl,
         avoidProvider = currentResolver.provider,
         avoidInstance = currentResolver.instance,
-        maxInstances = math.max(6, tonumber(resolverConfig.maxInstances) or 6),
+        maxInstances = getRetryMaxInstances(resolverConfig, retryEmbedFallbackFailure),
         notifyOnFailure = false,
         allowFallback = true,
         allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
-        allowEmbedFallback = resolverConfig.allowEmbedFallback == true,
+        allowEmbedFallback = retryEmbedFallbackFailure and false or resolverConfig.allowEmbedFallback == true,
         replaceActiveOnReady = true,
     })
 end)
