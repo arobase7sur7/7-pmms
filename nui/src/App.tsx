@@ -350,8 +350,6 @@ function SocialView() {
   );
 }
 
-// AdminView moved to AdminView.tsx
-
 function MainContent({ eqConfig, analyserData }: { eqConfig: any; analyserData: Float32Array | null }) {
   return (
     <main id="main-content">
@@ -580,18 +578,37 @@ export function App() {
   const [analyserData, setAnalyserData] = useState<Float32Array | null>(null);
 
   useEffect(() => {
-    // NUI messages from Lua forwarded here
     const handler = (event: MessageEvent) => {
       const data = event.data;
       if (!data || !data.type) return;
 
       if (data.type === 'showUi' || data.type === 'startup') {
         if (data.equalizerConfig) setEqConfig(data.equalizerConfig);
+        if (Object.prototype.hasOwnProperty.call(data, 'selectedHandle')) {
+          window.dispatchEvent(new CustomEvent('pmms:adminSelectHandle', {
+            detail: { handle: data.selectedHandle ?? null }
+          }));
+        }
+        if (data.admin) window.dispatchEvent(new CustomEvent('pmms:adminUpdate', { detail: { ...data.admin, selectedHandle: data.selectedHandle } }));
+      }
+      if (data.type === 'updateUi') {
+        if (data.admin) {
+          window.dispatchEvent(new CustomEvent('pmms:adminUpdate', {
+            detail: {
+              ...data.admin,
+              activeMediaPlayers: data.activeMediaPlayers,
+              usableMediaPlayers: data.usableMediaPlayers,
+              deviceSessions: data.deviceSessions,
+            },
+          }));
+        }
       }
       if (data.type === 'eqProfile') {
         window.dispatchEvent(new CustomEvent('pmms:eqProfile', { detail: data }));
       }
-      // Analyser frames streamed from DUI via postMessage relayed through NUI
+      if (data.type === 'eqDeviceProfile') {
+        window.dispatchEvent(new CustomEvent('pmms:eqDeviceProfile', { detail: data }));
+      }
       if (data.type === 'eqAnalyserFrame' && data.bins) {
         setAnalyserData(new Float32Array(data.bins));
       }

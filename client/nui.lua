@@ -3,6 +3,7 @@ local baseVolume = 100
 local baseVolumeKvpKey = "pmms:baseVolume:v1"
 local tooltipsEnabled = true
 local permissions = {}
+local localEqProfile = nil
 
 local function setBaseVolume(value)
     baseVolume = Clamp(value, 0, 100, 100)
@@ -54,6 +55,33 @@ function GetPermissions()
     return permissions
 end
 
+local function isLocalEqProfileActive()
+    return type(localEqProfile) == "table" and localEqProfile.enabled == true
+end
+
+function GetLocalEqProfile()
+    return localEqProfile
+end
+
+function GetEffectiveEqProfileForDui(deviceProfile)
+    if isLocalEqProfileActive() then
+        return localEqProfile
+    end
+    if type(deviceProfile) == "table" then
+        return deviceProfile
+    end
+    if type(localEqProfile) == "table" then
+        return localEqProfile
+    end
+    return nil
+end
+
+function ApplyEffectiveEqProfileToBrowser(browser, deviceProfile)
+    if browser and type(browser.sendMessage) == "function" then
+        browser:sendMessage({ type = "applyEqProfile", profile = GetEffectiveEqProfileForDui(deviceProfile) })
+    end
+end
+
 local function GetEntityFromDataHandle(handle)
     if handle and NetworkDoesEntityExistWithNetworkId(handle) then
         return NetworkGetEntityFromNetworkId(handle)
@@ -72,7 +100,40 @@ local function getVehiclePlateForHandle(handle)
     return nil
 end
 
-local function buildDeviceProfilesForClient()
+local function getModelNameFromHash(modelHash)
+    for modelName in pairs(Config.models or {}) do
+        if GetHashKey(modelName) == modelHash then
+            return modelName
+        end
+    end
+    return nil
+end
+
+local function buildDeviceAnchorPayload(handle)
+    local entity = GetEntityFromDataHandle(handle)
+    if not entity or not DoesEntityExist(entity) then
+        return nil
+    end
+
+    local modelHash = GetEntityModel(entity)
+    local modelName = getModelNameFromHash(modelHash)
+    if not modelName then
+        return nil
+    end
+
+    local coords = GetEntityCoords(entity)
+    local rotation = GetEntityRotation(entity, 2)
+    local modelConfig = GetModelConfig(modelHash) or GetModelConfig(modelName) or {}
+    return {
+        coords = { x = coords.x, y = coords.y, z = coords.z },
+        propModel = modelName,
+        label = modelConfig.label or modelName,
+        heading = GetEntityHeading(entity),
+        rotation = { x = rotation.x, y = rotation.y, z = rotation.z },
+    }
+end
+
+function BuildDeviceProfilesForClient()
     local rows = {}
     for key, profile in pairs(Config.deviceProfiles or {}) do
         if type(profile) == "table" then
@@ -89,27 +150,75 @@ local function buildDeviceProfilesForClient()
     return rows
 end
 
-local function buildPropModelsForClient()
+function BuildPropModelsForClient()
     local models = {}
     for key, data in pairs(Config.models or {}) do
         if type(data) == "table" and data.isPlaceable == true then
-            models[#models + 1] = {
-                model = key,
-                label = data.label or "Prop",
-                isTv  = data.renderTarget ~= nil,
-            }
+            local hash = type(key) == "number" and key or tonumber(key) or GetHashKey(key)
+            if hash and IsModelInCdimage(hash) and IsModelValid(hash) then
+                models[#models + 1] = {
+                    model = key,
+                    label = data.label or "Prop",
+                    isTv  = data.renderTarget ~= nil,
+                }
+            end
         end
     end
     table.sort(models, function(a, b) return tostring(a.label) < tostring(b.label) end)
     return models
 end
 
--- Admin discovery range (expanded when admin panel is open).
+function BuildSpeakerModelsForClient()
+    local models = {}
+    local speakerModels = Config.speakers and Config.speakers.models or nil
+    if type(speakerModels) == "table" then
+        for key, data in pairs(speakerModels) do
+            local model = nil
+            local label = nil
+            local hidden = false
+
+            if type(data) == "table" then
+                model = data.model or (type(key) == "string" and key or nil)
+                label = data.label or model
+                hidden = data.isPlaceable == false
+            elseif type(data) == "string" then
+                model = data
+                label = data
+            end
+
+            if model and model ~= "" and not hidden then
+                models[#models + 1] = {
+                    model = model,
+                    label = label or model,
+                    isTv = false,
+                }
+            end
+        end
+    end
+
+    if #models == 0 and Config.speakers and type(Config.speakers.propModel) == "string" and Config.speakers.propModel ~= "" then
+        models[#models + 1] = {
+            model = Config.speakers.propModel,
+            label = Config.speakers.propModel,
+            isTv = false,
+        }
+    end
+
+    table.sort(models, function(a, b) return tostring(a.label) < tostring(b.label) end)
+    return models
+end
+
 local adminDiscoveryRange = nil
 
 RegisterNUICallback("setAdminDiscoveryRange", function(data, cb)
     local range = tonumber(data and data.range)
     adminDiscoveryRange = (range and range > 0) and range or nil
+    if type(InvalidateEntityCache) == "function" then
+        InvalidateEntityCache()
+    end
+    if type(InvalidateUiUpdateSignature) == "function" then
+        InvalidateUiUpdateSignature()
+    end
     cb(json.encode({}))
 end)
 
@@ -195,8 +304,9 @@ RegisterNUICallback("startup", function(_, cb)
         baseVolume                 = GetBaseVolume(),
         debug                      = Config.debug,
         permissions                = permissions,
-        deviceProfiles             = buildDeviceProfilesForClient(),
-        propModels                 = buildPropModelsForClient(),
+        deviceProfiles             = BuildDeviceProfilesForClient(),
+        propModels                 = BuildPropModelsForClient(),
+        speakerModels              = BuildSpeakerModelsForClient(),
         adminQuickActions          = Config.admin and Config.admin.quickActions or {},
         requestConfig              = Config.requests,
         speakerConfig              = Config.speakers,
@@ -442,21 +552,20 @@ RegisterNUICallback("adminClearSessionLock", function(data, cb)
 end)
 
 RegisterNUICallback("addLinkedSpeakerHere", function(data, cb)
-    -- Close the UI first, then start placement mode
     HideUi()
-    StartSpeakerPlacementMode(data.handle, data.persistent == true, data.propModel)
+    StartSpeakerPlacementMode(data.handle, data.persistent == true, data.propModel, buildDeviceAnchorPayload(data.handle))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("adminAddSpeaker", function(data, cb)
     HideUi()
-    StartSpeakerPlacementMode(data.handle, false, data.propModel)
+    StartSpeakerPlacementMode(data.handle, false, data.propModel, buildDeviceAnchorPayload(data.handle))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("adminAddPersistentSpeaker", function(data, cb)
     HideUi()
-    StartSpeakerPlacementMode(data.handle, true, data.propModel)
+    StartSpeakerPlacementMode(data.handle, true, data.propModel, buildDeviceAnchorPayload(data.handle))
     cb(json.encode({}))
 end)
 
@@ -475,18 +584,23 @@ RegisterNUICallback("adminResetProfile", function(data, cb)
     cb(json.encode({}))
 end)
 
--- ── EQ ───────────────────────────────────────────────────────────────────────
 
 RegisterNUICallback("saveEqProfile", function(data, cb)
+    localEqProfile = type(data) == "table" and data or nil
     TriggerServerEvent("pmms:saveEqProfile", data)
-    -- Forward immediately to all DUI browsers so audio updates live.
     if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
-        for _, browser in pairs(DuiBrowser.pool) do
-            if type(browser.sendMessage) == "function" then
-                browser:sendMessage({ type = "applyEqProfile", profile = data })
-            end
+        local states = type(GetMediaPlayerStates) == "function" and GetMediaPlayerStates() or {}
+        for handle, browser in pairs(DuiBrowser.pool) do
+            local state = states[handle] or states[tostring(handle)]
+            ApplyEffectiveEqProfileToBrowser(browser, state and state.equalizerProfile or nil)
         end
     end
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("saveDeviceEqProfile", function(data, cb)
+    data = type(data) == "table" and data or {}
+    TriggerServerEvent("pmms:saveDeviceEqProfile", data.handle, data.profile or {})
     cb(json.encode({}))
 end)
 
@@ -495,7 +609,11 @@ RegisterNUICallback("loadEqProfile", function(_, cb)
     cb(json.encode({}))
 end)
 
--- Tell the DUI browser to toggle the AnalyserNode data stream.
+RegisterNUICallback("loadDeviceEqProfile", function(data, cb)
+    TriggerServerEvent("pmms:loadDeviceEqProfile", data and data.handle)
+    cb(json.encode({}))
+end)
+
 RegisterNUICallback("setEqAnalyserActive", function(data, cb)
     if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
         for _, browser in pairs(DuiBrowser.pool) do
@@ -508,7 +626,6 @@ RegisterNUICallback("setEqAnalyserActive", function(data, cb)
 end)
 
 RegisterNUICallback("adminAddPersistentDevice", function(data, cb)
-    -- Close the UI first, then start placement mode
     HideUi()
     StartDevicePlacementMode(data)
     cb(json.encode({}))
@@ -516,11 +633,6 @@ end)
 
 RegisterNUICallback("adminRemovePersistentDevice", function(data, cb)
     TriggerServerEvent("pmms:adminRemovePersistentDevice", data.handle)
-    cb(json.encode({}))
-end)
-
-RegisterNUICallback("setHudEnabled", function(data, cb)
-    TriggerEvent("pmms:setHudEnabled", data and data.enabled == true)
     cb(json.encode({}))
 end)
 
@@ -651,7 +763,7 @@ RegisterNUICallback("decreaseVideoSize", function(data, cb)
     cb(json.encode({}))
 end)
 
-function ShowUi(selectedHandle)
+function ShowUi(selectedHandle, openView)
     uiIsOpen = true
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
@@ -659,7 +771,6 @@ function ShowUi(selectedHandle)
     TriggerServerEvent("pmms:loadPermissions")
     SetNuiFocus(true, true)
     TriggerServerEvent("pmms:markMenuOpened")
-    -- Request EQ profile from server so NUI has latest state on open.
     TriggerServerEvent("pmms:loadEqProfile")
     SendNUIMessage({
         type = "showUi",
@@ -675,17 +786,21 @@ function ShowUi(selectedHandle)
         baseVolume = type(GetBaseVolume) == "function" and GetBaseVolume() or 100,
         debug = Config.debug,
         permissions = permissions,
-        deviceProfiles = buildDeviceProfilesForClient(),
+        deviceProfiles = BuildDeviceProfilesForClient(),
         adminQuickActions = Config.admin and Config.admin.quickActions or {},
         requestConfig = Config.requests,
         speakerConfig = Config.speakers,
         selectedHandle = selectedHandle,
+        propModels = BuildPropModelsForClient(),
+        speakerModels = BuildSpeakerModelsForClient(),
         equalizerConfig = Config.equalizer,
+        openView = openView,
     })
 end
 
 function HideUi()
     uiIsOpen = false
+    adminDiscoveryRange = nil
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
     end
@@ -707,6 +822,10 @@ end
 
 RegisterNetEvent("pmms:showControls", function()
     ShowUi()
+end)
+
+RegisterNetEvent("pmms:showUi", function(selectedHandle, openView)
+    ShowUi(selectedHandle, openView)
 end)
 
 RegisterNetEvent("pmms:toggleStatus", function()
@@ -741,14 +860,22 @@ RegisterNetEvent("pmms:notify", function(data)
 end)
 
 RegisterNetEvent("pmms:eqProfile", function(profile)
+    localEqProfile = type(profile) == "table" and profile or nil
     SendNUIMessage({ type = "eqProfile", profile = profile })
-    -- Also apply to DUI browsers immediately so audio is up-to-date.
     if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
-        for _, browser in pairs(DuiBrowser.pool) do
-            if type(browser.sendMessage) == "function" then
-                browser:sendMessage({ type = "applyEqProfile", profile = profile })
-            end
+        local states = type(GetMediaPlayerStates) == "function" and GetMediaPlayerStates() or {}
+        for handle, browser in pairs(DuiBrowser.pool) do
+            local state = states[handle] or states[tostring(handle)]
+            ApplyEffectiveEqProfileToBrowser(browser, state and state.equalizerProfile or nil)
         end
+    end
+end)
+
+RegisterNetEvent("pmms:eqDeviceProfile", function(handle, profile, allowed)
+    SendNUIMessage({ type = "eqDeviceProfile", handle = handle, profile = profile, allowed = allowed ~= false })
+    if allowed ~= false and type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
+        local browser = DuiBrowser.pool[handle] or DuiBrowser.pool[tostring(handle)]
+        ApplyEffectiveEqProfileToBrowser(browser, profile)
     end
 end)
 
@@ -851,6 +978,11 @@ end)
 
 RegisterNUICallback("acceptFriendRequest", function(data, cb)
     TriggerServerEvent("pmms:acceptFriendRequest", data.requestId)
+    cb(json.encode({}))
+end)
+
+RegisterNUICallback("declineFriendRequest", function(data, cb)
+    TriggerServerEvent("pmms:declineFriendRequest", data.requestId)
     cb(json.encode({}))
 end)
 

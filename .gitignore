@@ -6,4 +6,5 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+data/admin_state.json
 data/provider_stats.json

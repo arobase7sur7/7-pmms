@@ -8,6 +8,7 @@ var permissions        = {};
 var adminState         = null;
 var deviceProfiles     = [];
 var propModels         = [];
+var speakerModels      = [];
 var adminQuickActions  = {};
 var requestConfig      = {};
 var speakerConfig      = {};
@@ -817,7 +818,6 @@ function applyYoutubeProviderPreference(options) {
     var mode = getCurrentYoutubeProviderMode();
     var currentSource = getCurrentSearchSource && getCurrentSearchSource();
 
-    // youtube_embed search source always forces embed mode
     if (currentSource === 'youtube_embed' || next.source === 'youtube_embed') {
         next.youtubeProvider = 'embed';
         next.youtubeProviderExplicit = true;
@@ -1238,6 +1238,9 @@ function updateUi(data) {
         if (Array.isArray(data.propModels)) {
             propModels = data.propModels;
         }
+        if (Array.isArray(data.speakerModels)) {
+            speakerModels = data.speakerModels;
+        }
         if (data.adminQuickActions) {
             adminQuickActions = data.adminQuickActions || {};
         }
@@ -1268,6 +1271,14 @@ function updateUi(data) {
         if (data.selectedHandle != null) {
             activePlayerHandle = handleKey(data.selectedHandle);
             _lastActiveHandle = activePlayerHandle;
+        } else {
+            activePlayerHandle = null;
+            _lastActiveHandle = null;
+        }
+        if (data.openView) {
+            switchView(data.openView);
+        } else if (currentViewId === 'view-admin' && !data.selectedHandle) {
+            switchView('view-home');
         }
         activateSearchBtn();
         if (libraryState.playlistsDirty || !libraryState.playlistsLoaded || hasPendingFavoriteMutations()) {
@@ -1304,7 +1315,15 @@ function updateUi(data) {
         updateStaffVisibility();
     }
     if (data.admin !== undefined) {
-        adminState = data.admin || null;
+        if (data.admin && data.admin.adminState !== undefined) {
+            adminState = data.admin.adminState || null;
+            if (Array.isArray(data.admin.propModels)) propModels = data.admin.propModels;
+            if (Array.isArray(data.admin.speakerModels)) speakerModels = data.admin.speakerModels;
+            if (Array.isArray(data.admin.deviceProfiles)) deviceProfiles = data.admin.deviceProfiles;
+            if (Number.isFinite(Number(data.admin.adminMaxRange))) adminMaxRange = Number(data.admin.adminMaxRange);
+        } else {
+            adminState = data.admin || null;
+        }
         renderAdminPanel();
         dispatchAdminUpdate();
     }
@@ -1360,7 +1379,9 @@ function updateUi(data) {
 }
 
 function dispatchAdminUpdate() {
-    var speakerModelList = (speakerConfig && Array.isArray(speakerConfig.models) && speakerConfig.models.length > 0)
+    var speakerModelList = Array.isArray(speakerModels) && speakerModels.length > 0
+        ? speakerModels
+        : (speakerConfig && Array.isArray(speakerConfig.models) && speakerConfig.models.length > 0)
         ? speakerConfig.models
         : propModels;
     window.dispatchEvent(new CustomEvent('pmms:adminUpdate', {
@@ -1376,6 +1397,89 @@ function dispatchAdminUpdate() {
             adminMaxRange: adminMaxRange || maxRange,
         }
     }));
+}
+
+function getPropImageSrc(model, index) {
+    var exts = ['png', 'jpg', 'webp', 'svg'];
+    if (index >= exts.length) return './assets/props/fallback.svg';
+    return './assets/props/' + encodeURIComponent(model) + '.' + exts[index];
+}
+
+function showPropModelPicker(title, actionLabel, onPick, sourceModels) {
+    var models = Array.isArray(sourceModels) ? sourceModels.slice() : (Array.isArray(propModels) ? propModels.slice() : []);
+    if (!models.length) {
+        showNotification('No placeable prop models are available.', title || 'Props', '#ff4444');
+        return;
+    }
+
+    var existing = document.getElementById('prop-picker-modal');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+    var modal = document.createElement('div');
+    modal.id = 'prop-picker-modal';
+    modal.className = 'modal-backdrop';
+    modal.style.display = 'flex';
+    modal.innerHTML =
+        '<div class="modal modal-wide prop-picker-modal">' +
+            '<div class="modal-header">' +
+                '<h3>' + safeText(title || 'Choose Prop') + '</h3>' +
+                '<button class="btn-icon btn-sm" id="prop-picker-close">x</button>' +
+            '</div>' +
+            '<div class="modal-body">' +
+                '<input type="text" id="prop-picker-search" placeholder="Filter props..." style="margin-bottom:12px;">' +
+                '<div class="prop-picker-grid" id="prop-picker-grid"></div>' +
+                '<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">' +
+                    '<button class="btn-outline" id="prop-picker-cancel">Cancel</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    var grid = modal.querySelector('#prop-picker-grid');
+    var search = modal.querySelector('#prop-picker-search');
+    var close = function() {
+        if (modal.parentNode) modal.parentNode.removeChild(modal);
+    };
+
+    var render = function() {
+        var q = String(search && search.value || '').toLowerCase();
+        var filtered = models.filter(function(model) {
+            return !q || String(model.label || '').toLowerCase().indexOf(q) !== -1 || String(model.model || '').toLowerCase().indexOf(q) !== -1;
+        });
+        grid.innerHTML = filtered.map(function(model) {
+            return '<button class="prop-picker-item" data-model="' + safeText(model.model) + '">' +
+                '<img src="' + safeText(getPropImageSrc(model.model, 0)) + '" data-model="' + safeText(model.model) + '" data-img-index="0" alt="' + safeText(model.model) + '">' +
+                '<span>' + safeText(model.label || model.model) + '</span>' +
+                '<small>' + safeText(model.model) + '</small>' +
+                '<b>' + safeText(actionLabel || 'Select') + '</b>' +
+            '</button>';
+        }).join('') || '<div class="admin-empty-small">No props match this filter.</div>';
+
+        grid.querySelectorAll('img').forEach(function(img) {
+            img.onerror = function() {
+                var index = Number(img.getAttribute('data-img-index') || '0') + 1;
+                img.setAttribute('data-img-index', String(index));
+                img.src = getPropImageSrc(img.getAttribute('data-model') || '', index);
+            };
+        });
+
+        grid.querySelectorAll('.prop-picker-item').forEach(function(button) {
+            button.onclick = function() {
+                var model = button.getAttribute('data-model');
+                close();
+                if (model && typeof onPick === 'function') onPick(model);
+            };
+        });
+    };
+
+    modal.querySelector('#prop-picker-close').onclick = close;
+    modal.querySelector('#prop-picker-cancel').onclick = close;
+    modal.onclick = function(event) {
+        if (event.target === modal) close();
+    };
+    if (search) search.oninput = render;
+    render();
+    if (search) search.focus();
 }
 
 'use strict';
@@ -2285,13 +2389,13 @@ function getReadOnlyTrackListHtml(title, entries, emptyText, subtitleText, newes
                 if (actions.addToPlaylist) {
                     html +=
                         '<button class="btn-icon btn-sm np-history-add" data-history-add-index="' + entry._sourceIndex + '" data-tooltip="Add to playlist" aria-label="Add history item to playlist">' +
-                            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+                            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
                         '</button>';
                 }
                 if (actions.replayQueue) {
                     html +=
                         '<button class="btn-icon btn-sm np-history-replay" data-history-replay-index="' + entry._sourceIndex + '" data-tooltip="Replay / queue again" aria-label="Replay history item">' +
-                            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' +
+                            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' +
                         '</button>';
                 }
                 html += '</div>';
@@ -4270,10 +4374,16 @@ function populateRequests(requests) {
                 '<div class="avatar">' + _initials(r.requester_name || '?') + '</div>' +
                 '<div class="list-item-title">' + safeText(r.requester_name || 'Unknown') + '</div>' +
             '</div>' +
-            '<button class="btn-accent btn-sm" title="Accept">Accept</button>';
+            '<div style="display:flex; gap:8px;">' +
+                '<button class="btn-outline btn-sm" title="Decline">Decline</button>' +
+                '<button class="btn-accent btn-sm" title="Accept">Accept</button>' +
+            '</div>';
 
         item.querySelector('.btn-accent').onclick = function() {
             sendMessage('acceptFriendRequest', { requestId: r.id });
+        };
+        item.querySelector('.btn-outline').onclick = function() {
+            sendMessage('declineFriendRequest', { requestId: r.id });
         };
 
         container.appendChild(item);
@@ -4303,7 +4413,6 @@ function openShareModal(playlistId) {
         item.onclick = function() {
             sendMessage('sharePlaylist', { playlistId: playlistId, friendLicense: f.friend_license });
             modal.style.display = 'none';
-            showNotification('Playlist shared!', 'Library');
         };
         body.appendChild(item);
     });
@@ -4491,7 +4600,6 @@ function selectAdminDevice(handle) {
     } else {
         renderAdminPanel();
     }
-    // Dispatch to React AdminView so it can pre-select the correct device.
     try {
         window.dispatchEvent(new CustomEvent('pmms:adminSelectHandle', { detail: { handle: key } }));
     } catch (_) {}
@@ -4568,7 +4676,6 @@ function renderAdminLogsHtml() {
 }
 
 function renderAdminPanel() {
-    // Admin panel is now rendered via React AdminView.tsx
 }
 
 function parseAdminGrades(value) {
@@ -4933,7 +5040,7 @@ function openAdminModal(forcedHandle) {
         var info = lockState.info;
         var canEdit = lockState.canEdit;
         var canInteract = lockState.canInteract;
-        var canEditAdvanced = canEdit; // All players with interact permission can adjust device settings
+        var canEditAdvanced = canEdit;
         var session = getEffectiveDeviceSession(handle);
         var defaults = getAdminDefaultsFromPayload(defaultsPayload);
         var state = getAdminStateFromInfo(info);
@@ -4968,7 +5075,6 @@ function openAdminModal(forcedHandle) {
             '<div class="admin-lock-actions" id="admin-lock-actions">' + lockState.lockActionsHtml + '</div>' +
         '</div>';
 
-        /* ── Speaker section (visible to all interacting players) ── */
         var speakerList = (session && session.settings && Array.isArray(session.settings.linkedSpeakers))
             ? session.settings.linkedSpeakers
             : (session && Array.isArray(session.linkedSpeakers) ? session.linkedSpeakers : []);
@@ -4976,16 +5082,18 @@ function openAdminModal(forcedHandle) {
         if (speakerList.length > 0) {
             speakerHtml = '<div class="admin-speaker-list" id="admin-speaker-list">';
             speakerList.forEach(function(spk) {
-                var canDeleteSpk = isStaffUser() || (spk.createdBy && spk.createdBy === (permissions && permissions.identifier));
+                var canDeleteSpk = spk.persistent === true
+                    ? isAdminUser()
+                    : (isStaffUser() || (spk.createdBy && spk.createdBy === (permissions && permissions.identifier)));
                 speakerHtml +=
                     '<div class="admin-speaker-row" data-speaker-id="' + safeText(String(spk.id || '')) + '">' +
                         '<div class="admin-speaker-info">' +
                             '<span class="admin-speaker-name">' + safeText(spk.propModel || 'Speaker') + '</span>' +
-                            '<span class="admin-speaker-meta">' + safeText(spk.createdByName || '') + (spk.persistent ? ' · persistent' : '') + '</span>' +
+                            '<span class="admin-speaker-meta">' + safeText(spk.createdByName || '') + (spk.persistent ? ' Â· persistent' : '') + '</span>' +
                         '</div>' +
                         (canDeleteSpk
                             ? '<button class="btn-danger btn-xs admin-speaker-remove" data-speaker-id="' + safeText(String(spk.id || '')) + '">Remove</button>'
-                            : '<span class="admin-speaker-locked">🔒</span>') +
+                            : '<span class="admin-speaker-locked">ðŸ”’</span>') +
                     '</div>';
             });
             speakerHtml += '</div>';
@@ -4993,7 +5101,6 @@ function openAdminModal(forcedHandle) {
             speakerHtml = '<p class="admin-speaker-empty">No linked speakers.</p>';
         }
 
-        /* ── Staff quick actions pill-bar ── */
         var staffPillsHtml = '';
         if (showStaffQuick) {
             staffPillsHtml =
@@ -5018,7 +5125,6 @@ function openAdminModal(forcedHandle) {
 
 
         body.innerHTML +=
-            /* Speaker section */
             '<div class="admin-section">' +
                 '<div class="admin-row">' +
                     '<label>Speakers</label>' +
@@ -5027,10 +5133,8 @@ function openAdminModal(forcedHandle) {
                 speakerHtml +
             '</div>' +
 
-            /* Staff pills */
             staffPillsHtml +
 
-            /* Device settings (visible to all players with interact permission) */
             '<div class="admin-section">' +
                 '<label class="admin-label">Range <span id="val-range">' + Math.round(state.range) + 'm</span></label>' +
                 '<input type="range" class="slider' + (allowAdminRange ? ' slider-admin-range' : '') + '" id="set-range" min="0" max="' + rangeSliderMax + '" value="' + rangeSliderValue + '"' + (canEditAdvanced ? '' : ' disabled') + '>' +
@@ -5218,12 +5322,13 @@ function openAdminModal(forcedHandle) {
         var linkSpeakerBtn = body.querySelector('#link-speaker-btn');
         if (linkSpeakerBtn) {
             linkSpeakerBtn.onclick = function() {
-                closeAdminModal();
-                sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: false });
+                showPropModelPicker('Choose Speaker Prop', 'Place', function(model) {
+                    closeAdminModal();
+                    sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: false, propModel: model });
+                }, speakerModels);
             };
         }
 
-        // Speaker remove buttons
         body.querySelectorAll('.admin-speaker-remove').forEach(function(btn) {
             btn.onclick = function() {
                 var sid = btn.dataset.speakerId;
@@ -5276,8 +5381,10 @@ function openAdminModal(forcedHandle) {
         var staffPersistentSpeakerBtn = body.querySelector('#staff-link-persistent-speaker');
         if (staffPersistentSpeakerBtn) {
             staffPersistentSpeakerBtn.onclick = function() {
-                closeAdminModal();
-                sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: true });
+                showPropModelPicker('Choose Persistent Speaker Prop', 'Place Persistent', function(model) {
+                    closeAdminModal();
+                    sendMessage('addLinkedSpeakerHere', { handle: handle, persistent: true, propModel: model });
+                }, speakerModels);
             };
         }
 
@@ -5582,12 +5689,8 @@ function initSocialAutocomplete() {
     input.placeholder = 'Search players or enter a server ID...';
 
     var hint = document.getElementById('social-invite-hint');
-    if (!hint) {
-        hint = document.createElement('div');
-        hint.id = 'social-invite-hint';
-        hint.className = 'social-hint';
-        hint.textContent = 'Suggestions include online players and recent visitors.';
-        input.parentNode && input.parentNode.parentNode && input.parentNode.parentNode.insertBefore(hint, input.parentNode.nextSibling);
+    if (hint && hint.parentNode) {
+        hint.parentNode.removeChild(hint);
     }
 
     var refresh = function() {
@@ -5676,10 +5779,12 @@ window.addEventListener('message', function(event) {
                 adminMaxRange: d.adminMaxRange,
                 searchMinimumBusyMs: d.searchMinimumBusyMs,
                 deviceDefaults: d.deviceDefaults,
+                openView: d.openView,
                 baseVolume: d.baseVolume,
                 permissions: d.permissions,
                 deviceProfiles: d.deviceProfiles,
                 propModels: d.propModels,
+                speakerModels: d.speakerModels,
                 adminQuickActions: d.adminQuickActions,
                 requestConfig: d.requestConfig,
                 speakerConfig: d.speakerConfig,

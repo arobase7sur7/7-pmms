@@ -125,7 +125,7 @@ function emitPlayerState(delay = 60) {
         queue: mockQueue,
         queueLength: mockQueue.length,
         historyCount: 1,
-        settings: { loopMode: mockLoopMode }
+        settings: { loopMode: mockLoopMode, requestMode: 'pending' }
       }
     }
   }, delay);

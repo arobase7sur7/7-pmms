@@ -39,6 +39,36 @@ local function getNetworkHandle(entity)
     return getEntityNetworkId(entity)
 end
 
+local function getPersistentHandleForEntity(entity)
+    if not entity or not DoesEntityExist(entity) then
+        return nil
+    end
+
+    local coords = GetEntityCoords(entity)
+    local defaultMp = GetDefaultMediaPlayer(Config.defaultMediaPlayers, coords)
+    if not defaultMp then
+        local bestDistance = 0.75
+        for _, entry in ipairs(Config.defaultMediaPlayers or {}) do
+            if type(entry) == "table" then
+                local position = ToVector3(entry.position)
+                local distance = position and #(coords - position) or nil
+                if distance and distance < bestDistance then
+                    bestDistance = distance
+                    defaultMp = entry
+                end
+            end
+        end
+    end
+    if defaultMp then
+        local position = ToVector3(defaultMp.position)
+        if position then
+            return GetHandleFromCoords(position)
+        end
+    end
+
+    return nil
+end
+
 local function getExistingNetworkHandle(entity)
     if not entity or not DoesEntityExist(entity) or not NetworkGetEntityIsNetworked(entity) then
         return nil
@@ -72,7 +102,7 @@ local function resolveHandleFromTargetEntity(entity)
     if not isTargetableObject(entity) then
         return nil
     end
-    return getNetworkHandle(entity)
+    return getPersistentHandleForEntity(entity) or getNetworkHandle(entity)
 end
 
 local function openUiForHandle(handle)
@@ -80,7 +110,19 @@ local function openUiForHandle(handle)
         ShowNotification("No media player in range", nil, "#ff4444")
         return
     end
-    ShowUi(handle)
+    ShowUi(handle, "view-home")
+end
+
+local function openAdminForHandle(handle)
+    if not handle then
+        ShowNotification("No media player in range", nil, "#ff4444")
+        return
+    end
+    ShowUi(handle, "view-admin")
+end
+
+local function openAdminForEntity(entity)
+    openAdminForHandle(resolveHandleFromTargetEntity(entity))
 end
 
 local function openUiForEntity(entity)
@@ -96,12 +138,10 @@ RegisterNetEvent("pmms:openUiForHandle", function(handle)
 end)
 
 local function getDefaultMediaPlayerCoords(entry)
-    if type(entry) ~= "table" or type(entry.position) ~= "table" then
+    if type(entry) ~= "table" then
         return nil
     end
-    if tonumber(entry.position.x) == nil or tonumber(entry.position.y) == nil or tonumber(entry.position.z) == nil then
-        return nil
-    end
+
     return ToVector3(entry.position)
 end
 
@@ -125,6 +165,19 @@ local function buildQbOption(targetCfg, handler, canInteract)
     }
 end
 
+local function buildQbAdminOption(targetCfg, handler, canInteract)
+    return {
+        type = "client",
+        icon = "fas fa-shield-alt",
+        label = "Open Admin",
+        action = handler,
+        canInteract = canInteract or function(entity)
+            local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+            return permissions.manage == true and isTargetableObject(entity)
+        end,
+    }
+end
+
 local function setupQbTargetZones(targetCfg)
     for index, entry in ipairs(Config.defaultMediaPlayers or {}) do
         local handle, coords = getDefaultMediaPlayerHandle(entry)
@@ -142,6 +195,18 @@ local function setupQbTargetZones(targetCfg)
                         label = targetCfg.label,
                         action = function()
                             openUiForHandle(handle)
+                        end,
+                    },
+                    {
+                        type = "client",
+                        icon = "fas fa-shield-alt",
+                        label = "Open Admin",
+                        action = function()
+                            openAdminForHandle(handle)
+                        end,
+                        canInteract = function()
+                            local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                            return permissions.manage == true
                         end,
                     },
                 },
@@ -163,6 +228,9 @@ local function setupQbTarget()
                 buildQbOption(targetCfg, function(entity)
                     openUiForEntity(entity)
                 end),
+                buildQbAdminOption(targetCfg, function(entity)
+                    openAdminForEntity(entity)
+                end),
             },
             distance = targetCfg.distance,
         })
@@ -173,6 +241,9 @@ local function setupQbTarget()
             options = {
                 buildQbOption(targetCfg, function(entity)
                     openUiForEntity(entity)
+                end),
+                buildQbAdminOption(targetCfg, function(entity)
+                    openAdminForEntity(entity)
                 end),
             },
             distance = targetCfg.distance,
@@ -190,6 +261,15 @@ local function setupQbTarget()
                     end
                     return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
                 end),
+                buildQbAdminOption(targetCfg, function(entity)
+                    openAdminForEntity(entity)
+                end, function(entity)
+                    local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                    if permissions.manage ~= true or not entity or not DoesEntityExist(entity) or IsEntityAVehicle(entity) then
+                        return false
+                    end
+                    return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
+                end),
                 {
                     type = "client",
                     icon = "fas fa-trash",
@@ -202,7 +282,15 @@ local function setupQbTarget()
                     end,
                     canInteract = function(entity)
                         local handle, id = GetSpeakerPropHandleAndId(entity)
-                        return handle ~= nil and id ~= nil
+                        if handle == nil or id == nil then
+                            return false
+                        end
+                        local data = type(GetSpeakerPropData) == "function" and GetSpeakerPropData(entity) or nil
+                        if data and data.persistent == true then
+                            local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                            return permissions.manage == true
+                        end
+                        return true
                     end,
                 }
             },
@@ -226,6 +314,20 @@ local function buildOxOption(targetCfg, nameSuffix, handler, canInteract)
     }
 end
 
+local function buildOxAdminOption(targetCfg, nameSuffix, handler, canInteract)
+    return {
+        name = TARGET_OPTION_NAME .. "_admin_" .. tostring(nameSuffix or "model"),
+        icon = "fas fa-shield-alt",
+        label = "Open Admin",
+        distance = targetCfg.distance,
+        canInteract = canInteract or function(entity)
+            local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+            return permissions.manage == true and isTargetableObject(entity)
+        end,
+        onSelect = handler,
+    }
+end
+
 local function setupOxTargetZones(targetCfg)
     for index, entry in ipairs(Config.defaultMediaPlayers or {}) do
         local handle, coords = getDefaultMediaPlayerHandle(entry)
@@ -236,11 +338,17 @@ local function setupOxTargetZones(targetCfg)
                 coords = coords,
                 radius = targetCfg.distance,
                 debug = false,
-                options = {
+            options = {
                     buildOxOption(targetCfg, handle, function()
                         openUiForHandle(handle)
                     end, function()
                         return true
+                    end),
+                    buildOxAdminOption(targetCfg, handle, function()
+                        openAdminForHandle(handle)
+                    end, function()
+                        local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                        return permissions.manage == true
                     end),
                 },
             })
@@ -262,6 +370,9 @@ local function removeDynamicTarget(netId, entry)
         pcall(function()
             exports.ox_target:removeEntity(netId, TARGET_OPTION_NAME .. "_entity")
         end)
+        pcall(function()
+            exports.ox_target:removeEntity(netId, TARGET_OPTION_NAME .. "_admin_entity")
+        end)
     end
 end
 
@@ -277,6 +388,9 @@ local function registerDynamicTargetEntity(netId, entity)
                 buildQbOption(targetCfg, function(targetEntity)
                     openUiForEntity(targetEntity)
                 end),
+                buildQbAdminOption(targetCfg, function(targetEntity)
+                    openAdminForEntity(targetEntity)
+                end),
             },
             distance = targetCfg.distance,
         })
@@ -285,6 +399,9 @@ local function registerDynamicTargetEntity(netId, entity)
         exports.ox_target:addEntity(netId, {
             buildOxOption(targetCfg, "entity", function(data)
                 openUiForEntity(data and data.entity or entity)
+            end),
+            buildOxAdminOption(targetCfg, "entity", function(data)
+                openAdminForEntity(data and data.entity or entity)
             end),
         })
         registeredDynamicEntities[netId] = { entity = entity }
@@ -327,6 +444,9 @@ local function setupOxTarget()
             buildOxOption(targetCfg, nil, function(data)
                 openUiForEntity(data and data.entity or nil)
             end),
+            buildOxAdminOption(targetCfg, nil, function(data)
+                openAdminForEntity(data and data.entity or nil)
+            end),
         })
     end
 
@@ -340,6 +460,15 @@ local function setupOxTarget()
                 end
                 return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
             end),
+            buildOxAdminOption(targetCfg, "global_object", function(data)
+                openAdminForEntity(data and data.entity or nil)
+            end, function(entity)
+                local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                if permissions.manage ~= true or not entity or not DoesEntityExist(entity) or IsEntityAVehicle(entity) then
+                    return false
+                end
+                return GetModelConfig(GetEntityModel(entity)) == nil and isActiveMediaEntity(entity)
+            end),
             {
                 name = TARGET_OPTION_NAME .. "_remove_speaker",
                 icon = "fas fa-trash",
@@ -347,7 +476,15 @@ local function setupOxTarget()
                 distance = targetCfg.distance,
                 canInteract = function(entity)
                     local handle, id = GetSpeakerPropHandleAndId(entity)
-                    return handle ~= nil and id ~= nil
+                    if handle == nil or id == nil then
+                        return false
+                    end
+                    local data = type(GetSpeakerPropData) == "function" and GetSpeakerPropData(entity) or nil
+                    if data and data.persistent == true then
+                        local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                        return permissions.manage == true
+                    end
+                    return true
                 end,
                 onSelect = function(data)
                     local entity = data and data.entity or nil
@@ -369,6 +506,12 @@ local function setupOxTarget()
             end, function(entity)
                 return entity and DoesEntityExist(entity) and IsEntityAVehicle(entity)
             end),
+            buildOxAdminOption(targetCfg, "global_vehicle", function(data)
+                openAdminForEntity(data and data.entity or nil)
+            end, function(entity)
+                local permissions = type(GetPermissions) == "function" and GetPermissions() or {}
+                return permissions.manage == true and entity and DoesEntityExist(entity) and IsEntityAVehicle(entity)
+            end),
         })
     end
 
@@ -381,13 +524,22 @@ local function cleanupQbTarget()
         pcall(function()
             exports["qb-target"]:RemoveTargetModel(registeredModels, targetCfg.label)
         end)
+        pcall(function()
+            exports["qb-target"]:RemoveTargetModel(registeredModels, "Open Admin")
+        end)
     end
 
     pcall(function()
         exports["qb-target"]:RemoveGlobalVehicle(targetCfg.label)
     end)
     pcall(function()
+        exports["qb-target"]:RemoveGlobalVehicle("Open Admin")
+    end)
+    pcall(function()
         exports["qb-target"]:RemoveGlobalObject(targetCfg.label)
+    end)
+    pcall(function()
+        exports["qb-target"]:RemoveGlobalObject("Open Admin")
     end)
 end
 
@@ -396,13 +548,22 @@ local function cleanupOxTarget()
         pcall(function()
             exports.ox_target:removeModel(registeredModels, TARGET_OPTION_NAME)
         end)
+        pcall(function()
+            exports.ox_target:removeModel(registeredModels, TARGET_OPTION_NAME .. "_admin_model")
+        end)
     end
 
     pcall(function()
         exports.ox_target:removeGlobalObject({ TARGET_OPTION_NAME .. "_global_object" })
     end)
     pcall(function()
+        exports.ox_target:removeGlobalObject({ TARGET_OPTION_NAME .. "_admin_global_object" })
+    end)
+    pcall(function()
         exports.ox_target:removeGlobalVehicle({ TARGET_OPTION_NAME .. "_global_vehicle" })
+    end)
+    pcall(function()
+        exports.ox_target:removeGlobalVehicle({ TARGET_OPTION_NAME .. "_admin_global_vehicle" })
     end)
 end
 
@@ -477,6 +638,10 @@ end
 
 RegisterNetEvent("pmms:loadSettings", function()
     SetTimeout(250, RefreshTargetIntegration)
+end)
+
+RegisterNetEvent("pmms:refreshPersistentEntities", function()
+    SetTimeout(100, RefreshTargetIntegration)
 end)
 
 AddEventHandler("onResourceStop", function(resourceName)

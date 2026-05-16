@@ -258,7 +258,6 @@ function DuiBrowser:renderFrame(drawSprite)
         SetTextRenderId(self.renderTargetHandle)
         Set_2dLayer(4)
         SetScriptGfxDrawBehindPausemenu(1)
-        -- Only clear if we're not drawing the sprite to avoid black flashes
         if drawSprite and self.txdName then
             DrawSprite(self.txdName, self.txnName, 0.5, 0.5, 1.0, 1.0, 0.0, 255, 255, 255, 255)
         else

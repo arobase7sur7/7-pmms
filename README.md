@@ -133,14 +133,24 @@ The in-game interface is authored in `nui/` as a React + TypeScript app and buil
 - `npm run build` regenerates `ui/index.html`, `ui/app.js`, and `ui/style.css`.
 
 FiveM still loads `ui/index.html`; the Node toolchain is only for building the browser assets.
+Production packaging is documented in [`PROD.md`](./PROD.md).
+
+## Equalizer
+
+The built-in equalizer is player-side and applies to everything the player hears through PMMS.
+
+- 10 configurable bands with per-band gain limits from `Config.equalizer`.
+- Adjustable preamp, high-pass toggle, and compressor toggle.
+- Built-in presets from `Config.equalizer.presets`.
+- Up to `Config.equalizer.maxCustomPresets` saved custom presets per player.
+- Optional per-device EQ linking from the NUI when a device is selected.
 
 ## Installation
 
 1. Place `7-pmms` in your server `resources` directory.
 2. Import `pmms.sql` into your database.
 3. Add `ensure oxmysql` before this resource in `server.cfg`.
-4. Add `exec @7-pmms/config/permissions.cfg` to `server.cfg`.
-5. Add `ensure 7-pmms` to `server.cfg`.
+4. Add `ensure 7-pmms` to `server.cfg`.
 
 ## Configuration
 
@@ -346,13 +356,20 @@ Normal players can use public devices without ACE/QBCore permissions. Permission
 Admin/staff additions:
 
 - Staff quick actions appear inside Device Settings only for staff/admins.
-- The Admin Panel tab appears only for `pmms.manage`.
+- The Admin Panel tab appears only for QBCore admins/gods or matching ACE admin fallbacks.
 - Admins bypass session/admin locks and can manage known devices even when normal discovery would hide them.
 - Device profiles are configured in `Config.deviceProfiles` and can be applied without permanently locking the device.
 - Persistent admin locks, request mode, names, range, volume, and linked speakers can be saved on persistent devices.
 - Pending requests are controlled by `Config.requests`.
 - Linked speakers are controlled by `Config.speakers`; they extend the original device audio without creating a second playback source.
-- The optional mini HUD can be toggled by players and stores its preference with `pmms_hud_enabled`.
+
+Request handling uses a configured mode and an effective live mode:
+
+- `disabled` always stays disabled.
+- `queue` always stays queue.
+- `pending` only stays pending while the device is actually restricted by an admin lock, job lock, or session/PIN lock with a valid approver path.
+- A public unlocked device with configured `pending` behaves as `queue` until it becomes restricted again.
+- When a device returns to public/unlocked access, its pending requests are promoted back into the normal queue flow.
 
 ### Production Smoothness
 
@@ -372,33 +389,36 @@ There are two different kinds of device state:
 Persistent defaults are stored in:
 
 - `models.json`
-- `defaultMediaPlayers.json`
+- optional bootstrap entries from `defaultMediaPlayers.json`
+- `pmms_persistent_devices` through oxmysql
 
 ## Permissions
 
-The default ACE rules live in `config/permissions.cfg`.
+Permissions are group-based. The default mode is `hybrid`, which accepts QBCore admin groups or ACE fallbacks configured in `Config.permissions.adminAceFallbacks`.
 
-Common ACE permissions:
+Use `Config.permissions.qbcore.adminPermissions` to define which QBCore groups count as PMMS admins. Staff/admin-only PMMS capabilities such as `manage`, `staff`, `overrideDevice`, `anyUrl`, `customUrl`, and `anyEntity` resolve from those same admin groups plus ACE fallbacks.
 
-- `pmms.interact`
-- `pmms.anyEntity`
-- `pmms.customUrl`
-- `pmms.anyUrl`
-- `pmms.manage`
-
-Review the bundled defaults before using them in production.
-
-Optional QBCore permissions are available, but ACE stays the default for backwards compatibility. To use QBCore, set `Config.permissions.mode = "qbcore"` or `"hybrid"` and enable `Config.permissions.qbcore.enabled`. QBCore permission names are configured in `Config.permissions.qbcore.permissionMap`; job and gang grade rules can be added under `Config.permissions.qbcore.jobs` and `Config.permissions.qbcore.gangs`.
+Identifier grants, permission maps, job rules, and gang rules are no longer part of the public config surface.
 
 Example:
 
 ```lua
 Config.permissions.mode = "hybrid"
 Config.permissions.qbcore.enabled = true
-Config.permissions.qbcore.jobs = {
-    manage = { police = 4 },
-}
+Config.permissions.qbcore.adminPermissions = { "god", "admin" }
 ```
+
+## Production Packaging
+
+Use [`PROD.md`](./PROD.md) for the full release checklist.
+
+Short version:
+
+- Build the NUI with `npm run check` and `npm run build`.
+- Deploy `ui/`, not `nui/`.
+- Keep the `data/` folder, but do not ship live runtime data such as `data/provider_stats.json` and `data/admin_state.json`.
+- Do not ship `node_modules/` or `.playwright-cli/`.
+- Keep `models.json` and `defaultMediaPlayers.json` only when you intentionally want to ship prebuilt persistent defaults.
 
 ## Commands
 

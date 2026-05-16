@@ -317,6 +317,50 @@ AddEventHandler('pmms:acceptFriendRequest', function(requestId)
     end)
 end)
 
+RegisterNetEvent('pmms:declineFriendRequest')
+AddEventHandler('pmms:declineFriendRequest', function(requestId)
+    local src = source
+    local identifier = GetUserIdentifier(src)
+    if not identifier then
+        return
+    end
+
+    MySQL.scalar('SELECT user_license FROM pmms_friends WHERE id = ? AND friend_license = ? AND status = ?', {
+        requestId,
+        identifier,
+        'pending',
+    }, function(senderLicense)
+        if not senderLicense then
+            return
+        end
+
+        MySQL.update('DELETE FROM pmms_friends WHERE id = ? AND friend_license = ? AND status = ?', {
+            requestId,
+            identifier,
+            'pending',
+        }, function(affectedRows)
+            if tonumber(affectedRows) <= 0 then
+                return
+            end
+
+            TriggerClientEvent('pmms:notify', src, {
+                title = "Friends",
+                text = "Friend request declined.",
+            })
+            TriggerClientEvent('pmms:refreshSocial', src)
+
+            local senderSource = GetLivePlayerSourceByLicense(senderLicense)
+            if senderSource then
+                TriggerClientEvent('pmms:notify', senderSource, {
+                    title = "Friends",
+                    text = (GetPlayerName(src) or "A player") .. " declined your friend request.",
+                })
+                TriggerClientEvent('pmms:refreshSocial', senderSource)
+            end
+        end)
+    end)
+end)
+
 RegisterNetEvent('pmms:removeFriend')
 AddEventHandler('pmms:removeFriend', function(friendLicense)
     local src = source

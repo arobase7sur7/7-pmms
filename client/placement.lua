@@ -1,26 +1,20 @@
--- ============================================================
---  PMMS Ghost Placement System
---  Provides interactive prop preview for speakers and devices
--- ============================================================
 
 local activePlacement = nil
 
--- Controls (configurable)
 local PLACEMENT_KEYS = {
-    confirm    = 38,  -- E
-    cancel     = 194, -- Backspace
-    groundSnap = 74,  -- O
-    rotLeft    = 174, -- Arrow Left
-    rotRight   = 175, -- Arrow Right
-    heightUp   = 172, -- Arrow Up
-    heightDown = 173, -- Arrow Down
+    confirm    = 38,
+    cancel     = 194,
+    groundSnap = 74,
+    rotLeft    = 174,
+    rotRight   = 175,
+    heightUp   = 172,
+    heightDown = 173,
 }
 
-local ROTATION_SPEED = 3.0    -- degrees per tick
-local HEIGHT_SPEED   = 0.05   -- metres per tick
-local GHOST_ALPHA    = 120    -- 0-255
+local ROTATION_SPEED = 3.0
+local HEIGHT_SPEED   = 0.05
+local GHOST_ALPHA    = 120
 
--- ── Helpers ──────────────────────────────────────────────────
 
 local function getGroundZ(x, y, z)
     local found, gz = GetGroundZFor_3dCoord(x, y, z + 2.0, false)
@@ -51,6 +45,7 @@ local function spawnGhostProp(model, coords, heading)
     if not HasModelLoaded(hash) then return nil end
 
     local prop = CreateObject(hash, coords.x, coords.y, coords.z, false, false, false)
+    SetEntityCoordsNoOffset(prop, coords.x, coords.y, coords.z, false, false, false)
     SetEntityAlpha(prop, GHOST_ALPHA, false)
     SetEntityCollision(prop, false, false)
     FreezeEntityPosition(prop, true)
@@ -87,14 +82,12 @@ AddEventHandler("onResourceStop", function(resourceName)
     end
 end)
 
--- ── Core Placement Loop ──────────────────────────────────────
 
 local function runPlacementLoop(ctx)
     local ped          = PlayerPedId()
     local heightOffset = 0.0
     local heading      = GetEntityHeading(ped)
 
-    -- Spawn ghost
     local initPos = getForwardOffset(ped, 1.5)
     local groundZ = getGroundZ(initPos.x, initPos.y, initPos.z)
     local pos = vector3(initPos.x, initPos.y, groundZ)
@@ -108,13 +101,12 @@ local function runPlacementLoop(ctx)
 
     DisablePlayerFiring(ped, true)
 
-    local hint = "~g~[E]~w~ Place  ~r~[Backspace]~w~ Cancel  ~b~[←/→]~w~ Rotate  ~b~[↑/↓]~w~ Height  ~b~[O]~w~ Ground"
+    local hint = "~g~[E]~w~ Place  ~r~[Backspace]~w~ Cancel  ~b~[Left/Right]~w~ Rotate  ~b~[Up/Down]~w~ Height  ~b~[O]~w~ Ground"
 
     while activePlacement == ctx do
         Wait(0)
         ped = PlayerPedId()
 
-        -- Update ghost position (follows player view, 1.5m ahead)
         local fwd = GetEntityForwardVector(ped)
         local ppos = GetEntityCoords(ped)
         local tx = ppos.x + fwd.x * 1.5
@@ -126,26 +118,22 @@ local function runPlacementLoop(ctx)
 
         drawHint(hint)
 
-        -- Rotation
         if IsDisabledControlPressed(0, PLACEMENT_KEYS.rotLeft) then
             heading = (heading + ROTATION_SPEED) % 360.0
         elseif IsDisabledControlPressed(0, PLACEMENT_KEYS.rotRight) then
             heading = (heading - ROTATION_SPEED + 360.0) % 360.0
         end
 
-        -- Height
         if IsDisabledControlPressed(0, PLACEMENT_KEYS.heightUp) then
             heightOffset = heightOffset + HEIGHT_SPEED
         elseif IsDisabledControlPressed(0, PLACEMENT_KEYS.heightDown) then
             heightOffset = math.max(-1.5, heightOffset - HEIGHT_SPEED)
         end
 
-        -- Ground snap
         if IsDisabledControlJustPressed(0, PLACEMENT_KEYS.groundSnap) then
             heightOffset = 0.0
         end
 
-        -- Disable default actions for keys we're using
         DisableControlAction(0, PLACEMENT_KEYS.confirm, true)
         DisableControlAction(0, PLACEMENT_KEYS.cancel, true)
         DisableControlAction(0, PLACEMENT_KEYS.rotLeft, true)
@@ -154,8 +142,7 @@ local function runPlacementLoop(ctx)
         DisableControlAction(0, PLACEMENT_KEYS.heightDown, true)
         DisableControlAction(0, PLACEMENT_KEYS.groundSnap, true)
 
-        -- Confirm
-        if IsDisabledControlJustPressed(0, PLACEMENT_KEYS.confirm) then
+        if IsDisabledControlJustPressed(0, PLACEMENT_KEYS.confirm) or IsControlJustPressed(0, PLACEMENT_KEYS.confirm) then
             local finalPos = GetEntityCoords(prop)
             deleteGhostProp(ctx)
             activePlacement = nil
@@ -168,8 +155,7 @@ local function runPlacementLoop(ctx)
             return
         end
 
-        -- Cancel
-        if IsDisabledControlJustPressed(0, PLACEMENT_KEYS.cancel) then
+        if IsDisabledControlJustPressed(0, PLACEMENT_KEYS.cancel) or IsControlJustPressed(0, PLACEMENT_KEYS.cancel) then
             deleteGhostProp(ctx)
             activePlacement = nil
             DisablePlayerFiring(ped, false)
@@ -178,18 +164,12 @@ local function runPlacementLoop(ctx)
         end
     end
 
-    -- Cleaned up externally
     deleteGhostProp(ctx)
     DisablePlayerFiring(PlayerPedId(), false)
 end
 
--- ── Public API ───────────────────────────────────────────────
 
---- Start placement mode for a linked speaker
---- @param handle number  Device handle
---- @param persistent boolean  Whether to create a persistent speaker
---- @param propModel string  Optional override prop model
-function StartSpeakerPlacementMode(handle, persistent, propModel)
+function StartSpeakerPlacementMode(handle, persistent, propModel, anchor)
     if activePlacement then return end
 
     local speakerModel = propModel
@@ -202,6 +182,7 @@ function StartSpeakerPlacementMode(handle, persistent, propModel)
         handle    = handle,
         persistent = persistent == true,
         propModel = speakerModel,
+        anchor    = anchor,
     }
     activePlacement = ctx
 
@@ -210,8 +191,6 @@ function StartSpeakerPlacementMode(handle, persistent, propModel)
     end)
 end
 
---- Start placement mode for a persistent prop/interaction device
---- @param data table  NUI payload (mode, label, propModel, profile, etc.)
 function StartDevicePlacementMode(data)
     if activePlacement then return end
 
@@ -220,7 +199,6 @@ function StartDevicePlacementMode(data)
         or Config.defaultModel
         or "sf_prop_sf_speaker_l_01a"
 
-    -- For interaction points, use an invisible stand-in
     local ghostModel = mode == "prop" and model or "prop_boombox_01"
 
     local ctx = {
@@ -240,7 +218,6 @@ function StartDevicePlacementMode(data)
     end)
 end
 
--- ── Result Handlers ──────────────────────────────────────────
 
 AddEventHandler("pmms:placement:confirmed", function(ctx, coords, heading)
     if ctx.type == "speaker" then
@@ -249,16 +226,15 @@ AddEventHandler("pmms:placement:confirmed", function(ctx, coords, heading)
             coords,
             heading,
             ctx.propModel,
-            ctx.persistent
+            ctx.persistent,
+            ctx.anchor
         )
-        TriggerEvent("pmms:showUi")
+        TriggerEvent("pmms:showUi", nil, ctx.persistent and "view-admin" or "view-home")
 
     elseif ctx.type == "device" then
-        local ped = PlayerPedId()
-        local rot = GetEntityRotation(ped, 2)
         TriggerServerEvent("pmms:adminAddPersistentDevice", {
             coords   = coords,
-            rotation = { x = rot.x, y = rot.y, z = rot.z },
+            rotation = { x = 0.0, y = 0.0, z = heading },
             heading  = heading,
             mode     = ctx.mode,
             label    = ctx.label,
@@ -267,14 +243,26 @@ AddEventHandler("pmms:placement:confirmed", function(ctx, coords, heading)
             requestMode = ctx.requestMode,
             adminLock = ctx.adminLock,
         })
-        TriggerEvent("pmms:showUi")
     end
 end)
 
+RegisterNetEvent("pmms:persistentDeviceAddResult", function(result)
+    result = type(result) == "table" and result or {}
+    if result.ok == true then
+        SetTimeout(250, function()
+            TriggerEvent("pmms:showUi", result.handle, "view-admin")
+        end)
+        return
+    end
+
+    SetTimeout(250, function()
+        TriggerEvent("pmms:showUi", nil, "view-admin")
+    end)
+end)
+
 AddEventHandler("pmms:placement:cancelled", function(ctx)
-    -- Re-open UI after cancellation so the user isn't stranded
     if ctx and (ctx.handle or ctx.type) then
         Wait(100)
-        TriggerEvent("pmms:showUi")
+        TriggerEvent("pmms:showUi", nil, (ctx.type == "device" or ctx.persistent == true) and "view-admin" or "view-home")
     end
 end)

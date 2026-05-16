@@ -17,9 +17,6 @@ local lastUiClosedSignature = nil
 local lastUiOpenSendAt = 0
 local lastUiClosedSendAt = 0
 local lastUiPayloadSize = 0
-local hudEnabled = GetResourceKvpInt("pmms_hud_enabled") ~= 0
-local lastHudUpdateAt = 0
-local lastHudSignature = nil
 
 local function countTableEntries(value)
     local count = 0
@@ -305,6 +302,12 @@ end
 
 local function findEntityForHandle(handle, info)
     if info.coords then
+        if type(GetPersistentPropEntity) == "function" then
+            local entity, model, entityType = GetPersistentPropEntity(handle)
+            if entity then
+                return entity, model, entityType
+            end
+        end
         return nil, nil, nil
     end
 
@@ -318,11 +321,43 @@ local function findEntityForHandle(handle, info)
     return nil, nil, nil
 end
 
+local function getPersistentDeviceForEntity(entity)
+    if not entity or not DoesEntityExist(entity) then
+        return nil, nil
+    end
+
+    local coords = GetEntityCoords(entity)
+    local defaultMp = GetDefaultMediaPlayer(Config.defaultMediaPlayers, coords)
+    if not defaultMp then
+        local bestDistance = 0.75
+        for _, entry in ipairs(Config.defaultMediaPlayers or {}) do
+            if type(entry) == "table" then
+                local position = ToVector3(entry.position)
+                local distance = position and #(coords - position) or nil
+                if distance and distance < bestDistance then
+                    bestDistance = distance
+                    defaultMp = entry
+                end
+            end
+        end
+    end
+    if defaultMp then
+        local position = ToVector3(defaultMp.position)
+        if position then
+            return GetHandleFromCoords(position), defaultMp
+        end
+    end
+
+    return nil, nil
+end
+
 local function getHandleDistance(playerPos, handle, info, knownEntity)
     local bestDistance = nil
     if info.coords then
-        local coords = vector3(info.coords.x, info.coords.y, info.coords.z)
-        bestDistance = #(playerPos - coords)
+        local coords = ToVector3(info.coords)
+        if coords then
+            bestDistance = #(playerPos - coords)
+        end
     elseif knownEntity and DoesEntityExist(knownEntity) then
         bestDistance = #(playerPos - GetEntityCoords(knownEntity))
     else
@@ -335,8 +370,9 @@ local function getHandleDistance(playerPos, handle, info, knownEntity)
     if type(info) == "table" and type(info.linkedSpeakers) == "table" then
         for _, speaker in ipairs(info.linkedSpeakers) do
             local coords = speaker and speaker.coords or speaker
-            if type(coords) == "table" and coords.x and coords.y and coords.z then
-                local speakerDistance = #(playerPos - vector3(coords.x, coords.y, coords.z))
+            local speakerCoords = ToVector3(coords)
+            if speakerCoords then
+                local speakerDistance = #(playerPos - speakerCoords)
                 if not bestDistance or speakerDistance < bestDistance then
                     bestDistance = speakerDistance
                 end
@@ -413,7 +449,7 @@ local function resolveActiveLabel(handle, info, player)
     end
 
     if info and info.coords then
-        local coords = vector3(info.coords.x, info.coords.y, info.coords.z)
+        local coords = ToVector3(info.coords)
         local defaultMp = GetDefaultMediaPlayer(Config.defaultMediaPlayers, coords)
         if defaultMp and type(defaultMp.label) == "string" and defaultMp.label ~= "" then
             return defaultMp.label
@@ -535,72 +571,6 @@ local function getClosestActiveHandle(maxDistance)
     end
 
     return nil
-end
-
-local function updateMiniHud(playerPos)
-    if not hudEnabled then
-        if lastHudSignature ~= "hidden" then
-            SendNUIMessage({ type = "miniHud", enabled = false })
-            lastHudSignature = "hidden"
-        end
-        return
-    end
-
-    local now = GetGameTimer()
-    if (now - lastHudUpdateAt) < 750 then
-        return
-    end
-    lastHudUpdateAt = now
-
-    local nearest = nil
-    local nearestDistance = math.huge
-    for handle, info in pairs(mediaPlayerStates) do
-        local player = GetActivePlayer(handle)
-        local entity, _, entityType = findEntityForHandle(handle, info)
-        if not entity and player and player.entity and DoesEntityExist(player.entity) then
-            entity = player.entity
-            entityType = player.entityType
-        end
-        local distance = getHandleDistance(playerPos, handle, info, entity)
-        if isHandleAudibleForNearby(handle, info, distance, entity, entityType) and distance < nearestDistance then
-            nearestDistance = distance
-            nearest = {
-                handle = handle,
-                info = info,
-                distance = distance,
-                label = resolveActiveLabel(handle, info, player),
-            }
-        end
-    end
-
-    local signature = nearest and table.concat({
-        tostring(nearest.handle),
-        tostring(nearest.info and nearest.info.title or ""),
-        tostring(nearest.info and nearest.info.paused and 1 or 0),
-        tostring(nearest.info and nearest.info.muted and 1 or 0),
-        tostring(math.floor(nearest.distance or -1)),
-        tostring(math.floor(tonumber(GetBaseVolume()) or 100)),
-    }, "|") or "empty"
-
-    if signature == lastHudSignature then
-        return
-    end
-    lastHudSignature = signature
-
-    SendNUIMessage({
-        type = "miniHud",
-        enabled = true,
-        media = nearest and {
-            handle = nearest.handle,
-            title = nearest.info and (nearest.info.title or nearest.info.url) or "Media",
-            device = nearest.label,
-            source = nearest.info and nearest.info.source or nil,
-            paused = nearest.info and nearest.info.paused == true,
-            muted = nearest.info and nearest.info.muted == true,
-            volume = GetBaseVolume(),
-            distance = nearest.distance,
-        } or nil,
-    })
 end
 
 RegisterNetEvent("pmms:startupAttempt", function(payload)
@@ -833,7 +803,12 @@ Citizen.CreateThread(function()
         local nowMs = GetGameTimer()
         local permissions = GetPermissions() or {}
         local defaultDiscovery = tonumber(Config.maxDiscoveryDistance) or 30.0
-        local discoveryDistance = (permissions.admin and Config.adminMaxRange) and math.max(defaultDiscovery, Config.adminMaxRange) or defaultDiscovery
+        local adminRange = type(GetAdminDiscoveryRange) == "function" and GetAdminDiscoveryRange() or nil
+        local discoveryDistance = defaultDiscovery
+        if (permissions.manage == true or permissions.overrideDevice == true) and adminRange then
+            local cap = tonumber(Config.adminMaxRange) or tonumber(Config.maxRange) or defaultDiscovery
+            discoveryDistance = math.max(defaultDiscovery, math.min(tonumber(adminRange) or defaultDiscovery, cap))
+        end
 
         for handle, info in pairs(mediaPlayerStates) do
             local player = GetActivePlayer(handle)
@@ -907,6 +882,13 @@ Citizen.CreateThread(function()
                     MarkStartupAttemptReady(handle, player.startupAttemptId, info, infoToken)
                 end
 
+                local effectiveEqProfile = type(GetEffectiveEqProfileForDui) == "function" and GetEffectiveEqProfileForDui(info.equalizerProfile) or info.equalizerProfile
+                local eqSignature = effectiveEqProfile and json.encode(effectiveEqProfile) or ""
+                if player.equalizerProfileSignature ~= eqSignature then
+                    player.browser:sendMessage({ type = "applyEqProfile", profile = effectiveEqProfile })
+                    player.equalizerProfileSignature = eqSignature
+                end
+
                 local currentOffset = getInterpolatedOffset(handle, info, nowMs)
                 local renderBuffer = tonumber(Config.dui and Config.dui.renderDistanceBuffer) or 5.0
                 local playbackRange = getConfiguredPlaybackRange(info)
@@ -952,15 +934,17 @@ Citizen.CreateThread(function()
                         local netId = getEntityNetworkId(entry.entity)
                         if netId then
                             local modelConfig = GetModelConfig(entry.model)
-                            local defaultMp = GetDefaultMediaPlayer(Config.defaultMediaPlayers, entry.coords)
+                            local persistentHandle, defaultMp = getPersistentDeviceForEntity(entry.entity)
+                            local resolvedHandle = persistentHandle or netId
+                            local resolvedKey = tostring(resolvedHandle)
                             local label = resolveEntityLabel(modelConfig, defaultMp, entry.model, entry.type)
 
                             usableMediaPlayers[#usableMediaPlayers + 1] = {
-                                handle = netId,
+                                handle = resolvedHandle,
                                 label = label,
                                 type = entry.type,
                                 distance = entry.distance,
-                                active = mediaPlayerStates[netId] ~= nil or startupStates[netId] ~= nil,
+                                active = mediaPlayerStates[resolvedHandle] ~= nil or mediaPlayerStates[resolvedKey] ~= nil or startupStates[resolvedHandle] ~= nil or startupStates[resolvedKey] ~= nil,
                                 hasVideo = modelConfig and modelConfig.renderTarget ~= nil or false,
                                 visibleBecause = "nearby",
                                 coords = {
@@ -969,7 +953,7 @@ Citizen.CreateThread(function()
                                     z = entry.coords.z,
                                 },
                             }
-                            visibleHandles[tostring(netId)] = true
+                            visibleHandles[resolvedKey] = true
                         end
                     end
                 end
@@ -994,11 +978,7 @@ Citizen.CreateThread(function()
                             local coords = nil
 
                             if info.coords then
-                                coords = {
-                                    x = info.coords.x,
-                                    y = info.coords.y,
-                                    z = info.coords.z,
-                                }
+                                coords = ToPlainCoords(info.coords)
                             elseif entity and DoesEntityExist(entity) then
                                 local entityCoords = GetEntityCoords(entity)
                                 coords = {
@@ -1023,22 +1003,50 @@ Citizen.CreateThread(function()
                     end
                 end
 
+                for _, entry in ipairs(Config.defaultMediaPlayers or {}) do
+                    if type(entry) == "table" then
+                        local coords = ToVector3(entry.position)
+                        local plain = ToPlainCoords(entry.position)
+                        if coords and plain then
+                            local handle = GetHandleFromCoords(coords)
+                            local key = tostring(handle)
+                            if not visibleHandles[key] then
+                                local dist = #(uiPlayerPos - coords)
+                                if dist <= discoveryDistance then
+                                    usableMediaPlayers[#usableMediaPlayers + 1] = {
+                                        handle = handle,
+                                        label = entry.label or entry.name or "Persistent Device",
+                                        type = entry.mode == "interaction" and "interaction" or (entry.propModel and "prop" or "device"),
+                                        distance = dist,
+                                        active = mediaPlayerStates[handle] ~= nil or mediaPlayerStates[key] ~= nil or startupStates[handle] ~= nil or startupStates[key] ~= nil,
+                                        hasVideo = entry.video ~= false and entry.mode ~= "interaction",
+                                        visibleBecause = "persistent",
+                                        coords = plain,
+                                    }
+                                    visibleHandles[key] = true
+                                end
+                            end
+                        end
+                    end
+                end
+
                 if type(adminSyncState) == "table" and type(adminSyncState.devices) == "table" then
                     for _, dev in ipairs(adminSyncState.devices) do
-                        local handle = tostring(dev.handle or GetHandleFromCoords(dev.position))
-                        if not visibleHandles[handle] and dev.position then
-                            local devPos = vector3(dev.position.x, dev.position.y, dev.position.z)
+                        local devPos = ToVector3(dev.coords)
+                        local devCoords = ToPlainCoords(dev.coords)
+                        local handle = tostring(dev.handle or (devPos and GetHandleFromCoords(devPos)) or "")
+                        if handle ~= "" and not visibleHandles[handle] and devPos and devCoords then
                             local dist = #(uiPlayerPos - devPos)
                             if dist <= discoveryDistance then
                                 usableMediaPlayers[#usableMediaPlayers + 1] = {
                                     handle = handle,
                                     label = dev.label,
-                                    type = dev.mode == "interaction" and "interaction" or "prop",
+                                    type = dev.type == "interaction" and "interaction" or "prop",
                                     distance = dist,
                                     active = mediaPlayerStates[handle] ~= nil or startupStates[handle] ~= nil,
                                     hasVideo = false,
                                     visibleBecause = "admin",
-                                    coords = dev.position,
+                                    coords = devCoords,
                                 }
                                 visibleHandles[handle] = true
                             end
@@ -1095,7 +1103,13 @@ Citizen.CreateThread(function()
                 failedPlayers = failedPlayers,
                 permissions = permissions,
                 baseVolume = GetBaseVolume(),
-                admin = adminSyncState,
+                admin = {
+                    adminState = adminSyncState,
+                    propModels = BuildPropModelsForClient(),
+                    speakerModels = BuildSpeakerModelsForClient(),
+                    deviceProfiles = BuildDeviceProfilesForClient(),
+                    adminMaxRange = Config.adminMaxRange or Config.maxRange,
+                },
             }
             sendUiUpdateIfChanged(true, payload, buildUiStateSignature(true, activeMediaPlayersUI, usableMediaPlayers, permissions), 1500)
         elseif (uiNow - lastUpdateUi) > 1000 then
@@ -1111,15 +1125,7 @@ Citizen.CreateThread(function()
             sendUiUpdateIfChanged(false, payload, buildUiStateSignature(false, nil, nil, permissions), 5000)
         end
 
-        updateMiniHud(playerPos)
     end
-end)
-
-RegisterNetEvent("pmms:setHudEnabled", function(enabled)
-    hudEnabled = enabled == true
-    SetResourceKvpInt("pmms_hud_enabled", hudEnabled and 1 or 0)
-    lastHudSignature = nil
-    updateMiniHud(GetEntityCoords(PlayerPedId()))
 end)
 
 RegisterNetEvent("pmms:perf:request", function()
@@ -1147,13 +1153,44 @@ Citizen.CreateThread(function()
         local sleep = 1000
         local ped = PlayerPedId()
         local pos = GetEntityCoords(ped)
-        local usableMediaPlayers = cachedUsableMediaPlayers or {}
+        local usableMediaPlayers = {}
+        local seenInteractions = {}
+
+        for _, entry in ipairs(Config.defaultMediaPlayers or {}) do
+            if type(entry) == "table" and entry.mode == "interaction" then
+                local coords = ToVector3(entry.position)
+                local plain = ToPlainCoords(entry.position)
+                if coords and plain then
+                    local handle = GetHandleFromCoords(coords)
+                    local key = tostring(handle)
+                    seenInteractions[key] = true
+                    usableMediaPlayers[#usableMediaPlayers + 1] = {
+                        handle = handle,
+                        label = entry.label or entry.name or "Interaction Point",
+                        type = "interaction",
+                        coords = plain,
+                    }
+                end
+            end
+        end
+
+        for _, row in ipairs(cachedUsableMediaPlayers or {}) do
+            if row.type == "interaction" and row.coords then
+                local key = tostring(row.handle or "")
+                if key == "" or not seenInteractions[key] then
+                    usableMediaPlayers[#usableMediaPlayers + 1] = row
+                    if key ~= "" then
+                        seenInteractions[key] = true
+                    end
+                end
+            end
+        end
 
         for _, mp in ipairs(usableMediaPlayers) do
             if mp.type == "interaction" and mp.coords then
-                local mpPos = vector3(mp.coords.x, mp.coords.y, mp.coords.z)
-                local dist = #(pos - mpPos)
-                if dist < 5.0 then
+                local mpPos = ToVector3(mp.coords)
+                local dist = mpPos and #(pos - mpPos) or nil
+                if dist and dist < 5.0 then
                     sleep = 0
                     DrawMarker(27, mpPos.x, mpPos.y, mpPos.z - 0.95, 0, 0, 0, 0, 0, 0, 1.0, 1.0, 1.0, 104, 216, 166, 100, false, false, 2, false, nil, nil, false)
                     if dist < 1.5 then

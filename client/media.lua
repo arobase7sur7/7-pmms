@@ -176,6 +176,12 @@ function InitMediaPlayer(handle, options, entity, model, entityType, startupAtte
         })
     end
 
+    if type(ApplyEffectiveEqProfileToBrowser) == "function" then
+        ApplyEffectiveEqProfileToBrowser(browser, options.equalizerProfile)
+    elseif type(options.equalizerProfile) == "table" then
+        browser:sendMessage({ type = "applyEqProfile", profile = options.equalizerProfile })
+    end
+
     creatingPlayers[handle] = nil
     return activePlayers[handle]
 end
@@ -290,7 +296,10 @@ function GetNearbyActiveMediaPlayers(playerPos, mediaPlayerStates)
         local distance = -1
 
         if info.coords then
-            distance = #(playerPos - ToVector3(info.coords))
+            local coords = ToVector3(info.coords)
+            if coords then
+                distance = #(playerPos - coords)
+            end
         elseif player and player.entity and DoesEntityExist(player.entity) then
             distance = #(playerPos - GetEntityCoords(player.entity))
         end

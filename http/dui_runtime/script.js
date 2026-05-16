@@ -2673,7 +2673,6 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
                         return;
                     }
                 } else {
-                    notifyLocalError(handle, options.url, diagnosticMessage, media.pmms.playbackToken);
                     if (recoverable) {
                         media.pmms.recovering = true;
                         media.pmms.localRecoveryPending = true;
@@ -2687,6 +2686,7 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
                         });
                         return;
                     }
+                    notifyLocalError(handle, options.url, diagnosticMessage, media.pmms.playbackToken);
                 }
 
                 removePlayer(media);

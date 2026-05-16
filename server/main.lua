@@ -236,8 +236,9 @@ SetHttpHandler(function(req, res)
 end)
 
 Citizen.CreateThread(function()
-    LoadPersistedSettings()
-    StartDefaultMediaPlayers()
+    LoadPersistedSettings(function()
+        StartDefaultMediaPlayers()
+    end)
 
     while true do
         Citizen.Wait(250)

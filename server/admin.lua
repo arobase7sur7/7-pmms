@@ -3,7 +3,6 @@ local adminStateFile = "data/admin_state.json"
 local adminState = {
     vehicleLocks = {},
 }
--- adminLogs removed – replaced with no-op compatibility stub
 local pendingRequests = {}
 local pendingRequestSeq = 0
 
@@ -45,8 +44,16 @@ local function normalizePlate(plate)
     return value:upper():gsub("%s+", "")
 end
 
+local function normalizeRequestMode(mode)
+    local normalized = tostring(mode or (Config.requests and Config.requests.defaultMode) or "queue"):lower()
+    if normalized ~= "queue" and normalized ~= "pending" and normalized ~= "disabled" then
+        normalized = "queue"
+    end
+    return normalized
+end
+
 local function coordsToPlain(coords)
-    if type(coords) ~= "table" then
+    if type(coords) ~= "table" and type(coords) ~= "vector3" then
         return nil
     end
 
@@ -68,12 +75,22 @@ local function toVector(coords)
     return vector3(plain.x, plain.y, plain.z)
 end
 
+local function pushSyncToPlayer(src)
+    if type(BuildMediaPlayersSyncStateForPlayer) == "function" then
+        TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
+    end
+end
 
--- LogPmmsAdminEvent is kept as a no-op compatibility stub.
--- All previous callers still compile; the audit trail has been removed
--- in favour of server console output only where critical.
+local function failPersistentPlacement(src, message)
+    TriggerClientEvent("pmms:error", src, message)
+    TriggerClientEvent("pmms:persistentDeviceAddResult", src, {
+        ok = false,
+        message = message,
+    })
+end
+
+
 function LogPmmsAdminEvent(_eventName, _handle, _src, _data)
-    -- no-op
 end
 
 local function loadAdminState()
@@ -118,6 +135,78 @@ local function persistEntry(entry)
     if coords then
         AddEntityPermanently(coords, cloneDeep(entry))
     end
+end
+
+local function getPlaceableModel(modelName)
+    local name = trim(modelName)
+    if not name then
+        return nil
+    end
+
+    local config = type(GetModelConfig) == "function" and GetModelConfig(name) or nil
+    if type(config) ~= "table" then
+        config = type(Config.models) == "table" and Config.models[name] or nil
+    end
+
+    if type(config) ~= "table" or config.isPlaceable ~= true then
+        return nil
+    end
+
+    return name, config
+end
+
+local function getConfiguredModel(modelName)
+    local name = trim(modelName)
+    if not name then
+        return nil
+    end
+
+    local config = type(GetModelConfig) == "function" and GetModelConfig(name) or nil
+    if type(config) ~= "table" then
+        config = type(Config.models) == "table" and Config.models[name] or nil
+    end
+
+    if type(config) ~= "table" then
+        return nil
+    end
+
+    return name, config
+end
+
+local function getSpeakerModel(modelName)
+    local requested = trim(modelName)
+    local speakerModels = Config.speakers and Config.speakers.models or nil
+    local firstModel = nil
+
+    if type(speakerModels) == "table" then
+        for key, data in pairs(speakerModels) do
+            local model = nil
+            local hidden = false
+
+            if type(data) == "table" then
+                model = trim(data.model) or (type(key) == "string" and trim(key) or nil)
+                hidden = data.isPlaceable == false
+            elseif type(data) == "string" then
+                model = trim(data)
+            end
+
+            if model and not hidden then
+                firstModel = firstModel or model
+                if requested and model == requested then
+                    return model
+                end
+            end
+        end
+    end
+
+    if requested then
+        local fallback = trim(Config.speakers and Config.speakers.propModel)
+        if fallback and requested == fallback then
+            return requested
+        end
+    end
+
+    return firstModel or trim(Config.speakers and Config.speakers.propModel)
 end
 
 local function normalizeProfileKey(profileKey)
@@ -299,7 +388,12 @@ function CanUsePmmsAdminLockedDevice(src, handle, plate)
 
     if mode == "job" or mode == "job_grade" or mode == "job_min_grade" or mode == "job_grades" then
         local groups = type(GetPmmsPlayerGroups) == "function" and GetPmmsPlayerGroups(src) or {}
-        local rules = type(lock.jobs) == "table" and lock.jobs or {}
+        local rules = {}
+        if type(lock.jobs) == "table" then
+            for _, rule in ipairs(lock.jobs) do
+                rules[#rules + 1] = rule
+            end
+        end
         if type(lock.job) == "string" then
             rules[#rules + 1] = {
                 name = lock.job,
@@ -369,6 +463,10 @@ function SetPmmsDeviceAdminLock(handle, lock, src, plate)
 
     if changed then
         MarkDirty()
+        ReconcilePmmsDeviceRequestState(handle, {
+            source = src,
+            reason = "admin_lock_changed",
+        })
         LogPmmsAdminEvent("admin_lock_changed", handle, src, { mode = lock.mode, plate = normalizedPlate })
         return true, nil
     end
@@ -380,40 +478,201 @@ local function getRequestModeForHandle(handle)
     handle = normalizeHandle(handle)
     local mp = GetMediaPlayer(handle)
     if type(mp) == "table" and type(mp.requestMode) == "string" then
-        return mp.requestMode
+        return normalizeRequestMode(mp.requestMode)
     end
 
     local session = type(GetDeviceSession) == "function" and GetDeviceSession(handle) or nil
     if type(session) == "table" and type(session.settings) == "table" and type(session.settings.requestMode) == "string" then
-        return session.settings.requestMode
+        return normalizeRequestMode(session.settings.requestMode)
     end
 
     local persistent = getPersistentEntryByHandle(handle)
     if type(persistent) == "table" and type(persistent.requestMode) == "string" then
-        return persistent.requestMode
+        return normalizeRequestMode(persistent.requestMode)
     end
 
     local cfg = Config.requests or {}
-    return tostring(cfg.defaultMode or "queue")
+    return normalizeRequestMode(cfg.defaultMode)
+end
+
+function GetPmmsConfiguredRequestMode(handle)
+    return getRequestModeForHandle(handle)
+end
+
+local function hasJobLockRules(lock)
+    if type(lock) ~= "table" then
+        return false
+    end
+
+    if type(lock.jobs) == "table" then
+        for _, rule in ipairs(lock.jobs) do
+            if type(rule) == "table" and trim(rule.name or rule.job or rule.gang) then
+                return true
+            end
+        end
+    end
+
+    return trim(lock.job) ~= nil
+end
+
+local function buildEffectiveRequestState(handle)
+    handle = normalizeHandle(handle)
+    local configuredMode = getRequestModeForHandle(handle)
+    local state = {
+        configuredMode = configuredMode,
+        effectiveMode = configuredMode,
+        reason = nil,
+        restriction = "none",
+        pendingEnabled = false,
+    }
+
+    if not Config.requests or Config.requests.enabled == false then
+        state.effectiveMode = "queue"
+        state.reason = "Request handling is disabled globally, so requests join the queue immediately."
+        return state
+    end
+
+    if configuredMode == "disabled" then
+        state.effectiveMode = "disabled"
+        state.reason = "Requests are disabled on this device."
+        return state
+    end
+
+    if configuredMode ~= "pending" then
+        state.effectiveMode = "queue"
+        state.reason = "Requests join the queue immediately on this device."
+        return state
+    end
+
+    local sessionLock = type(GetPmmsSessionLockSnapshot) == "function" and GetPmmsSessionLockSnapshot(handle) or nil
+    if type(sessionLock) == "table" then
+        state.effectiveMode = "pending"
+        state.reason = "A session lock is active, so requests wait for the lock owner or a PIN-authorized player."
+        state.restriction = "session_lock"
+        state.pendingEnabled = true
+        return state
+    end
+
+    local adminLock = getAdminLockForHandle(handle)
+    local adminMode = type(adminLock) == "table" and tostring(adminLock.mode or "public"):lower() or "public"
+
+    if adminMode == "admin" or adminMode == "admin_only" then
+        state.effectiveMode = "pending"
+        state.reason = "The device is admin-locked, so requests wait for staff review."
+        state.restriction = "admin_lock"
+        state.pendingEnabled = true
+        return state
+    end
+
+    if adminMode == "job" or adminMode == "job_grade" or adminMode == "job_min_grade" or adminMode == "job_grades" then
+        if hasJobLockRules(adminLock) then
+            state.effectiveMode = "pending"
+            state.reason = "The device is job-locked, so requests wait for an approved job member."
+            state.restriction = "job_lock"
+            state.pendingEnabled = true
+            return state
+        end
+
+        state.effectiveMode = "queue"
+        state.reason = "Pending is configured, but the job lock is incomplete, so requests queue automatically."
+        state.restriction = "job_lock_invalid"
+        return state
+    end
+
+    state.effectiveMode = "queue"
+    state.reason = "Pending is configured, but the device is public until a lock is applied."
+    return state
+end
+
+function GetPmmsDeviceRequestState(handle)
+    return cloneDeep(buildEffectiveRequestState(handle))
 end
 
 function GetPmmsDeviceRequestMode(handle)
-    local mode = tostring(getRequestModeForHandle(handle) or "queue"):lower()
-    if mode ~= "queue" and mode ~= "pending" and mode ~= "disabled" then
-        mode = "queue"
+    return buildEffectiveRequestState(handle).effectiveMode
+end
+
+function ClearPmmsPendingRequestsForHandle(handle, options)
+    handle = normalizeHandle(handle)
+    options = type(options) == "table" and options or {}
+
+    local list = pendingRequests[handle]
+    local removed = {}
+    if type(list) == "table" then
+        removed = cloneDeep(list)
     end
-    if not Config.requests or Config.requests.enabled == false then
-        mode = "queue"
+
+    if not list or #list <= 0 then
+        pendingRequests[handle] = nil
+        return 0, removed
     end
-    return mode
+
+    pendingRequests[handle] = nil
+    MarkDirty()
+
+    if options.logEvent ~= false then
+        LogPmmsAdminEvent(options.logEventName or "pending_requests_cleared", handle, options.source or 0, {
+            count = #removed,
+            reason = options.reason,
+        })
+    end
+
+    return #removed, removed
+end
+
+function PromotePmmsPendingRequestsToQueue(handle, options)
+    handle = normalizeHandle(handle)
+    options = type(options) == "table" and options or {}
+
+    local list = pendingRequests[handle]
+    if type(list) ~= "table" or #list <= 0 then
+        return 0
+    end
+
+    pendingRequests[handle] = nil
+    local promotedCount = 0
+
+    for _, request in ipairs(list) do
+        if type(request) == "table" and type(request.options) == "table" and type(AddToQueue) == "function" then
+            AddToQueue(handle, request.source, request.options)
+            promotedCount = promotedCount + 1
+        end
+    end
+
+    if promotedCount > 0 then
+        MarkDirty()
+        LogPmmsAdminEvent(options.logEventName or "pending_requests_promoted", handle, options.source or 0, {
+            count = promotedCount,
+            reason = options.reason,
+        })
+    end
+
+    return promotedCount
+end
+
+function ReconcilePmmsDeviceRequestState(handle, options)
+    handle = normalizeHandle(handle)
+    options = type(options) == "table" and options or {}
+
+    local state = buildEffectiveRequestState(handle)
+
+    if state.configuredMode == "pending"
+        and state.effectiveMode == "queue"
+        and type(pendingRequests[handle]) == "table"
+        and #pendingRequests[handle] > 0 then
+        PromotePmmsPendingRequestsToQueue(handle, {
+            source = options.source,
+            reason = options.reason or state.reason,
+            logEventName = options.logEventName,
+        })
+    end
+
+    return state
 end
 
 function SetPmmsDeviceRequestMode(handle, mode, src)
     handle = normalizeHandle(handle)
-    mode = tostring(mode or "queue"):lower()
-    if mode ~= "queue" and mode ~= "pending" and mode ~= "disabled" then
-        return false, "Invalid request mode."
-    end
+    mode = normalizeRequestMode(mode)
 
     local changed = false
     local mp = GetMediaPlayer(handle)
@@ -441,6 +700,10 @@ function SetPmmsDeviceRequestMode(handle, mode, src)
 
     if changed then
         MarkDirty()
+        ReconcilePmmsDeviceRequestState(handle, {
+            source = src,
+            reason = "request_mode_changed",
+        })
         LogPmmsAdminEvent("request_mode_changed", handle, src, { requestMode = mode })
         return true, nil
     end
@@ -526,7 +789,8 @@ end
 
 function HandlePmmsDeviceRequestMode(src, handle, preparedOptions)
     handle = normalizeHandle(handle)
-    local mode = GetPmmsDeviceRequestMode(handle)
+    local state = buildEffectiveRequestState(handle)
+    local mode = state.effectiveMode
     if HasPmmsPermission(src, "manage") then
         return true
     end
@@ -572,7 +836,7 @@ function HandlePmmsDeviceRequestMode(src, handle, preparedOptions)
     })
     TriggerClientEvent("pmms:notify", src, {
         title = "Request Pending",
-        text = "Your media request is waiting for staff approval.",
+        text = state.reason or "Your media request is waiting for approval.",
     })
     return false
 end
@@ -580,6 +844,24 @@ end
 local function canApproveRequests(src, handle)
     if HasPmmsPermission(src, "manage") then
         return true
+    end
+
+    local requestState = buildEffectiveRequestState(handle)
+    if requestState.effectiveMode ~= "pending" then
+        return false
+    end
+
+    if requestState.restriction == "session_lock" and type(CanAccessSessionLock) == "function" then
+        local canAccess = CanAccessSessionLock(src, handle, true)
+        return canAccess == true
+    end
+
+    if requestState.restriction == "job_lock" then
+        return CanUsePmmsAdminLockedDevice(src, handle)
+    end
+
+    if requestState.restriction == "admin_lock" then
+        return HasPmmsPermission(src, "manage")
     end
 
     local cfg = Config.requests or {}
@@ -694,52 +976,121 @@ function ClearPmmsPendingRequests(src, handle)
     if not canApproveRequests(src, handle) then
         return false, "You cannot clear requests on this device."
     end
-    pendingRequests[handle] = {}
-    MarkDirty()
-    LogPmmsAdminEvent("pending_requests_cleared", handle, src, {})
+    ClearPmmsPendingRequestsForHandle(handle, {
+        source = src,
+        reason = "manual_clear",
+    })
     return true, nil
 end
 
 local function getSpeakerListForHandle(handle)
-    local session = type(GetDeviceSession) == "function" and GetDeviceSession(handle) or nil
-    if session and session.settings and type(session.settings.linkedSpeakers) == "table" then
-        return session.settings.linkedSpeakers
+    local rows = {}
+    local seen = {}
+    local function append(list)
+        if type(list) ~= "table" then
+            return
+        end
+        for _, speaker in ipairs(list) do
+            if type(speaker) == "table" then
+                local id = tostring(speaker.id or "")
+                if id == "" or not seen[id] then
+                    rows[#rows + 1] = speaker
+                    if id ~= "" then
+                        seen[id] = true
+                    end
+                end
+            end
+        end
     end
 
     local persistent = getPersistentEntryByHandle(handle)
     if persistent and type(persistent.linkedSpeakers) == "table" then
-        return persistent.linkedSpeakers
+        append(persistent.linkedSpeakers)
     end
 
-    return {}
+    local session = type(GetDeviceSession) == "function" and GetDeviceSession(handle) or nil
+    if session and session.settings and type(session.settings.linkedSpeakers) == "table" then
+        append(session.settings.linkedSpeakers)
+    end
+
+    return rows
 end
 
 function GetPmmsLinkedSpeakers(handle)
     return cloneDeep(getSpeakerListForHandle(normalizeHandle(handle)))
 end
 
-function AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persistent)
+function AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persistent, anchor)
     if not Config.speakers or Config.speakers.enabled == false then
         return false, "Linked speakers are disabled."
     end
 
     handle = normalizeHandle(handle)
+    if type(CanUsePmmsAdminLockedDevice) == "function" and not CanUsePmmsAdminLockedDevice(src, handle) then
+        return false, "This device is restricted by staff."
+    end
+
+    if type(CanAccessSessionLock) == "function" then
+        local canAccess = CanAccessSessionLock(src, handle, true)
+        if canAccess == false then
+            return false, "This media session is locked."
+        end
+    end
+
     local speakerCoords = coordsToPlain(coords)
     if not speakerCoords then
         return false, "Invalid speaker position."
     end
 
     local isStaff = HasPmmsPermission(src, "staff")
+    local isManage = HasPmmsPermission(src, "manage")
+    if persistent == true and not isManage then
+        return false, "Only admins can place persistent speakers."
+    end
+
+    local model = getSpeakerModel(propModel)
+    if not model then
+        return false, "This speaker model is not available for placement."
+    end
+
+    local persistentEntry = getPersistentEntryByHandle(handle)
+    if persistent == true and not persistentEntry and type(anchor) == "table" and isManage then
+        local anchorCoords = coordsToPlain(anchor.coords or anchor.position)
+        local anchorModel, anchorConfig = getConfiguredModel(anchor.propModel)
+        if anchorCoords and anchorModel then
+            local anchorEntry = {
+                position = anchorCoords,
+                persistent = true,
+                mode = "prop",
+                label = trim(anchor.label) or (anchorConfig and anchorConfig.label) or anchorModel,
+                name = trim(anchor.label) or (anchorConfig and anchorConfig.label) or anchorModel,
+                propModel = anchorModel,
+                heading = tonumber(anchor.heading) or 0.0,
+                rotation = type(anchor.rotation) == "table" and cloneDeep(anchor.rotation) or { x = 0.0, y = 0.0, z = tonumber(anchor.heading) or 0.0 },
+                range = tonumber(anchor.range) or Config.defaultRange,
+                volume = tonumber(anchor.volume) or Config.defaultVolume,
+                requestMode = anchor.requestMode or (Config.requests and Config.requests.defaultMode) or "queue",
+                adminLock = type(anchor.adminLock) == "table" and cloneDeep(anchor.adminLock) or { mode = "public" },
+            }
+            AddEntityPermanently(vector3(anchorCoords.x, anchorCoords.y, anchorCoords.z), anchorEntry)
+            handle = normalizeHandle(GetHandleFromCoords(vector3(anchorCoords.x, anchorCoords.y, anchorCoords.z)))
+            persistentEntry = getPersistentEntryByHandle(handle) or anchorEntry
+        end
+    end
+    if persistent == true and not persistentEntry then
+        return false, "Persistent speakers require a persistent prop or interaction point."
+    end
+
     local limit = isStaff and tonumber(Config.speakers.staffLimit) or tonumber(Config.speakers.normalPlayerLimit)
     if limit == nil then limit = isStaff and -1 or 1 end
 
-    local session = type(EnsureDeviceSession) == "function" and EnsureDeviceSession(handle, {}) or nil
+    local session = type(EnsureDeviceSession) == "function" and EnsureDeviceSession(handle, persistentEntry or {}) or nil
     if not session then
         return false, "This device is no longer known by the server."
     end
 
     session.settings = session.settings or {}
-    session.settings.linkedSpeakers = type(session.settings.linkedSpeakers) == "table" and session.settings.linkedSpeakers or {}
+    session.settings.linkedSpeakers = getSpeakerListForHandle(handle)
     local normalSpeakerCount = 0
     for _, speaker in ipairs(session.settings.linkedSpeakers) do
         if speaker.persistent ~= true then
@@ -764,8 +1115,8 @@ function AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persisten
         id = generateId(),
         coords = speakerCoords,
         heading = tonumber(heading) or 0.0,
-        propModel = type(propModel) == "string" and propModel ~= "" and propModel or (Config.speakers and Config.speakers.propModel or Config.defaultModel or "prop_boombox_01"),
-        persistent = persistent == true and isStaff,
+        propModel = model,
+        persistent = persistent == true,
         createdBy = GetUserIdentifier(src),
         createdByName = GetPlayerName(src),
         createdAt = os.time(),
@@ -775,63 +1126,74 @@ function AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persisten
         CommitDeviceSessionState(handle)
     end
 
-    if persistent == true and isStaff and Config.speakers.persistentForStaffDevices ~= false then
-        local entry = getPersistentEntryByHandle(handle)
-        if entry then
-            entry.linkedSpeakers = cloneDeep(session.settings.linkedSpeakers)
-            persistEntry(entry)
-        end
+    if persistent == true and Config.speakers.persistentForStaffDevices ~= false then
+        persistentEntry.linkedSpeakers = cloneDeep(session.settings.linkedSpeakers)
+        persistEntry(persistentEntry)
+        MarkDirty()
     end
 
-    LogPmmsAdminEvent("linked_speaker_added", handle, src, { persistent = persistent == true and isStaff })
+    LogPmmsAdminEvent("linked_speaker_added", handle, src, { persistent = persistent == true })
     return true, nil
 end
 
 function RemovePmmsLinkedSpeaker(src, handle, speakerId)
     handle = normalizeHandle(handle)
     local session = type(GetDeviceSession) == "function" and GetDeviceSession(handle) or nil
-    if not session or not session.settings or type(session.settings.linkedSpeakers) ~= "table" then
+    local entry = getPersistentEntryByHandle(handle)
+    local list = getSpeakerListForHandle(handle)
+    if #list <= 0 then
         return false, "Device session or speakers not found."
     end
-    
+
     local isStaff = HasPmmsPermission(src, "manage")
     local identifier = GetUserIdentifier(src)
-    
+
     local foundIndex = -1
-    for i, speaker in ipairs(session.settings.linkedSpeakers) do
+    local foundSpeaker = nil
+    for i, speaker in ipairs(list) do
         if speaker.id == speakerId then
-            local adminLock = type(session.settings.adminLock) == "table" and session.settings.adminLock or { mode = "public" }
+            local adminLock = getAdminLockForHandle(handle) or { mode = "public" }
             local isPublic = adminLock.mode == "public"
-            
+
+            if speaker.persistent == true and not isStaff then
+                return false, "Only admins can remove persistent speakers."
+            end
+
             if not isStaff and speaker.createdBy ~= identifier and not isPublic then
                 return false, "You do not have permission to remove this speaker."
             end
             foundIndex = i
+            foundSpeaker = speaker
             break
         end
     end
-    
+
     if foundIndex > 0 then
-        table.remove(session.settings.linkedSpeakers, foundIndex)
-        if type(CommitDeviceSessionState) == "function" then
-            CommitDeviceSessionState(handle)
-        end
-        
-        local entry = getPersistentEntryByHandle(handle)
-        if entry and type(entry.linkedSpeakers) == "table" then
-            for i, speaker in ipairs(entry.linkedSpeakers) do
-                if speaker.id == speakerId then
-                    table.remove(entry.linkedSpeakers, i)
-                    persistEntry(entry)
-                    break
-                end
+        table.remove(list, foundIndex)
+        if session then
+            session.settings = session.settings or {}
+            session.settings.linkedSpeakers = cloneDeep(list)
+            if type(CommitDeviceSessionState) == "function" then
+                CommitDeviceSessionState(handle)
             end
         end
-        
-        LogPmmsAdminEvent("linked_speaker_removed", handle, src, { speakerId = speakerId })
+
+        if entry and type(entry.linkedSpeakers) == "table" then
+            for i = #entry.linkedSpeakers, 1, -1 do
+                local speaker = entry.linkedSpeakers[i]
+                if type(speaker) == "table" and speaker.id == speakerId then
+                    table.remove(entry.linkedSpeakers, i)
+                end
+            end
+            persistEntry(entry)
+            MarkDirty()
+        end
+
+        LogPmmsAdminEvent("linked_speaker_removed", handle, src, { speakerId = speakerId, persistent = foundSpeaker and foundSpeaker.persistent == true })
+        TriggerClientEvent("pmms:speakerRemoved", -1, speakerId)
         return true, nil
     end
-    
+
     return false, "Speaker not found."
 end
 
@@ -854,6 +1216,7 @@ function ClearPmmsLinkedSpeakers(src, handle)
         persistEntry(entry)
     end
     LogPmmsAdminEvent("linked_speakers_cleared", handle, src, {})
+    TriggerClientEvent("pmms:speakersCleared", -1, handle)
     return true, nil
 end
 
@@ -861,15 +1224,21 @@ local function buildAdminDeviceRow(handle, label, data)
     data = type(data) == "table" and data or {}
     local session = type(GetDeviceSession) == "function" and GetDeviceSession(handle) or nil
     local pending = GetPmmsPendingRequestsForHandle(handle)
+    local requestState = GetPmmsDeviceRequestState(handle)
     return {
         handle = handle,
         label = label or data.label or data.name or "Device",
         active = IsMediaPlayerActive(handle),
         persistent = data.persistent == true,
-        type = data.type or (data.isVehicle == true and "vehicle" or "device"),
+        type = data.type or data.mode or (data.isVehicle == true and "vehicle" or "device"),
         coords = coordsToPlain(data.coords or data.position),
-        requestMode = GetPmmsDeviceRequestMode(handle),
+        requestMode = requestState.effectiveMode,
+        configuredRequestMode = requestState.configuredMode,
+        effectiveRequestMode = requestState.effectiveMode,
+        requestModeReason = requestState.reason,
+        requestRestriction = requestState.restriction,
         profile = data.profile,
+        equalizerProfile = cloneDeep(data.equalizerProfile),
         adminLock = cloneDeep(data.adminLock or getAdminLockForHandle(handle) or { mode = "public" }),
         linkedSpeakers = GetPmmsLinkedSpeakers(handle),
         pendingRequests = pending,
@@ -889,26 +1258,14 @@ function BuildPmmsAdminSyncState(src)
 
     for handle, info in pairs(GetMediaPlayers()) do
         rows[#rows + 1] = buildAdminDeviceRow(handle, info.label or info.title or "Active Device", {
-            type = info.isVehicle == true and "vehicle" or "device",
+            persistent = info.persistent == true,
+            type = info.mode == "interaction" and "interaction" or (info.propModel and "prop" or (info.isVehicle == true and "vehicle" or "device")),
             coords = info.coords,
             adminLock = info.adminLock,
             profile = info.profile,
+            equalizerProfile = info.equalizerProfile,
         })
         seen[tostring(handle)] = true
-    end
-
-    if type(GetDeviceSessions) == "function" then
-        for handle, session in pairs(GetDeviceSessions()) do
-            local key = tostring(handle)
-            if not seen[key] then
-                rows[#rows + 1] = buildAdminDeviceRow(handle, session.settings and session.settings.label or "Session Device", {
-                    type = session.settings and session.settings.isVehicle == true and "vehicle" or "device",
-                    adminLock = session.settings and session.settings.adminLock,
-                    profile = session.settings and session.settings.profile,
-                })
-                seen[key] = true
-            end
-        end
     end
 
     for _, entry in ipairs(Config.defaultMediaPlayers or {}) do
@@ -923,6 +1280,28 @@ function BuildPmmsAdminSyncState(src)
                     position = entry.position,
                     adminLock = entry.adminLock,
                     profile = entry.profile,
+                    equalizerProfile = entry.equalizerProfile,
+                })
+                seen[key] = true
+            end
+        end
+    end
+
+    if type(GetDeviceSessions) == "function" then
+        for handle, session in pairs(GetDeviceSessions()) do
+            local key = tostring(handle)
+            if not seen[key] then
+                local settings = type(session.settings) == "table" and session.settings or {}
+                local label = settings.label or settings.name
+                if not label and settings.propModel then
+                    local _, modelConfig = getConfiguredModel(settings.propModel)
+                    label = modelConfig and modelConfig.label or settings.propModel
+                end
+                rows[#rows + 1] = buildAdminDeviceRow(handle, label or "Session Device", {
+                    type = settings.isVehicle == true and "vehicle" or (settings.propModel and "prop" or "device"),
+                    adminLock = settings.adminLock,
+                    profile = settings.profile,
+                    equalizerProfile = settings.equalizerProfile,
                 })
                 seen[key] = true
             end
@@ -939,6 +1318,7 @@ function BuildPmmsAdminSyncState(src)
     return {
         devices = rows,
         profiles = GetPmmsDeviceProfilesForClient(),
+        jobs = type(GetPmmsJobOptionsForClient) == "function" and GetPmmsJobOptionsForClient() or {},
     }
 end
 
@@ -1030,6 +1410,9 @@ RegisterNetEvent("pmms:adminRenameDevice", function(handle, name)
     if changed then
         MarkDirty()
         LogPmmsAdminEvent("device_renamed", handle, src, { label = label })
+        if type(PushPmmsImmediateSync) == "function" then
+            PushPmmsImmediateSync()
+        end
         notifyActionResult(src, true, "Device renamed.")
     else
         notifyActionResult(src, false, "This device is no longer known by the server.")
@@ -1039,23 +1422,25 @@ end)
 RegisterNetEvent("pmms:adminAddPersistentDevice", function(data)
     local src = source
     if not HasPmmsPermission(src, "manage") then
-        TriggerClientEvent("pmms:error", src, "No permission to add persistent devices.")
+        failPersistentPlacement(src, "No permission to add persistent devices.")
         return
     end
 
     data = type(data) == "table" and data or {}
     local coords = toVector(data.coords)
     if not coords then
-        TriggerClientEvent("pmms:error", src, "Invalid persistent device position.")
+        failPersistentPlacement(src, "Invalid persistent device position.")
         return
     end
 
+    local mode = data.mode == "prop" and "prop" or "interaction"
+    local requestedLabel = trim(data.label)
     local entry = {
         position = coords,
         persistent = true,
-        mode = data.mode == "prop" and "prop" or "interaction",
-        label = trim(data.label) or "Persistent Device",
-        name = trim(data.label) or "Persistent Device",
+        mode = mode,
+        label = requestedLabel or (mode == "interaction" and "Interaction Point" or "Persistent Device"),
+        name = requestedLabel or (mode == "interaction" and "Interaction Point" or "Persistent Device"),
         range = tonumber(data.range) or Config.defaultRange,
         volume = tonumber(data.volume) or Config.defaultVolume,
         requestMode = data.requestMode or (Config.requests and Config.requests.defaultMode) or "queue",
@@ -1063,8 +1448,18 @@ RegisterNetEvent("pmms:adminAddPersistentDevice", function(data)
     }
 
     if entry.mode == "prop" then
-        entry.propModel = trim(data.propModel) or Config.defaultModel
-        entry.rotation = coordsToPlain(data.rotation) or { x = 0.0, y = 0.0, z = tonumber(data.heading) or 0.0 }
+        local propName, propConfig = getPlaceableModel(data.propModel)
+        if not propName then
+            failPersistentPlacement(src, "Select a valid placeable prop model.")
+            return
+        end
+        entry.propModel = propName
+        if not requestedLabel then
+            entry.label = propConfig.label or propName
+            entry.name = entry.label
+        end
+        entry.heading = tonumber(data.heading) or 0.0
+        entry.rotation = { x = 0.0, y = 0.0, z = entry.heading }
     end
 
     local profileKey = normalizeProfileKey(data.profile)
@@ -1072,11 +1467,39 @@ RegisterNetEvent("pmms:adminAddPersistentDevice", function(data)
         applyProfileToTarget(entry, profileKey)
     end
 
-    AddEntityPermanently(coords, entry)
-    LogPmmsAdminEvent("persistent_device_added", GetHandleFromCoords(coords), src, {
+    if type(AddEntityPermanently) ~= "function" then
+        failPersistentPlacement(src, "Persistent storage is not ready.")
+        return
+    end
+
+    local ok, handle, runtime = AddEntityPermanently(coords, entry)
+    if not ok or not handle then
+        failPersistentPlacement(src, "Persistent device could not be saved.")
+        return
+    end
+
+    if type(SyncPmmsPersistentSettings) == "function" then
+        SyncPmmsPersistentSettings(src)
+    end
+    pushSyncToPlayer(src)
+    TriggerClientEvent("pmms:refreshPersistentEntities", -1)
+    LogPmmsAdminEvent("persistent_device_added", handle, src, {
         label = entry.label,
         mode = entry.mode,
         profile = entry.profile,
+    })
+    TriggerClientEvent("pmms:persistentDeviceAddResult", src, {
+        ok = true,
+        handle = handle,
+        mode = entry.mode,
+        entry = {
+            position = coordsToPlain((runtime and runtime.position) or coords),
+            label = (runtime and runtime.label) or entry.label,
+            name = (runtime and runtime.name) or entry.name,
+            mode = (runtime and runtime.mode) or entry.mode,
+            propModel = (runtime and runtime.propModel) or entry.propModel,
+        },
+        message = "Persistent device added.",
     })
     TriggerClientEvent("pmms:notify", src, { title = "Admin", text = "Persistent device added." })
 end)
@@ -1094,8 +1517,23 @@ RegisterNetEvent("pmms:adminRemovePersistentDevice", function(handle)
         return
     end
 
-    RemoveEntityPermanently(coords)
-    LogPmmsAdminEvent("persistent_device_removed", handle, src, { label = entry.label or entry.name })
+    if type(DestroyPmmsDeviceLifecycle) == "function" then
+        DestroyPmmsDeviceLifecycle(handle, {
+            source = src,
+            reason = "persistent_device_removed",
+            removePersistent = true,
+            archiveCurrent = false,
+            clearPendingRequests = true,
+            pendingLogEventName = false,
+            logPending = false,
+            logRemovalEvent = "persistent_device_removed",
+        })
+    else
+        RemoveEntityPermanently(coords)
+        TriggerClientEvent("pmms:speakersCleared", -1, handle)
+        TriggerClientEvent("pmms:refreshPersistentEntities", -1)
+    end
+    pushSyncToPlayer(src)
     TriggerClientEvent("pmms:notify", src, { title = "Admin", text = "Persistent device removed." })
 end)
 
@@ -1117,9 +1555,9 @@ RegisterNetEvent("pmms:adminClearRequests", function(handle)
     notifyActionResult(src, ok, ok and "Pending requests cleared." or message, "Requests")
 end)
 
-RegisterNetEvent("pmms:addLinkedSpeaker", function(handle, coords, heading, propModel, persistent)
+RegisterNetEvent("pmms:addLinkedSpeaker", function(handle, coords, heading, propModel, persistent, anchor)
     local src = source
-    local ok, message = AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persistent == true)
+    local ok, message = AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persistent == true, anchor)
     notifyActionResult(src, ok, ok and "Speaker linked." or message, "Speakers")
 end)
 

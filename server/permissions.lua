@@ -14,7 +14,7 @@ local permissionNames = {
 local getGradeLevel
 
 local function nowMs()
-    return GetGameTimer and GetGameTimer() or 0
+    return GetGameTimer()
 end
 
 local function getPermissionConfig()
@@ -68,50 +68,8 @@ local function getIdentifierPrincipals(src)
 end
 
 local function hasConfigPermission(src, permission)
-    if tonumber(src) == 0 then
-        return true
-    end
-    
-    local config = getPermissionConfig()
-    local adminIdentifiers = type(config.adminIdentifiers) == "table" and config.adminIdentifiers or {}
-    local staffIdentifiers = type(config.staffIdentifiers) == "table" and config.staffIdentifiers or {}
-    
-    local isStaffPerm = permission == "overrideDevice" or permission == "staff" or permission == "anyEntity" or permission == "customUrl" or permission == "anyUrl"
-    
-    local playerIdentifiers = GetPlayerIdentifiers(tostring(src)) or {}
-    
-    -- Diagnostic print (always visible if this is called)
-    if permission == "manage" then
-        print(("^4[7-pmms] Checking 'manage' permission for %s (%s)^7"):format(GetPlayerName(src), src))
-    end
-    
-    for _, identifier in ipairs(playerIdentifiers) do
-        local cleanId = tostring(identifier):lower()
-        if cleanId ~= "" then
-            for _, adminId in ipairs(adminIdentifiers) do
-                local cleanAdminId = tostring(adminId):lower()
-                if cleanId == cleanAdminId or cleanId:find(cleanAdminId, 1, true) or cleanAdminId:find(cleanId, 1, true) then
-                    print(("^2[7-pmms] PERMISSION GRANTED (Admin Config): %s matched %s^7"):format(GetPlayerName(src), adminId))
-                    return true
-                end
-            end
-            
-            if isStaffPerm then
-                for _, staffId in ipairs(staffIdentifiers) do
-                    local cleanStaffId = tostring(staffId):lower()
-                    if cleanId == cleanStaffId or cleanId:find(cleanStaffId, 1, true) or cleanStaffId:find(cleanId, 1, true) then
-                        print(("^2[7-pmms] PERMISSION GRANTED (Staff Config): %s matched %s^7"):format(GetPlayerName(src), staffId))
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    
-    return false
+    return tonumber(src) == 0
 end
-
-
 
 local function isSourceAceAllowed(src, aceName)
     local ok, allowed = pcall(function()
@@ -156,7 +114,7 @@ local function getAdminAceFallbacks()
     if type(permissions.adminAceFallbacks) == "table" then
         return permissions.adminAceFallbacks
     end
-    return { "command", "god", "admin", "qbcore.god", "qbcore.admin", "command.tpm", "command.addpermission" }
+    return { "command", "command.pmms", "god", "admin", "group.admin", "qbcore.god", "qbcore.admin", "command.tpm", "command.addpermission" }
 end
 
 local function getAllowedAdminAceFallback(src, permission)
@@ -216,6 +174,54 @@ local function getPlayerIdentifiersForDebug(src)
     return identifiers
 end
 
+local function addPermissionCandidate(candidates, seen, value)
+    local text = tostring(value or ""):lower()
+    if text == "" or seen[text] then
+        return
+    end
+    seen[text] = true
+    candidates[#candidates + 1] = text
+
+    local stripped = text:gsub("^qbcore%.", "")
+    if stripped ~= text and stripped ~= "" and not seen[stripped] then
+        seen[stripped] = true
+        candidates[#candidates + 1] = stripped
+    end
+
+    local prefixed = "qbcore." .. stripped
+    if stripped ~= "" and prefixed ~= text and not seen[prefixed] then
+        seen[prefixed] = true
+        candidates[#candidates + 1] = prefixed
+    end
+end
+
+local function permissionValueMatches(value, candidates)
+    if type(value) == "string" or type(value) == "number" then
+        local text = tostring(value):lower()
+        local stripped = text:gsub("^qbcore%.", "")
+        for _, candidate in ipairs(candidates) do
+            if text == candidate or stripped == candidate:gsub("^qbcore%.", "") then
+                return true
+            end
+        end
+        return false
+    end
+
+    if type(value) == "table" then
+        for key, entry in pairs(value) do
+            if entry == true or entry == "true" or (type(entry) == "number" and entry > 0) then
+                if permissionValueMatches(key, candidates) then
+                    return true
+                end
+            elseif permissionValueMatches(entry, candidates) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 local function hasQbFrameworkPermission(core, src, permissionName)
     if not core or not core.Functions then
         return false
@@ -226,14 +232,21 @@ local function hasQbFrameworkPermission(core, src, permissionName)
         return false
     end
 
-    local permissionCandidates = { permissionText }
-    if not permissionText:find("^qbcore%.") then
-        permissionCandidates[#permissionCandidates + 1] = "qbcore." .. permissionText
-    end
+    local permissionCandidates = {}
+    local seenCandidates = {}
+    addPermissionCandidate(permissionCandidates, seenCandidates, permissionText)
 
     for _, sourceValue in ipairs({ src, tostring(src) }) do
-        for _, candidate in ipairs(permissionCandidates) do
-            if type(core.Functions.HasPermission) == "function" then
+        if type(core.Functions.HasPermission) == "function" then
+            local ok, allowed = pcall(function()
+                return core.Functions.HasPermission(sourceValue, permissionCandidates)
+            end)
+
+            if ok and allowed == true then
+                return true
+            end
+
+            for _, candidate in ipairs(permissionCandidates) do
                 local ok, allowed = pcall(function()
                     return core.Functions.HasPermission(sourceValue, candidate)
                 end)
@@ -242,8 +255,57 @@ local function hasQbFrameworkPermission(core, src, permissionName)
                     return true
                 end
             end
+        end
 
+        for _, candidate in ipairs(permissionCandidates) do
             if isSourceAceAllowed(sourceValue, candidate) then
+                return true
+            end
+        end
+
+        if type(core.Functions.GetPermission) == "function" then
+            local ok, permissionValue = pcall(function()
+                return core.Functions.GetPermission(sourceValue)
+            end)
+
+            if ok and permissionValueMatches(permissionValue, permissionCandidates) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function hasCommonAdminPermission(src)
+    if tonumber(src) == 0 then
+        return true
+    end
+
+    -- ACE 
+    for _, aceName in ipairs({
+        "admin",
+        "god",
+        "group.admin",
+        "group.god",
+        "command",
+        "command.tpm",
+        "command.addpermission"
+    }) do
+        if IsPlayerAceAllowed(src, aceName) then
+            return true
+        end
+    end
+
+    -- QBCore
+    local core = getQBCore()
+    if core and core.Functions then
+        for _, perm in ipairs({ "admin", "god" }) do
+            local ok, result = pcall(function()
+                return core.Functions.HasPermission(src, perm)
+            end)
+
+            if ok and result then
                 return true
             end
         end
@@ -334,23 +396,11 @@ local function matchesGroupRule(rulesByPermission, permission, group)
 end
 
 local function getPermissionQbNames(permission)
-    local qbcore = getQbConfig()
-    local map = type(qbcore.permissionMap) == "table" and qbcore.permissionMap or {}
-    local names = map[permission]
-
-    if type(names) == "string" then
-        return { names }
+    if permission == "interact" then
+        return {}
     end
 
-    if type(names) == "table" then
-        return names
-    end
-
-    if permission == "manage" or permission == "overrideDevice" then
-        return qbcore.adminPermissions or { "god", "admin" }
-    end
-
-    return {}
+    return getQbConfig().adminPermissions or { "god", "admin" }
 end
 
 local function hasQbPermission(src, permission)
@@ -375,54 +425,14 @@ local function hasQbPermission(src, permission)
         end
     end
 
-    local playerData = getPlayerData(core, src)
-    local qbcore = getQbConfig()
-    if matchesGroupRule(qbcore.jobs, permission, playerData and playerData.job or nil) then
-        return true
-    end
-
-    if matchesGroupRule(qbcore.gangs, permission, playerData and playerData.gang or nil) then
-        return true
-    end
-
     return false
 end
 
 function HasPmmsPermission(src, permission)
     if not src or tonumber(src) == 0 then return true end
 
-    -- 1. CONFIG IDENTIFIERS
-    local config = type(Config.permissions) == "table" and Config.permissions or {}
-    local adminIds = type(config.adminIdentifiers) == "table" and config.adminIdentifiers or {}
-    local staffIds = type(config.staffIdentifiers) == "table" and config.staffIdentifiers or {}
-    local playerIds = GetPlayerIdentifiers(tostring(src)) or {}
+    permission = tostring(permission or "interact"):gsub("^pmms%.", "")
 
-    for _, pid in ipairs(playerIds) do
-        local lowerPid = pid:lower()
-        for _, aid in ipairs(adminIds) do
-            if lowerPid == aid:lower() then return true end
-        end
-        if permission ~= "manage" then
-            for _, sid in ipairs(staffIds) do
-                if lowerPid == sid:lower() then return true end
-            end
-        end
-    end
-
-    -- 2. QBCORE
-    local core = getQBCore()
-    if core and type(core.Functions) == "table" and type(core.Functions.HasPermission) == "function" then
-        if core.Functions.HasPermission(src, "admin") or core.Functions.HasPermission(src, "god") then
-            return true
-        end
-    end
-
-    -- 3. ACE
-    if IsPlayerAceAllowed(src, "admin") or IsPlayerAceAllowed(src, "pmms.manage") or IsPlayerAceAllowed(src, "command.tpm") then
-        return true
-    end
-
-    -- 4. DEFAULT
     if permission == "interact" then
         return true
     end
@@ -431,12 +441,69 @@ function HasPmmsPermission(src, permission)
         return HasPmmsPermission(src, "manage") or HasPmmsPermission(src, "overrideDevice")
     end
 
-    return false
+    if permissionCanUseAdminAceFallback(permission) and hasCommonAdminPermission(src) then
+        return true
+    end
+
+    local cacheKey = tostring(src) .. ":" .. permission
+    local now = nowMs()
+    local cached = permissionCache[cacheKey]
+    if cached and now - cached.at <= cacheTtlMs then
+        return cached.value == true
+    end
+
+    local mode = getMode()
+    local allowed = hasConfigPermission(src, permission)
+
+    local qbcore = getQbConfig()
+
+    if not allowed and (mode == "ace" or mode == "hybrid" or qbcore.aceFallback == true) then
+        allowed = hasAcePermission(src, permission)
+    end
+
+    if not allowed and (mode == "qbcore" or mode == "hybrid") then
+        allowed = hasQbPermission(src, permission)
+    end
+
+    if allowed == true or not permissionCanUseAdminAceFallback(permission) then
+        permissionCache[cacheKey] = {
+            at = now,
+            value = allowed == true,
+        }
+    else
+        permissionCache[cacheKey] = nil
+    end
+
+    return allowed == true
 end
 
 
 function IsPmmsStaff(src)
     return HasPmmsPermission(src, "staff")
+end
+
+function GetPmmsJobOptionsForClient()
+    local rows = {}
+    local core = getQBCore()
+    local jobs = core and core.Shared and core.Shared.Jobs
+    if type(jobs) ~= "table" then
+        return rows
+    end
+
+    for name, job in pairs(jobs) do
+        if type(name) == "string" and name ~= "" then
+            rows[#rows + 1] = {
+                name = name,
+                label = type(job) == "table" and job.label or name,
+            }
+        end
+    end
+
+    table.sort(rows, function(a, b)
+        return tostring(a.label or a.name) < tostring(b.label or b.name)
+    end)
+
+    return rows
 end
 
 function GetPmmsPlayerGroups(src)
@@ -465,6 +532,7 @@ function GetPmmsPermissions(src)
     for _, permission in ipairs(permissionNames) do
         permissions[permission] = HasPmmsPermission(src, permission)
     end
+    permissions.identifier = GetUserIdentifier(src)
     return permissions
 end
 
@@ -614,4 +682,3 @@ RegisterCommand("pmmsdebug", function(source, args, rawCommand)
         args = { "PMMS Debug", "Check server console for detailed info. Manage: " .. tostring(permissions.manage) }
     })
 end, false)
-

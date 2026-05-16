@@ -1184,9 +1184,22 @@ nav {
 .np-queue-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+.np-history-add,
+.np-history-replay {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px;
+}
+
+.np-history-add svg,
+.np-history-replay svg {
+  width: 20px;
+  height: 20px;
 }
 
 .np-queue-index {
@@ -1326,6 +1339,17 @@ nav {
 
 .playlist-pin-btn.favorite-pending {
   opacity: 0.72;
+}
+
+.playlist-pin-btn {
+  min-width: 40px;
+  width: 40px;
+  height: 40px;
+}
+
+.playlist-pin-btn svg {
+  width: 22px;
+  height: 22px;
 }
 
 @keyframes favoritePop {
@@ -1515,8 +1539,15 @@ nav {
 }
 
 .btn-icon.btn-sm {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  font-size: 20px;
+}
+
+.modal-header .btn-icon.btn-sm svg,
+.view-header .btn-icon.btn-sm svg {
+  width: 20px;
+  height: 20px;
 }
 
 .btn-play-ctrl {
@@ -2432,7 +2463,6 @@ body.is-staff .view.staff-only.active {
   height: 28px;
 }
 
-/* Speaker list in device settings modal */
 .admin-speaker-list {
   display: flex;
   flex-direction: column;
@@ -2478,80 +2508,11 @@ body.is-staff .view.staff-only.active {
   font-size: 11px !important;
 }
 
-/* Legacy quick grid removed — using pill-bar now */
 .admin-quick-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
-}
-
-.mini-hud {
-  position: absolute;
-  right: 28px;
-  bottom: 28px;
-  align-items: center;
-  gap: 10px;
-  max-width: 360px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: rgba(7, 10, 9, 0.94);
-  box-shadow: var(--shadow);
-  color: var(--text-primary);
-  pointer-events: auto;
-}
-
-.mini-hud-icon {
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius);
-  color: var(--accent);
-  background: var(--accent-dim);
-}
-
-.mini-hud-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.mini-hud-main strong,
-.mini-hud-main span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mini-hud-main strong {
-  font-size: 13px;
-}
-
-.mini-hud-main span,
-.mini-hud-side span {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.mini-hud-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  margin-left: auto;
-}
-
-.mini-hud-close {
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
 }
 
 .badge-live {
@@ -2608,7 +2569,6 @@ body.is-staff .view.staff-only.active {
   }
 }
 
-/* -- Utility button classes --------------------------------------------------- */
 .btn-accent {
   padding: 7px 16px;
   background: var(--accent);
@@ -2666,7 +2626,6 @@ body.is-staff .view.staff-only.active {
 .pill-btn-danger { border-color: rgba(239,68,68,0.3); color: var(--red); background: rgba(239,68,68,0.07); }
 .pill-btn-danger:hover:not(:disabled) { border-color: rgba(239,68,68,0.6); background: rgba(239,68,68,0.15); }
 
-/* -- Admin layout ------------------------------------------------------------- */
 .admin-panel-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: calc(100% - 140px); min-height: 340px; }
 .admin-panel-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow: hidden; display: flex; flex-direction: column; }
 .admin-panel-detail { overflow-y: auto; }
@@ -2695,7 +2654,6 @@ body.is-staff .view.staff-only.active {
 
 .section-count { font-size: 11px; color: var(--text-muted); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-full); padding: 1px 7px; }
 
-/* -- Modal ------------------------------------------------------------------- */
 .modal-wide { max-width: 560px; width: 90vw; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 9000; display: none; align-items: center; justify-content: center; }
 .modal-backdrop[style*="display: flex"] { display: flex !important; }
@@ -2703,3 +2661,89 @@ body.is-staff .view.staff-only.active {
 .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .modal-header h3 { font-size: 16px; font-weight: 700; }
 .modal-body { padding: 20px; }
+
+.eq-waveform {
+  width: 150px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: rgba(255,255,255,0.035);
+  overflow: hidden;
+}
+
+.eq-waveform span {
+  display: block;
+  width: 4px;
+  min-height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), rgba(104,216,166,0.35));
+  animation: eqWavePulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes eqWavePulse {
+  from { transform: scaleY(0.72); opacity: 0.65; }
+  to { transform: scaleY(1); opacity: 1; }
+}
+
+.prop-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.prop-picker-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.prop-picker-item:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.prop-picker-item img {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.04);
+}
+
+.prop-picker-item span {
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prop-picker-item small {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prop-picker-item b {
+  color: var(--accent);
+  font-size: 11px;
+}

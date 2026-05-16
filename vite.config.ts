@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   root: 'nui',
   base: './',
-  publicDir: false,
+  publicDir: 'public',
   plugins: [react()],
   build: {
     outDir: '../ui',

@@ -859,6 +859,15 @@ AddEventHandler('pmms:sharePlaylist', function(playlistId, friendLicense)
                 text = "Playlist shared!",
             })
             TriggerClientEvent('pmms:refreshLibrary', src)
+
+            local recipientSource = GetLivePlayerSourceByLicense(friendLicense)
+            if recipientSource then
+                TriggerClientEvent('pmms:notify', recipientSource, {
+                    title = "Library",
+                    text = (GetPlayerName(src) or "A player") .. " shared a playlist with you.",
+                })
+                TriggerClientEvent('pmms:refreshLibrary', recipientSource)
+            end
         end)
     end)
 end)

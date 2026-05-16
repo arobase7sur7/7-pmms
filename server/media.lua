@@ -253,11 +253,24 @@ local function clearSessionLock(handle)
         else
             MarkDirty()
         end
+        if type(ReconcilePmmsDeviceRequestState) == "function" then
+            ReconcilePmmsDeviceRequestState(handle, {
+                reason = "session_lock_cleared",
+            })
+        end
     end
 end
 
 function ForceClearSessionLock(handle)
     clearSessionLock(tonumber(handle) or handle)
+end
+
+function GetPmmsSessionLockSnapshot(handle)
+    local lock = sessionLocks[tonumber(handle) or handle]
+    if type(lock) ~= "table" then
+        return nil
+    end
+    return cloneDeepTable(lock)
 end
 
 local function isSessionLockOwner(lock, src)
@@ -359,6 +372,12 @@ local function upsertSessionLock(handle, src, pin)
     else
         MarkDirty()
     end
+    if type(ReconcilePmmsDeviceRequestState) == "function" then
+        ReconcilePmmsDeviceRequestState(handle, {
+            source = src,
+            reason = "session_lock_updated",
+        })
+    end
     return true, nil
 end
 
@@ -433,12 +452,17 @@ function BuildMediaPlayersSyncStateForPlayer(src)
         local copy = cloneDeepTable(info)
         local session = deviceSessions[handle]
         local sessionLock = buildSessionLockStateForPlayer(src, handle)
+        local requestState = type(GetPmmsDeviceRequestState) == "function" and GetPmmsDeviceRequestState(handle) or nil
         copy.sessionLock = sessionLock
         copy.sessionLocked = sessionLock ~= nil
         copy.playbackMode = copy.video == false and "audio" or "video"
         copy.deviceCapability = getDeviceCapabilityState(copy, session)
-        copy.requestMode = type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or copy.requestMode
+        copy.requestState = requestState
+        copy.configuredRequestMode = requestState and requestState.configuredMode or copy.requestMode
+        copy.requestModeReason = requestState and requestState.reason or nil
+        copy.requestMode = requestState and requestState.effectiveMode or (type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or copy.requestMode)
         copy.linkedSpeakers = type(GetPmmsLinkedSpeakers) == "function" and GetPmmsLinkedSpeakers(handle) or copy.linkedSpeakers
+        copy.equalizerProfile = type(GetDeviceEqProfile) == "function" and GetDeviceEqProfile(handle) or copy.equalizerProfile
         if session then
             copy.stateRevision = session.stateRevision
             copy.idleResetAt = session.idleResetAt
@@ -455,6 +479,7 @@ function BuildMediaPlayersSyncStateForPlayer(src)
     local sessionStateCopy = {}
     for handle, session in pairs(deviceSessions) do
         local sessionLock = buildSessionLockStateForPlayer(src, handle)
+        local requestState = type(GetPmmsDeviceRequestState) == "function" and GetPmmsDeviceRequestState(handle) or nil
         local fullHistoryCount = type(session.history) == "table" and #session.history or 0
         local history = cloneRecentHistoryForSync(session.history)
         local preview = type(BuildPlaybackPreview) == "function"
@@ -478,8 +503,12 @@ function BuildMediaPlayersSyncStateForPlayer(src)
             sessionLock = sessionLock,
             sessionLocked = sessionLock ~= nil,
             deviceCapability = getDeviceCapabilityState(nil, session),
-            requestMode = type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or nil,
+            requestState = requestState,
+            configuredRequestMode = requestState and requestState.configuredMode or nil,
+            requestModeReason = requestState and requestState.reason or nil,
+            requestMode = requestState and requestState.effectiveMode or (type(GetPmmsDeviceRequestMode) == "function" and GetPmmsDeviceRequestMode(handle) or nil),
             linkedSpeakers = type(GetPmmsLinkedSpeakers) == "function" and GetPmmsLinkedSpeakers(handle) or nil,
+            equalizerProfile = type(GetDeviceEqProfile) == "function" and GetDeviceEqProfile(handle) or nil,
             pendingRequests = type(GetPmmsPendingRequestsForHandle) == "function" and GetPmmsPendingRequestsForHandle(handle) or {},
         }
     end
@@ -509,22 +538,18 @@ pushImmediateSync = function(target)
     end
 end
 
+function PushPmmsImmediateSync(target)
+    pushImmediateSync(target)
+end
+
 function CleanupSessionLocks(now)
     now = now or os.time()
-    local changed = false
-
     for handle, lock in pairs(sessionLocks) do
         if not deviceSessions[handle] then
-            sessionLocks[handle] = nil
-            changed = true
+            clearSessionLock(handle)
         elseif (now - (lock.lastActivity or now)) > sessionLockIdleSeconds then
-            sessionLocks[handle] = nil
-            changed = true
+            clearSessionLock(handle)
         end
-    end
-
-    if changed then
-        MarkDirty()
     end
 end
 
@@ -807,11 +832,40 @@ local function buildRuntimeSettings(options)
         loopMode = NormalizeLoopMode(options.loopMode, options.loop),
         label = options.label or options.name,
         profile = options.profile,
+        persistent = options.persistent == true,
+        mode = options.mode,
+        propModel = options.propModel,
+        coords = cloneDeepTable(options.coords or options.position),
         requestMode = options.requestMode,
         adminLock = cloneDeepTable(options.adminLock),
         linkedSpeakers = cloneDeepTable(options.linkedSpeakers),
+        equalizerProfile = cloneDeepTable(options.equalizerProfile),
         vehiclePlate = options.vehiclePlate,
     }
+end
+
+local function mergePersistentSeed(handle, seedOptions)
+    local seed = cloneDeepTable(seedOptions or {})
+    if type(GetPersistentPmmsDeviceEntry) ~= "function" then
+        return seed
+    end
+
+    local entry = GetPersistentPmmsDeviceEntry(handle)
+    if type(entry) ~= "table" then
+        return seed
+    end
+
+    for key, value in pairs(entry) do
+        if seed[key] == nil then
+            seed[key] = cloneDeepTable(value)
+        end
+    end
+
+    if seed.coords == nil then
+        seed.coords = type(ToPlainCoords) == "function" and ToPlainCoords(entry.position) or cloneDeepTable(entry.position)
+    end
+    seed.persistent = true
+    return seed
 end
 
 local function buildTrackSnapshot(options)
@@ -866,9 +920,14 @@ local function applySessionSettingsToTarget(target, session)
     target.loop = target.loopMode == "track"
     target.label = session.settings.label or target.label
     target.profile = session.settings.profile or target.profile
+    target.persistent = session.settings.persistent == true or target.persistent == true
+    target.mode = session.settings.mode or target.mode
+    target.propModel = session.settings.propModel or target.propModel
+    target.coords = cloneDeepTable(session.settings.coords or target.coords)
     target.requestMode = session.settings.requestMode or target.requestMode
     target.adminLock = cloneDeepTable(session.settings.adminLock or target.adminLock)
     target.linkedSpeakers = cloneDeepTable(session.settings.linkedSpeakers or target.linkedSpeakers)
+    target.equalizerProfile = cloneDeepTable(session.settings.equalizerProfile or target.equalizerProfile)
     target.vehiclePlate = session.settings.vehiclePlate or target.vehiclePlate
 end
 
@@ -898,6 +957,7 @@ commitDeviceSession = function(handle, session)
 end
 
 local function buildDeviceSession(handle, seedOptions)
+    seedOptions = mergePersistentSeed(handle, seedOptions)
     local defaults = buildRuntimeSettings(seedOptions)
 
     return {
@@ -937,6 +997,7 @@ end
 function EnsureDeviceSession(handle, seedOptions)
     local session = deviceSessions[handle]
     if session then
+        seedOptions = mergePersistentSeed(handle, seedOptions)
         if type(session.queue) ~= "table" then
             session.queue = {}
         end
@@ -950,6 +1011,15 @@ function EnsureDeviceSession(handle, seedOptions)
         end
         if type(session.settings) ~= "table" then
             session.settings = cloneDeepTable(session.defaults)
+        end
+        local persistentDefaults = buildRuntimeSettings(seedOptions)
+        for key, value in pairs(persistentDefaults) do
+            if session.defaults[key] == nil then
+                session.defaults[key] = cloneDeepTable(value)
+            end
+            if session.settings[key] == nil then
+                session.settings[key] = cloneDeepTable(value)
+            end
         end
         return session
     end
@@ -2250,6 +2320,70 @@ function RemoveMediaPlayer(handle, preserveSessionLock, removeOptions)
     end)
 end
 
+function DestroyPmmsDeviceLifecycle(handle, options)
+    handle = tonumber(handle) or handle
+    options = type(options) == "table" and options or {}
+    local hadActivePlayer = IsMediaPlayerActive(handle)
+
+    local persistentEntry, persistentCoords = nil, nil
+    if type(GetPersistentPmmsDeviceEntry) == "function" then
+        persistentEntry, persistentCoords = GetPersistentPmmsDeviceEntry(handle)
+    end
+
+    if options.clearPendingRequests ~= false and type(ClearPmmsPendingRequestsForHandle) == "function" then
+        ClearPmmsPendingRequestsForHandle(handle, {
+            source = options.source or 0,
+            reason = options.reason or "device_destroyed",
+            logEventName = options.pendingLogEventName,
+            logEvent = options.logPending ~= false,
+        })
+    end
+
+    if IsMediaPlayerActive(handle) then
+        RemoveMediaPlayer(handle, false, {
+            archiveCurrent = options.archiveCurrent == true,
+            keepSession = false,
+        })
+    else
+        clearStartContext(handle, false, true)
+        clearSessionLock(handle)
+        ResetDeviceSession(handle)
+        EnqueueSync(function()
+            TriggerClientEvent("pmms:stop", -1, handle)
+        end)
+    end
+
+    ClearRestricted(handle)
+
+    if options.removePersistent == true and persistentCoords and type(RemoveEntityPermanently) == "function" then
+        RemoveEntityPermanently(persistentCoords)
+        if persistentEntry and type(LogPmmsAdminEvent) == "function" and options.logRemovalEvent then
+            LogPmmsAdminEvent(options.logRemovalEvent, handle, options.source or 0, {
+                label = persistentEntry.label or persistentEntry.name,
+            })
+        end
+        TriggerClientEvent("pmms:speakersCleared", -1, handle)
+        TriggerClientEvent("pmms:refreshPersistentEntities", -1)
+    end
+
+    if type(ReconcilePmmsDeviceRequestState) == "function" then
+        ReconcilePmmsDeviceRequestState(handle, {
+            source = options.source,
+            reason = options.reason or "device_destroyed",
+        })
+    end
+
+    if pushImmediateSync then
+        pushImmediateSync()
+    end
+
+    return {
+        removedPersistent = options.removePersistent == true and persistentCoords ~= nil,
+        hadPersistent = persistentCoords ~= nil,
+        hadActivePlayer = hadActivePlayer,
+    }
+end
+
 local function triggerStartOnClient(handle, src, resolvedOptions, intentOptions, retries, phase, message)
     local context = updateStartContextResolved(handle, resolvedOptions)
     if not context or context.source ~= src then
@@ -3546,21 +3680,33 @@ RegisterNetEvent("pmms:forceResetDevice", function(handle)
         return
     end
 
-    if IsMediaPlayerActive(handle) then
-        RemoveMediaPlayer(handle, false, {
+    if type(DestroyPmmsDeviceLifecycle) == "function" then
+        DestroyPmmsDeviceLifecycle(handle, {
+            source = src,
+            reason = "device_force_reset",
+            removePersistent = false,
             archiveCurrent = false,
-            keepSession = false,
+            clearPendingRequests = true,
+            pendingLogEventName = false,
+            logPending = false,
         })
     else
-        clearStartContext(handle, false, true)
-        clearSessionLock(handle)
-        ResetDeviceSession(handle)
-        EnqueueSync(function()
-            TriggerClientEvent("pmms:stop", -1, handle)
-        end)
-    end
+        if IsMediaPlayerActive(handle) then
+            RemoveMediaPlayer(handle, false, {
+                archiveCurrent = false,
+                keepSession = false,
+            })
+        else
+            clearStartContext(handle, false, true)
+            clearSessionLock(handle)
+            ResetDeviceSession(handle)
+            EnqueueSync(function()
+                TriggerClientEvent("pmms:stop", -1, handle)
+            end)
+        end
 
-    ClearRestricted(handle)
+        ClearRestricted(handle)
+    end
     if type(LogPmmsAdminEvent) == "function" then
         LogPmmsAdminEvent("device_force_reset", handle, src, {})
     end
@@ -3994,19 +4140,13 @@ RegisterNetEvent("pmms:removeFromQueue", function(handle, id)
 end)
 
 RegisterNetEvent("pmms:loadSettings", function()
-    TriggerClientEvent("pmms:loadSettings", source, Config.models, Config.defaultMediaPlayers)
+    local defaultMediaPlayers = type(GetDefaultMediaPlayersForClient) == "function" and GetDefaultMediaPlayersForClient() or Config.defaultMediaPlayers
+    TriggerClientEvent("pmms:loadSettings", source, Config.models, defaultMediaPlayers)
 end)
 
 RegisterNetEvent("pmms:loadPermissions", function()
     local src = source
     local permissions = GetPmmsPermissions(src)
-    print(("^4[7-pmms] Sending permissions to %s (%s): manage=%s, staff=%s^7"):format(
-        GetPlayerName(src), 
-        src, 
-        tostring(permissions.manage), 
-        tostring(permissions.staff)
-    ))
-
     TriggerClientEvent("pmms:loadPermissions", src, permissions)
     TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
 end)

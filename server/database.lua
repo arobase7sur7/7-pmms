@@ -76,6 +76,26 @@ local function ensureSchemas()
           PRIMARY KEY (`license`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ]])
+    ensureTable("pmms_persistent_devices", [[
+        CREATE TABLE IF NOT EXISTS `pmms_persistent_devices` (
+          `handle` varchar(32) NOT NULL,
+          `x` double NOT NULL,
+          `y` double NOT NULL,
+          `z` double NOT NULL,
+          `data` longtext NOT NULL,
+          `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`handle`),
+          KEY `idx_pmms_persistent_devices_coords` (`x`, `y`, `z`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ]])
+    ensureTable("pmms_persistence_meta", [[
+        CREATE TABLE IF NOT EXISTS `pmms_persistence_meta` (
+          `name` varchar(64) NOT NULL,
+          `value` varchar(255) NOT NULL,
+          `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`name`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ]])
 end
 
 local function initDatabase()

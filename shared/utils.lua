@@ -1,5 +1,10 @@
 function GetHandleFromCoords(coords)
-    return GetHashKey(string.format("%d_%d_%d", math.floor(coords.x * 10), math.floor(coords.y * 10), math.floor(coords.z * 10)))
+    local plain = ToPlainCoords(coords)
+    if not plain then
+        return nil
+    end
+
+    return GetHashKey(string.format("%d_%d_%d", math.floor(plain.x * 10), math.floor(plain.y * 10), math.floor(plain.z * 10)))
 end
 
 function Clamp(val, min, max, def)
@@ -9,17 +14,52 @@ function Clamp(val, min, max, def)
     return val
 end
 
-function ToVector3(t)
-    return vector3(t.x, t.y, t.z)
+function ToPlainCoords(coords)
+    if type(coords) ~= "table" and type(coords) ~= "vector3" then
+        return nil
+    end
+
+    local x = tonumber(coords.x)
+    local y = tonumber(coords.y)
+    local z = tonumber(coords.z)
+    if not x or not y or not z then
+        return nil
+    end
+
+    return { x = x, y = y, z = z }
+end
+
+function ToVector3(coords)
+    if type(coords) == "vector3" then
+        return coords
+    end
+
+    local plain = ToPlainCoords(coords)
+    if not plain then
+        return nil
+    end
+
+    return vector3(plain.x, plain.y, plain.z)
 end
 
 function IsSameEntity(coords1, coords2)
-    return #(coords1 - coords2) < 0.001
+    local first = ToVector3(coords1)
+    local second = ToVector3(coords2)
+    if not first or not second then
+        return false
+    end
+
+    return #(first - second) < 0.001
 end
 
 function GetDefaultMediaPlayer(list, coords)
-    for _, mediaPlayer in ipairs(list) do
-        if IsSameEntity(coords, mediaPlayer.position) then
+    local target = ToVector3(coords)
+    if not target then
+        return nil
+    end
+
+    for _, mediaPlayer in ipairs(list or {}) do
+        if mediaPlayer and mediaPlayer.position and IsSameEntity(target, mediaPlayer.position) then
             return mediaPlayer
         end
     end
