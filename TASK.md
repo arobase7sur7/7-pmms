@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**C-ANALYZE** — Read server/queue.lua + server/main.lua + server/media.lua; document queue mutation and locking behavior
+**C-FIX** — Implement queue fixes based on C-ANALYZE findings
 
 ## Backlog
 
@@ -14,7 +14,7 @@
 - [x] B-FIX     — Implement resolver fixes based on B-ANALYZE findings: dedup, semaphores, per-provider timeouts, adaptive ban, hedged failover, absolute timeout, progress events, cancel handler
 
 ### Queue / Race Conditions (Problem 3)
-- [ ] C-ANALYZE — Read `server/queue.lua` + `server/main.lua` + `server/media.lua`. Find: how queue is stored, what functions mutate it, whether any locking exists, whether version/optimistic locking exists. Write findings below.
+- [x] C-ANALYZE — Read `server/queue.lua` + `server/main.lua` + `server/media.lua`. Find: how queue is stored, what functions mutate it, whether any locking exists, whether version/optimistic locking exists. Write findings below.
 - [ ] C-FIX     — Implement queue fixes based on C-ANALYZE findings: per-device mutex, version counter, stale-rejection with resync
 
 ### Join Sync (Problem 4)
@@ -65,7 +65,17 @@
 - No resolver call path was found in `server/main.lua`; resolver work is driven from `server/media.lua`.
 
 ### C-ANALYZE
-<!-- Fill in after reading the files -->
+- Queue state is stored on `deviceSessions[handle].queue` in `server/media.lua`. Sessions are created with `queue = {}` and `stateRevision` at lines ~1049-1068, returned by `GetDeviceSession()`/`GetDeviceSessions()` at lines ~1071-1076, and committed by `commitDeviceSession()`/`CommitDeviceSessionState()` at lines ~1035-1084.
+- Active media players mirror the same queue table. `syncActiveMediaPlayerWithSession()` copies `session.queue` and `session.stateRevision` onto `mp` at lines ~1024-1033, and `AddMediaPlayer()` sets `options.queue = session.queue` before `SetMediaPlayer()` at lines ~2370-2428.
+- `server/queue.lua` is the main mutator. `AddToQueue()` appends entries at lines ~536-595, `RemoveFromQueue()` uses `table.remove(session.queue, parsedIndex)` at lines ~597-624, `PlayNextInQueue()` recycles/removes/advances entries at lines ~626-726, and `PlayPreviousFromHistory()` prepends the current track via `PrependDeviceQueueEntry()` at lines ~728-781.
+- Queue IDs exist but are mostly internal. `ensureSessionQueueMetadata()` assigns `queueId` and `nextQueueEntryId` at `server/queue.lua` lines ~50-72, and shuffle preview tracks queue IDs, but `RemoveFromQueue()` still treats the client-provided id as an array index at lines ~604-609.
+- Async queue mutations exist. `prepareNextEntry()` starts `ResolvePlaybackOptions()` for the first queued item and later mutates the live first queue entry only if its signature still matches at lines ~388-450. `AddToQueue()` also starts `ResolvePlaybackOptions()` and later mutates the captured `queueEntry.options` at lines ~562-587; if that entry has already moved or been removed, it can still resolve and bump session state.
+- `PlayNextInQueue()` mutates the queue before playback is actually started. It removes/recycles entries, calls `RemoveMediaPlayer()`, then schedules `StartMediaPlayerForClient()` through `EnqueueSync()` at lines ~656-665 and ~701-720. `server/main.lua` drains that sync queue later in `syncMediaPlayers()` lines ~379-382.
+- `server/main.lua` can also advance queue playback from the periodic sync loop when duration is reached: it calls `PlayNextInQueue(handle, { reason = "ended" })` at lines ~341-360. The client `pmms:ended` handler also calls `PlayNextInQueue()` at `server/media.lua` lines ~3201-3314, guarded only by an ended-event duplicate guard for client reports.
+- `server/media.lua` adds queue entries from active playback requests at lines ~2913-2920, queues playlist tracks at lines ~3001-3027, handles manual next/previous/remove at lines ~4258-4288, and can seed session queues from incoming playback options at `AddMediaPlayer()` lines ~2370-2373.
+- There is no per-device queue mutex or callback semaphore. `sessionLocks` in `server/media.lua` lines ~10 and ~329-537 are user access locks, not mutation serialization. `restrictedHandles` in `server/main.lua` lines ~284-291 blocks overlapping startup ownership, not queue changes.
+- A version counter exists as `session.stateRevision`, but it is only incremented on commit and synced to clients. No server event requires an expected revision, no queue mutation rejects stale revisions, and no stale-rejection resync path exists.
+- Race risk for C-FIX: FiveM is cooperative, so two Lua chunks do not run at the exact same instant, but async resolver callbacks and deferred `EnqueueSync()` playback can apply stale queue decisions after later queue edits unless queue mutations are serialized per handle and checked against a queue/session revision.
 
 ### D-ANALYZE
 <!-- Fill in after reading the files -->
@@ -79,6 +89,7 @@
 ---
 
 ## Completed
+<!-- ✅ C-ANALYZE — 2026-05-22 -->
 <!-- ✅ B-FIX — 2026-05-22 -->
 <!-- ✅ B-ANALYZE — 2026-05-22 -->
 <!-- ✅ A-FIX — 2026-05-22 -->
