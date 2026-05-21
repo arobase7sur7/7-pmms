@@ -371,11 +371,8 @@ local function refreshPersistentSpeakers()
     end
 end
 
-RegisterNetEvent("pmms:sync", function(payload)
-    local deviceSessions = {}
-    if type(payload) == "table" and payload.deviceSessions then
-        deviceSessions = payload.deviceSessions
-    end
+local function refreshLinkedSpeakerProps(deviceSessions)
+    deviceSessions = type(deviceSessions) == "table" and deviceSessions or {}
 
     local desiredSpeakers = {}
     for handle, session in pairs(deviceSessions) do
@@ -413,6 +410,22 @@ RegisterNetEvent("pmms:sync", function(payload)
             deleteSpeakerProp(id)
         end
     end
+end
+
+RegisterNetEvent("pmms:sync", function(payload)
+    local deviceSessions = {}
+    if type(payload) == "table" and payload.deviceSessions then
+        deviceSessions = payload.deviceSessions
+    end
+
+    refreshLinkedSpeakerProps(deviceSessions)
+end)
+
+RegisterNetEvent("pmms:syncDelta", function()
+    SetTimeout(0, function()
+        local deviceSessions = type(GetDeviceSessions) == "function" and GetDeviceSessions() or {}
+        refreshLinkedSpeakerProps(deviceSessions)
+    end)
 end)
 
 RegisterNetEvent("pmms:speakerRemoved", function(speakerId)

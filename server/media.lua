@@ -527,6 +527,11 @@ function BuildMediaPlayersSyncStateForPlayer(src)
 end
 
 pushImmediateSync = function(target)
+    if type(RequestPmmsSync) == "function" then
+        RequestPmmsSync(target)
+        return
+    end
+
     if target ~= nil then
         TriggerClientEvent("pmms:sync", target, BuildMediaPlayersSyncStateForPlayer(target))
         return
@@ -4187,12 +4192,20 @@ RegisterNetEvent("pmms:loadPermissions", function()
     local src = source
     local permissions = GetPmmsPermissions(src)
     TriggerClientEvent("pmms:loadPermissions", src, permissions)
-    TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
+    if type(SendPmmsFullSync) == "function" then
+        SendPmmsFullSync(src)
+    else
+        TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
+    end
 end)
 
 AddEventHandler("playerJoining", function()
     local src = source
-    TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
+    if type(SendPmmsFullSync) == "function" then
+        SendPmmsFullSync(src)
+    else
+        TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
+    end
 end)
 
 AddEventHandler("playerDropped", function()

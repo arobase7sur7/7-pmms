@@ -76,6 +76,11 @@ local function toVector(coords)
 end
 
 local function pushSyncToPlayer(src)
+    if type(SendPmmsFullSync) == "function" then
+        SendPmmsFullSync(src)
+        return
+    end
+
     if type(BuildMediaPlayersSyncStateForPlayer) == "function" then
         TriggerClientEvent("pmms:sync", src, BuildMediaPlayersSyncStateForPlayer(src))
     end

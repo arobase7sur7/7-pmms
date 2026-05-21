@@ -1,13 +1,13 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**A-FIX** — Implement sync fixes based on A-ANALYZE findings: throttle, delta, TriggerLatentClientEvent for large payloads, targeted join sync, periodic full resync
+**B-ANALYZE** — Read server/resolver.lua + how it's called from server/main.lua or server/media.lua; document resolver behavior
 
 ## Backlog
 
 ### Sync (Problem 1)
 - [x] A-ANALYZE — Read `server/main.lua` + `server/media.lua`. Find: sync loop location, broadcast frequency, payload size, whether dirty flags exist, how joining players receive state. Write findings below.
-- [ ] A-FIX     — Implement sync fixes based on A-ANALYZE findings: throttle, delta, TriggerLatentClientEvent for large payloads, targeted join sync, periodic full resync
+- [x] A-FIX     — Implement sync fixes based on A-ANALYZE findings: throttle, delta, TriggerLatentClientEvent for large payloads, targeted join sync, periodic full resync
 
 ### Resolver (Problem 2)
 - [ ] B-ANALYZE — Read `server/resolver.lua` + how it's called from `server/main.lua` or `server/media.lua`. Find: deduplication (yes/no), per-provider concurrency limits (yes/no), timeouts (yes/no), failover mechanism, how result is returned. Write findings below.
@@ -67,5 +67,6 @@
 ---
 
 ## Completed
+<!-- ✅ A-FIX — 2026-05-22 -->
 <!-- ✅ A-ANALYZE — 2026-05-22 -->
 <!-- ✅ TASK_ID — YYYY-MM-DD -->

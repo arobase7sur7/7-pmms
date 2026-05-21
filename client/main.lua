@@ -7,6 +7,8 @@ local defaultMediaPlayers = {}
 local disabledStaticEmitters = {}
 local syncSnapshots = {}
 local isInitialized = false
+local hasReceivedFullSync = false
+local lastFullSyncRequestAt = 0
 local lastUpdateUi = 0
 local failedPlayers = {}
 local handleRangeState = {}
@@ -640,8 +642,42 @@ RegisterNetEvent("pmms:play", function(handle)
     failedPlayers[handle] = nil
 end)
 
-RegisterNetEvent("pmms:sync", function(payload)
-    local previousStates = mediaPlayerStates
+local function removeStateKey(collection, key)
+    if type(collection) ~= "table" then
+        return
+    end
+
+    collection[key] = nil
+    collection[tostring(key)] = nil
+
+    local numericKey = tonumber(key)
+    if numericKey ~= nil then
+        collection[numericKey] = nil
+    end
+end
+
+local function removeStateKeys(collection, keys)
+    if type(keys) ~= "table" then
+        return
+    end
+
+    for _, key in ipairs(keys) do
+        removeStateKey(collection, key)
+    end
+end
+
+local function applyStateUpdates(collection, updates)
+    if type(collection) ~= "table" or type(updates) ~= "table" then
+        return
+    end
+
+    for key, value in pairs(updates) do
+        removeStateKey(collection, key)
+        collection[key] = value
+    end
+end
+
+local function applyFullSyncPayload(payload)
     if type(payload) == "table" and payload.mediaPlayers then
         mediaPlayerStates = payload.mediaPlayers or {}
         startupStates = payload.startupStates or {}
@@ -653,8 +689,37 @@ RegisterNetEvent("pmms:sync", function(payload)
         deviceSessions = {}
         adminSyncState = nil
     end
+
+    hasReceivedFullSync = true
+end
+
+local function applyDeltaSyncPayload(payload)
+    if type(payload) ~= "table" then
+        return false
+    end
+
+    local removed = type(payload.removed) == "table" and payload.removed or {}
+    removeStateKeys(mediaPlayerStates, removed.mediaPlayers)
+    removeStateKeys(startupStates, removed.startupStates)
+    removeStateKeys(deviceSessions, removed.deviceSessions)
+
+    applyStateUpdates(mediaPlayerStates, payload.mediaPlayers)
+    applyStateUpdates(startupStates, payload.startupStates)
+    applyStateUpdates(deviceSessions, payload.deviceSessions)
+
+    if payload.adminRemoved == true then
+        adminSyncState = nil
+    elseif payload.admin ~= nil then
+        adminSyncState = payload.admin
+    end
+
+    return true
+end
+
+local function reconcileSyncState(syncType)
     local now = GetGameTimer()
     PMMSDebug("player", "client sync received", {
+        syncType = syncType,
         mediaPlayerCount = countTableEntries(mediaPlayerStates),
         startupStateCount = countTableEntries(startupStates),
         deviceSessionCount = countTableEntries(deviceSessions),
@@ -728,6 +793,26 @@ RegisterNetEvent("pmms:sync", function(payload)
     if not isInitialized then
         isInitialized = true
         autoDisableStaticEmitters()
+    end
+end
+
+RegisterNetEvent("pmms:sync", function(payload)
+    applyFullSyncPayload(payload)
+    reconcileSyncState("full")
+end)
+
+RegisterNetEvent("pmms:syncDelta", function(payload)
+    if not hasReceivedFullSync then
+        local now = GetGameTimer()
+        if lastFullSyncRequestAt == 0 or (now - lastFullSyncRequestAt) > 2000 then
+            lastFullSyncRequestAt = now
+            TriggerServerEvent("pmms:loadPermissions")
+        end
+        return
+    end
+
+    if applyDeltaSyncPayload(payload) then
+        reconcileSyncState("delta")
     end
 end)
 

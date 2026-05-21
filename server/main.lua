@@ -3,6 +3,253 @@ local restrictedHandles = {}
 local restrictedTimestamps = {}
 local syncQueue = {}
 local dirty = false
+local pendingSyncTargets = {}
+local syncAllRequested = false
+local fullSyncAllRequested = false
+local lastBroadcast = 0
+local lastFullBroadcast = 0
+local syncStateByTarget = {}
+
+local SYNC_THROTTLE_MS = 500
+local PERIODIC_FULL_SYNC_MS = 10000
+local LARGE_SYNC_THRESHOLD_BYTES = 800
+local NORMAL_SYNC_BPS = 131072
+local FULL_SYNC_BPS = 524288
+
+local function cloneDeepTable(source, seen)
+    if type(source) ~= "table" then
+        return source
+    end
+
+    seen = seen or {}
+    if seen[source] then
+        return seen[source]
+    end
+
+    local copy = {}
+    seen[source] = copy
+
+    for key, value in pairs(source) do
+        copy[cloneDeepTable(key, seen)] = cloneDeepTable(value, seen)
+    end
+
+    return copy
+end
+
+local function deepEqual(left, right, seen)
+    if left == right then
+        return true
+    end
+
+    if type(left) ~= type(right) then
+        return false
+    end
+
+    if type(left) ~= "table" then
+        return false
+    end
+
+    seen = seen or {}
+    if seen[left] == right then
+        return true
+    end
+    seen[left] = right
+
+    for key, value in pairs(left) do
+        if not deepEqual(value, right[key], seen) then
+            return false
+        end
+    end
+
+    for key in pairs(right) do
+        if left[key] == nil then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function cloneMediaPlayerForDiff(info)
+    local copy = cloneDeepTable(info)
+    if type(copy) == "table" and copy.paused ~= true then
+        copy.offset = nil
+    end
+    return copy
+end
+
+local function syncValueEqual(section, current, previous)
+    if section == "mediaPlayers" then
+        return deepEqual(cloneMediaPlayerForDiff(current), cloneMediaPlayerForDiff(previous))
+    end
+    return deepEqual(current, previous)
+end
+
+local function normalizeSyncTarget(target)
+    if target == nil then
+        return nil
+    end
+    return tonumber(target) or target
+end
+
+local function getSyncTargetKey(target)
+    local resolved = normalizeSyncTarget(target)
+    return resolved ~= nil and tostring(resolved) or nil
+end
+
+local function queueSyncTarget(target, full)
+    local resolved = normalizeSyncTarget(target)
+    local key = getSyncTargetKey(resolved)
+    if not key then
+        return
+    end
+
+    local pending = pendingSyncTargets[key]
+    pendingSyncTargets[key] = {
+        target = resolved,
+        full = full == true or (pending and pending.full == true) or false,
+    }
+end
+
+local function hasPendingSyncTargets()
+    for _ in pairs(pendingSyncTargets) do
+        return true
+    end
+    return false
+end
+
+local function getPayloadSize(payload)
+    local ok, encoded = pcall(json.encode, payload)
+    if ok and type(encoded) == "string" then
+        return #encoded
+    end
+    return LARGE_SYNC_THRESHOLD_BYTES + 1
+end
+
+local function triggerSizedClientEvent(eventName, target, payload, latentBps)
+    if getPayloadSize(payload) > LARGE_SYNC_THRESHOLD_BYTES then
+        TriggerLatentClientEvent(eventName, target, latentBps, payload)
+    else
+        TriggerClientEvent(eventName, target, payload)
+    end
+end
+
+local function buildSyncPayloadForTarget(target)
+    if type(BuildMediaPlayersSyncStateForPlayer) == "function" then
+        return BuildMediaPlayersSyncStateForPlayer(target)
+    end
+    return cloneDeepTable(mediaPlayers)
+end
+
+local function buildSectionDelta(section, current, previous)
+    local updates = {}
+    local removed = {}
+    local changed = false
+
+    current = type(current) == "table" and current or {}
+    previous = type(previous) == "table" and previous or {}
+
+    for key, value in pairs(current) do
+        if previous[key] == nil or not syncValueEqual(section, value, previous[key]) then
+            updates[key] = value
+            changed = true
+        end
+    end
+
+    for key in pairs(previous) do
+        if current[key] == nil then
+            removed[#removed + 1] = key
+            changed = true
+        end
+    end
+
+    return updates, removed, changed
+end
+
+local function buildSyncDelta(current, previous)
+    if type(current) ~= "table" or type(previous) ~= "table" or current.mediaPlayers == nil then
+        return nil, false
+    end
+
+    local delta = {
+        removed = {},
+    }
+    local hasChanges = false
+
+    for _, section in ipairs({ "mediaPlayers", "startupStates", "deviceSessions" }) do
+        local updates, removed, changed = buildSectionDelta(section, current[section], previous[section])
+        if changed then
+            if next(updates) ~= nil then
+                delta[section] = updates
+            end
+            if #removed > 0 then
+                delta.removed[section] = removed
+            end
+            hasChanges = true
+        end
+    end
+
+    if not deepEqual(current.admin, previous.admin) then
+        if current.admin == nil then
+            delta.adminRemoved = true
+        else
+            delta.admin = current.admin
+        end
+        hasChanges = true
+    end
+
+    if next(delta.removed) == nil then
+        delta.removed = nil
+    end
+
+    return delta, hasChanges
+end
+
+local function sendSyncToTarget(target, full)
+    local resolved = normalizeSyncTarget(target)
+    local key = getSyncTargetKey(resolved)
+    if not key then
+        return false
+    end
+
+    local payload = buildSyncPayloadForTarget(resolved)
+    local previous = syncStateByTarget[key]
+    local shouldSendFull = full == true or previous == nil or type(payload) ~= "table" or payload.mediaPlayers == nil
+
+    if shouldSendFull then
+        triggerSizedClientEvent("pmms:sync", resolved, payload, FULL_SYNC_BPS)
+        syncStateByTarget[key] = cloneDeepTable(payload)
+        return true
+    end
+
+    local delta, hasChanges = buildSyncDelta(payload, previous)
+    if hasChanges then
+        triggerSizedClientEvent("pmms:syncDelta", resolved, delta, NORMAL_SYNC_BPS)
+        syncStateByTarget[key] = cloneDeepTable(payload)
+        return true
+    end
+
+    return false
+end
+
+function RequestPmmsSync(target, options)
+    options = type(options) == "table" and options or {}
+    dirty = true
+
+    if target ~= nil then
+        queueSyncTarget(target, options.full == true)
+        return
+    end
+
+    syncAllRequested = true
+    if options.full == true then
+        fullSyncAllRequested = true
+    end
+end
+
+function SendPmmsFullSync(target)
+    return sendSyncToTarget(target, true)
+end
 
 function GetMediaPlayers()
     return mediaPlayers
@@ -65,6 +312,12 @@ end
 
 AddEventHandler("playerDropped", function()
     local src = source
+    local key = getSyncTargetKey(src)
+    if key then
+        syncStateByTarget[key] = nil
+        pendingSyncTargets[key] = nil
+    end
+
     for handle, restrictedSrc in pairs(restrictedHandles) do
         if restrictedSrc == src then
             restrictedHandles[handle] = nil
@@ -72,8 +325,6 @@ AddEventHandler("playerDropped", function()
         end
     end
 end)
-
-local lastBroadcast = 0
 
 local function resolveLoopMode(info)
     if type(NormalizeLoopMode) == "function" then
@@ -89,6 +340,7 @@ end
 
 local function syncMediaPlayers()
     local now = os.time()
+    local nowMs = GetGameTimer()
     for handle, info in pairs(mediaPlayers) do
         if not info.paused then
             info.offset = math.max(0, now - (info.startTime or now))
@@ -129,18 +381,37 @@ local function syncMediaPlayers()
         if cb then cb() end
     end
 
-    if dirty or (now - lastBroadcast > 10) then
+    local fullSyncDue = (nowMs - lastFullBroadcast) >= PERIODIC_FULL_SYNC_MS
+    local shouldFlush = fullSyncDue
+        or fullSyncAllRequested
+        or (dirty and (nowMs - lastBroadcast) >= SYNC_THROTTLE_MS)
+        or (hasPendingSyncTargets() and (nowMs - lastBroadcast) >= SYNC_THROTTLE_MS)
+
+    if shouldFlush then
         local players = GetPlayers()
-        for _, playerId in ipairs(players) do
-            local target = tonumber(playerId) or playerId
-            local payload = mediaPlayers
-            if type(BuildMediaPlayersSyncStateForPlayer) == "function" then
-                payload = BuildMediaPlayersSyncStateForPlayer(target)
+        local sendFull = fullSyncDue or fullSyncAllRequested
+
+        if dirty or syncAllRequested or sendFull then
+            for _, playerId in ipairs(players) do
+                local target = tonumber(playerId) or playerId
+                sendSyncToTarget(target, sendFull)
             end
-            TriggerClientEvent("pmms:sync", target, payload)
         end
+
+        for key, pending in pairs(pendingSyncTargets) do
+            if pending and pending.target ~= nil then
+                sendSyncToTarget(pending.target, pending.full == true or sendFull)
+            end
+            pendingSyncTargets[key] = nil
+        end
+
+        syncAllRequested = false
+        fullSyncAllRequested = false
         dirty = false
-        lastBroadcast = now
+        lastBroadcast = nowMs
+        if sendFull then
+            lastFullBroadcast = nowMs
+        end
     end
 end
 
