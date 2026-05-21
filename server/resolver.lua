@@ -9,6 +9,9 @@ local instanceDiscoveryInFlight = false
 
 local resolveCache = {}
 local resolveInflight = {}
+local providerSemaphores = {}
+local providerFailureStreaks = {}
+local cancelledResolves = {}
 local instanceFailures = {
     invidious = {},
     piped = {},
@@ -66,6 +69,117 @@ end
 
 local function getParallelInstancesPerProvider()
     return math.max(1, tonumber(resolverConfig.parallelInstancesPerProvider) or 2)
+end
+
+local function nowMs()
+    if type(GetGameTimer) == "function" then
+        return GetGameTimer()
+    end
+    return math.floor((os.clock() or 0) * 1000)
+end
+
+local function createSemaphore(max)
+    local active = 0
+    local queue = {}
+    local limit = math.max(1, tonumber(max) or 1)
+
+    return {
+        limit = limit,
+        acquire = function(self, callback)
+            if active < limit then
+                active = active + 1
+                callback()
+                return
+            end
+
+            queue[#queue + 1] = callback
+        end,
+        release = function(self)
+            if #queue > 0 then
+                local nextCallback = table.remove(queue, 1)
+                Citizen.CreateThread(function()
+                    nextCallback()
+                end)
+                return
+            end
+
+            active = math.max(0, active - 1)
+        end,
+    }
+end
+
+local function getProviderConcurrency(provider)
+    local configured = resolverConfig.providerConcurrency
+    local value = nil
+
+    if type(configured) == "table" then
+        value = tonumber(configured[provider]) or tonumber(configured.default)
+    end
+
+    if not value then
+        if provider == "yt_dlp_local" then
+            value = 1
+        elseif provider == "extractor_http" or provider == "cobalt" then
+            value = 2
+        else
+            value = 3
+        end
+    end
+
+    return math.max(1, math.floor(value))
+end
+
+local function getProviderSemaphore(provider)
+    provider = type(provider) == "string" and provider ~= "" and provider or "unknown"
+    local limit = getProviderConcurrency(provider)
+    local semaphore = providerSemaphores[provider]
+
+    if not semaphore or semaphore.limit ~= limit then
+        semaphore = createSemaphore(limit)
+        providerSemaphores[provider] = semaphore
+    end
+
+    return semaphore
+end
+
+local function cleanupCancelledResolves()
+    local now = nowMs()
+    for key, state in pairs(cancelledResolves) do
+        if (tonumber(state.expiresAt) or 0) <= now then
+            cancelledResolves[key] = nil
+        end
+    end
+end
+
+local function isResolveCancelled(cancelKey)
+    if type(cancelKey) ~= "string" or cancelKey == "" then
+        return false
+    end
+
+    local state = cancelledResolves[cancelKey]
+    if not state then
+        return false
+    end
+
+    if (tonumber(state.expiresAt) or 0) <= nowMs() then
+        cancelledResolves[cancelKey] = nil
+        return false
+    end
+
+    return true, state.reason or "cancelled"
+end
+
+function CancelResolverRequest(cancelKey, reason)
+    if type(cancelKey) ~= "string" or cancelKey == "" then
+        return false
+    end
+
+    cleanupCancelledResolves()
+    cancelledResolves[cancelKey] = {
+        reason = reason or "cancelled",
+        expiresAt = nowMs() + 60000,
+    }
+    return true
 end
 
 local providerStats = nil
@@ -382,6 +496,77 @@ local function getRequestTimeoutMs()
     return 6000
 end
 
+local function getProviderTimeoutMs(provider, context)
+    local configured = resolverConfig.providerTimeoutMs
+    if type(configured) == "table" then
+        local timeout = tonumber(configured[provider]) or tonumber(configured.default)
+        if timeout and timeout > 0 then
+            return math.floor(timeout)
+        end
+    end
+
+    if provider == "yt_dlp_local" then
+        return getExtractorTimeoutMs() + 2000
+    end
+
+    if provider == "extractor_http" then
+        return (getExtractorTimeoutMs() * getExtractorMaxAttempts()) + 1000
+    end
+
+    if provider == "cobalt" then
+        return (getCobaltTimeoutMs() * getExtractorMaxAttempts()) + 1000
+    end
+
+    if provider == "invidious" or provider == "piped" then
+        local maxInstances = math.max(1, tonumber(context and context.maxInstances) or getMaxInstances())
+        local rounds = math.max(1, math.ceil(maxInstances / getParallelInstancesPerProvider()))
+        return (getRequestTimeoutMs() * rounds) + 1000
+    end
+
+    return math.max(1000, getRequestTimeoutMs())
+end
+
+local function getAbsoluteResolveTimeoutMs(resolverOptions)
+    local configured = tonumber(resolverOptions and resolverOptions.absoluteTimeoutMs)
+        or tonumber(resolverConfig.absoluteTimeoutMs)
+
+    if configured and configured > 0 then
+        return math.floor(configured)
+    end
+
+    local base = getExtractorTimeoutMs()
+        + getCobaltTimeoutMs()
+        + (getRequestTimeoutMs() * 2)
+
+    return math.max(15000, math.min(60000, base))
+end
+
+local function getHedgeDelayMs()
+    local configured = tonumber(resolverConfig.hedgeDelayMs)
+    if configured ~= nil then
+        return math.max(0, math.floor(configured))
+    end
+
+    return math.max(1500, math.floor(getRequestTimeoutMs() * 0.75))
+end
+
+local function emitResolverProgress(resolverOptions, progress)
+    if type(resolverOptions) ~= "table" or type(resolverOptions.emitProgress) ~= "function" then
+        return
+    end
+
+    resolverOptions.emitProgress(progress or {})
+end
+
+local function shouldContinueResolve(resolverOptions)
+    if type(resolverOptions) ~= "table" or type(resolverOptions.shouldContinue) ~= "function" then
+        return true
+    end
+
+    local ok, result = pcall(resolverOptions.shouldContinue)
+    return ok and result ~= false
+end
+
 local ytDlpProbeState = {
     checkedAt = 0,
     available = false,
@@ -529,12 +714,12 @@ local function shuffleCopy(list)
     return copy
 end
 
-local function markProviderCooldown(provider, reason)
+local function markProviderCooldown(provider, reason, cooldownSeconds)
     if type(provider) ~= "string" or provider == "" then
         return
     end
     providerCooldowns[provider] = {
-        untilTs = os.time() + getExtractorCooldownSeconds(),
+        untilTs = os.time() + math.max(1, tonumber(cooldownSeconds) or getExtractorCooldownSeconds()),
         reason = reason or "provider_error",
     }
 end
@@ -555,6 +740,56 @@ local function getProviderCooldown(provider, now)
         return state
     end
     return nil
+end
+
+local function getAdaptiveBanConfig()
+    local configured = resolverConfig.adaptiveProviderBan
+    if type(configured) ~= "table" then
+        configured = {}
+    end
+
+    return {
+        enabled = configured.enabled ~= false,
+        failures = math.max(1, tonumber(configured.failures) or 3),
+        cooldownSeconds = math.max(30, tonumber(configured.cooldownSeconds) or getExtractorCooldownSeconds()),
+    }
+end
+
+local function markProviderResolveOutcome(provider, ok, reason)
+    if type(provider) ~= "string" or provider == "" or provider == "embed" then
+        return
+    end
+
+    if ok then
+        providerFailureStreaks[provider] = nil
+        clearProviderCooldown(provider)
+        return
+    end
+
+    if reason == "cancelled" or reason == "provider_cancelled" then
+        return
+    end
+
+    local cfg = getAdaptiveBanConfig()
+    if cfg.enabled ~= true then
+        return
+    end
+
+    local state = providerFailureStreaks[provider] or { failures = 0 }
+    state.failures = (tonumber(state.failures) or 0) + 1
+    state.reason = reason or "resolver_error"
+    state.updatedAt = nowMs()
+    providerFailureStreaks[provider] = state
+
+    if state.failures >= cfg.failures then
+        markProviderCooldown(provider, state.reason, cfg.cooldownSeconds)
+        providerFailureStreaks[provider] = nil
+        PMMSDebug("resolver", "provider placed on adaptive cooldown", {
+            provider = provider,
+            reason = state.reason,
+            cooldownSeconds = cfg.cooldownSeconds,
+        })
+    end
 end
 
 local function trimString(value)
@@ -1202,41 +1437,27 @@ local function chooseYtDlpFormat(info, wantVideo, avoidResolvedUrl)
     local bestScore = -999999
 
     for _, format in ipairs(info.formats) do
-        if type(format) == "table" and type(format.url) == "string" then
-            if shouldAvoidUrl(format.url, avoidResolvedUrl) then
-                goto continue_format
-            end
-
+        if type(format) == "table" and type(format.url) == "string" and not shouldAvoidUrl(format.url, avoidResolvedUrl) then
             local vcodec = tostring(format.vcodec or "")
             local acodec = tostring(format.acodec or "")
             local hasVideo = vcodec ~= "" and vcodec ~= "none"
             local hasAudio = acodec ~= "" and acodec ~= "none"
+            local formatScore = nil
 
-            if wantVideo then
-                if not (hasVideo and hasAudio) then
-                    goto continue_format
-                end
-            else
-                if not hasAudio then
-                    goto continue_format
-                end
+            if wantVideo and hasVideo and hasAudio then
+                formatScore = scoreYtDlpFormat(format)
+            elseif not wantVideo and hasAudio then
+                formatScore = scoreYtDlpFormat(format)
                 if hasVideo then
-                    local formatScore = scoreYtDlpFormat(format) - 150
-                    if formatScore > bestScore then
-                        bestScore = formatScore
-                        bestFormat = format
-                    end
-                    goto continue_format
+                    formatScore = formatScore - 150
                 end
             end
 
-            local formatScore = scoreYtDlpFormat(format)
-            if formatScore > bestScore then
+            if formatScore and formatScore > bestScore then
                 bestScore = formatScore
                 bestFormat = format
             end
         end
-        ::continue_format::
     end
 
     return bestFormat
@@ -1699,6 +1920,94 @@ isInstanceSuppressed = function(provider, baseUrl, now)
     return false
 end
 
+local function runProviderAttempt(provider, timeoutMs, resolverOptions, execute, callback)
+    local semaphore = getProviderSemaphore(provider)
+
+    emitResolverProgress(resolverOptions, {
+        status = "queued",
+        provider = provider,
+    })
+
+    semaphore:acquire(function()
+        if not shouldContinueResolve(resolverOptions) then
+            semaphore:release()
+            callback(nil, "cancelled", makeTraceEntry(provider, "skipped", "cancelled"))
+            return
+        end
+
+        local finished = false
+        local released = false
+        local startedAt = nowMs()
+
+        local function release()
+            if released then
+                return
+            end
+
+            released = true
+            semaphore:release()
+        end
+
+        local function finish(payload, reason, traceEntry)
+            if finished then
+                return
+            end
+
+            finished = true
+            release()
+
+            if not shouldContinueResolve(resolverOptions) then
+                emitResolverProgress(resolverOptions, {
+                    status = "cancelled",
+                    provider = provider,
+                    elapsedMs = math.max(0, nowMs() - startedAt),
+                })
+                callback(nil, "cancelled", traceEntry or makeTraceEntry(provider, "skipped", "cancelled"))
+                return
+            end
+
+            local elapsedMs = math.max(0, nowMs() - startedAt)
+            if payload then
+                markProviderResolveOutcome(provider, true, nil)
+                emitResolverProgress(resolverOptions, {
+                    status = "succeeded",
+                    provider = provider,
+                    instance = payload.instance,
+                    elapsedMs = elapsedMs,
+                })
+            else
+                markProviderResolveOutcome(provider, false, reason)
+                emitResolverProgress(resolverOptions, {
+                    status = reason == "provider_timeout" and "timeout" or "failed",
+                    provider = provider,
+                    reason = reason or "resolver_unavailable",
+                    elapsedMs = elapsedMs,
+                })
+            end
+
+            callback(payload, reason, traceEntry)
+        end
+
+        emitResolverProgress(resolverOptions, {
+            status = "started",
+            provider = provider,
+        })
+
+        SetTimeout(math.max(1000, tonumber(timeoutMs) or getRequestTimeoutMs()), function()
+            finish(nil, "provider_timeout", makeTraceEntry(provider, "failed", "provider_timeout"))
+        end)
+
+        local ok, err = pcall(execute, finish)
+        if not ok then
+            PMMSDebug("resolver", "provider attempt crashed", {
+                provider = provider,
+                error = tostring(err),
+            })
+            finish(nil, "provider_exception", makeTraceEntry(provider, "failed", "provider_exception"))
+        end
+    end)
+end
+
 local function collectConfiguredInstances()
     local configured = resolverConfig.instances or {}
     local invidious = {}
@@ -1947,12 +2256,8 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
         local best
         local bestQuality = -999999
         for _, stream in ipairs(data.formatStreams) do
-            if type(stream) == "table" and type(stream.url) == "string" then
+            if type(stream) == "table" and type(stream.url) == "string" and not shouldAvoidUrl(stream.url, avoidResolvedUrl) then
                 local mime = stream.type or stream.mimeType
-                if shouldAvoidUrl(stream.url, avoidResolvedUrl) then
-                    goto continue_format_stream
-                end
-
                 local quality = codecScore(mime)
                     + audioLanguageScore(stream)
                     + (tonumber(stream.bitrate) or tonumber(stream.qualityLabel and stream.qualityLabel:match("(%d+)")) or 0) / 1000
@@ -1964,7 +2269,6 @@ local function chooseInvidiousStream(data, wantVideo, avoidResolvedUrl)
                     best = stream
                 end
             end
-            ::continue_format_stream::
         end
         if best then return { playableUrl = best.url } end
     end
@@ -2004,11 +2308,7 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
             local best
             local bestScore = -999999
             for _, stream in ipairs(data.videoStreams) do
-                if type(stream) == "table" and type(stream.url) == "string" and stream.videoOnly ~= true then
-                    if shouldAvoidUrl(stream.url, avoidResolvedUrl) then
-                        goto continue_video_stream
-                    end
-
+                if type(stream) == "table" and type(stream.url) == "string" and stream.videoOnly ~= true and not shouldAvoidUrl(stream.url, avoidResolvedUrl) then
                     local mime = stream.mimeType or stream.format or stream.codec
                     local score = codecScore(mime)
                         + audioLanguageScore(stream)
@@ -2018,7 +2318,6 @@ local function choosePipedStream(data, wantVideo, avoidResolvedUrl)
                         bestScore = score
                     end
                 end
-                ::continue_video_stream::
             end
             if best then return { playableUrl = best.url } end
         end
@@ -2462,7 +2761,20 @@ local function getProviderOrder(avoidProvider, allowEmbedFallback, forceProvider
     configured = getAdaptiveProviderOrder(configured)
 
     if type(avoidProvider) ~= "string" or avoidProvider == "" then
-        return configured
+        local available = {}
+        local deferred = {}
+        local now = os.time()
+        for _, provider in ipairs(configured) do
+            if provider ~= "embed" and getProviderCooldown(provider, now) then
+                deferred[#deferred + 1] = provider
+            else
+                available[#available + 1] = provider
+            end
+        end
+        if #available > 0 then
+            return available
+        end
+        return deferred
     end
 
     local preferred = {}
@@ -2479,7 +2791,22 @@ local function getProviderOrder(avoidProvider, allowEmbedFallback, forceProvider
         preferred[#preferred + 1] = provider
     end
 
-    return preferred
+    local available = {}
+    local cooldownDeferred = {}
+    local now = os.time()
+    for _, provider in ipairs(preferred) do
+        if provider ~= "embed" and getProviderCooldown(provider, now) then
+            cooldownDeferred[#cooldownDeferred + 1] = provider
+        else
+            available[#available + 1] = provider
+        end
+    end
+
+    if #available > 0 then
+        return available
+    end
+
+    return cooldownDeferred
 end
 
 local function resolveYoutubeStream(url, options, resolverOptions, callback)
@@ -2554,6 +2881,11 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
                 instance = cachedInstance,
                 status = cachedPayload.status,
                 resolvedUrl = redactUrlForDebug(cachedResolvedUrl),
+            })
+            emitResolverProgress(resolverOptions, {
+                status = "cache_hit",
+                provider = cachedProvider,
+                instance = cachedInstance,
             })
             callback(cloneTable(cached.payload))
             return
@@ -2741,132 +3073,164 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
             callback(fallback)
         end
 
-        local function tryProvider(index)
-            if index > #order then
+        local providerResolveReasons = {
+            yt_dlp_local = "resolved_yt_dlp_local",
+            extractor_http = "resolved_extractor_http",
+            cobalt = "resolved_cobalt",
+            invidious = "resolved_invidious",
+            piped = "resolved_piped",
+            embed = "embed_fallback",
+        }
+        local activeProviders = 0
+        local nextProviderIndex = 1
+        local chainFinished = false
+        local launchedProviders = {}
+        local hedgeDelayMs = getHedgeDelayMs()
+
+        local function resolveProvider(provider, done)
+            if provider == "yt_dlp_local" then
+                resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, done)
+            elseif provider == "extractor_http" then
+                resolveFromHttpExtractor(url, wantVideo, avoidResolvedUrl, done)
+            elseif provider == "cobalt" then
+                resolveFromCobalt(url, wantVideo, avoidResolvedUrl, resolverOptions.avoidInstance, done)
+            elseif provider == "invidious" then
+                resolveAcrossInstances(filteredInvidious, maxInstances, wantVideo, function(baseUrl, instanceDone)
+                    resolveInvidiousInstance(baseUrl, videoId, wantVideo, avoidResolvedUrl, instanceDone)
+                end, done)
+            elseif provider == "piped" then
+                resolveAcrossInstances(filteredPiped, maxInstances, wantVideo, function(baseUrl, instanceDone)
+                    resolvePipedInstance(baseUrl, videoId, wantVideo, avoidResolvedUrl, instanceDone)
+                end, done)
+            elseif provider == "embed" then
+                if allowEmbedFallback then
+                    local embedPayload = buildFallbackResult(url, "embed_fallback", "Using embedded YouTube as final fallback.")
+                    embedPayload.provider = "embed"
+                    embedPayload.instance = "youtube_embed"
+                    done(embedPayload, nil, makeTraceEntry("embed", "fallback", "embed_selected"))
+                    return
+                end
+                done(nil, "fallback_disabled", makeTraceEntry("embed", "skipped", "fallback_disabled"))
+            else
+                done(nil, "unknown_provider", makeTraceEntry(provider, "skipped", "unknown_provider"))
+            end
+        end
+
+        local launchNextProvider
+
+        local function finishChainIfExhausted()
+            if chainFinished then
+                return
+            end
+
+            if not shouldContinueResolve(resolverOptions) then
+                chainFinished = true
+                callback({
+                    ok = false,
+                    reason = "cancelled",
+                    warning = "Resolver cancelled.",
+                    trace = trace,
+                })
+                return
+            end
+
+            if nextProviderIndex > #order and activeProviders <= 0 then
+                chainFinished = true
                 PMMSDebug("resolver", "provider chain exhausted", {
                     url = url,
                     reason = finalFailureReason or "resolver_unavailable",
                 })
                 onResolved(nil, finalFailureReason or "resolver_unavailable")
-                return
+            end
+        end
+
+        launchNextProvider = function(reason)
+            if chainFinished or not shouldContinueResolve(resolverOptions) then
+                finishChainIfExhausted()
+                return false
             end
 
+            while nextProviderIndex <= #order and launchedProviders[nextProviderIndex] do
+                nextProviderIndex = nextProviderIndex + 1
+            end
+
+            if nextProviderIndex > #order then
+                finishChainIfExhausted()
+                return false
+            end
+
+            local index = nextProviderIndex
             local provider = order[index]
+            launchedProviders[index] = true
+            nextProviderIndex = index + 1
+            activeProviders = activeProviders + 1
+
             PMMSDebug("resolver", "trying provider", {
                 url = url,
                 provider = provider,
                 index = index,
                 total = #order,
+                reason = reason or "initial",
             })
-            if provider == "yt_dlp_local" then
-                resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, function(payload, reason, traceEntry)
-                    addTrace(traceEntry or makeTraceEntry("yt_dlp_local", payload and "success" or "failed", reason or "unknown"))
-                    if payload then
-                        onResolved(payload, "resolved_yt_dlp_local")
-                        return
-                    end
-                    PMMSDebug("resolver", "provider failed", {
-                        url = url,
-                        provider = "yt_dlp_local",
-                        reason = reason or "unknown",
-                    })
-                    finalFailureReason = reason or finalFailureReason
-                    tryProvider(index + 1)
-                end)
-            elseif provider == "extractor_http" then
-                resolveFromHttpExtractor(url, wantVideo, avoidResolvedUrl, function(payload, reason, traceEntry)
-                    addTrace(traceEntry or makeTraceEntry("extractor_http", payload and "success" or "failed", reason or "unknown"))
-                    if payload then
-                        onResolved(payload, "resolved_extractor_http")
-                        return
-                    end
-                    PMMSDebug("resolver", "provider failed", {
-                        url = url,
-                        provider = "extractor_http",
-                        reason = reason or "unknown",
-                    })
-                    finalFailureReason = reason or finalFailureReason
-                    tryProvider(index + 1)
-                end)
-            elseif provider == "cobalt" then
-                resolveFromCobalt(url, wantVideo, avoidResolvedUrl, resolverOptions.avoidInstance, function(payload, reason, traceEntry)
-                    addTrace(traceEntry or makeTraceEntry("cobalt", payload and "success" or "failed", reason or "unknown"))
-                    if payload then
-                        onResolved(payload, "resolved_cobalt")
-                        return
-                    end
-                    PMMSDebug("resolver", "provider failed", {
-                        url = url,
-                        provider = "cobalt",
-                        reason = reason or "unknown",
-                    })
-                    finalFailureReason = reason or finalFailureReason
-                    tryProvider(index + 1)
-                end)
-            elseif provider == "invidious" then
-                resolveAcrossInstances(filteredInvidious, maxInstances, wantVideo, function(baseUrl, done)
-                    resolveInvidiousInstance(baseUrl, videoId, wantVideo, avoidResolvedUrl, done)
-                end, function(payload, reason)
-                    if payload then
-                        addTrace(makeTraceEntry("invidious", "success", "resolved", { instance = payload.instance }))
-                        onResolved(payload, "resolved_invidious")
-                        return
-                    end
-                    addTrace(makeTraceEntry("invidious", "failed", reason or "resolver_unavailable"))
-                    PMMSDebug("resolver", "provider failed", {
-                        url = url,
-                        provider = "invidious",
-                        reason = reason or "resolver_unavailable",
-                    })
-                    finalFailureReason = reason or finalFailureReason
-                    tryProvider(index + 1)
-                end)
-            elseif provider == "piped" then
-                resolveAcrossInstances(filteredPiped, maxInstances, wantVideo, function(baseUrl, done)
-                    resolvePipedInstance(baseUrl, videoId, wantVideo, avoidResolvedUrl, done)
-                end, function(payload, reason)
-                    if payload then
-                        addTrace(makeTraceEntry("piped", "success", "resolved", { instance = payload.instance }))
-                        onResolved(payload, "resolved_piped")
-                        return
-                    end
-                    addTrace(makeTraceEntry("piped", "failed", reason or "resolver_unavailable"))
-                    PMMSDebug("resolver", "provider failed", {
-                        url = url,
-                        provider = "piped",
-                        reason = reason or "resolver_unavailable",
-                    })
-                    finalFailureReason = reason or finalFailureReason
-                    tryProvider(index + 1)
-                end)
-            elseif provider == "embed" then
-                if allowEmbedFallback then
-                    PMMSDebug("resolver", "embed fallback provider reached", {
-                        url = url,
-                    })
-                    addTrace(makeTraceEntry("embed", "fallback", "embed_selected"))
-                    local embedPayload = buildFallbackResult(url, "embed_fallback", "Using embedded YouTube as final fallback.")
-                    embedPayload.provider = "embed"
-                    embedPayload.instance = "youtube_embed"
-                    onResolved(embedPayload, "embed_fallback")
+
+            emitResolverProgress(resolverOptions, {
+                status = reason == "hedge" and "hedged" or "trying",
+                provider = provider,
+                index = index,
+                total = #order,
+            })
+
+            runProviderAttempt(provider, getProviderTimeoutMs(provider, { maxInstances = maxInstances }), resolverOptions, function(done)
+                resolveProvider(provider, done)
+            end, function(payload, providerReason, traceEntry)
+                activeProviders = math.max(0, activeProviders - 1)
+
+                if chainFinished then
+                    finishChainIfExhausted()
                     return
                 end
-                addTrace(makeTraceEntry("embed", "skipped", "fallback_disabled"))
-                PMMSDebug("resolver", "embed provider skipped because fallback is disabled", {
-                    url = url,
-                })
-                tryProvider(index + 1)
-            else
-                addTrace(makeTraceEntry(provider, "skipped", "unknown_provider"))
-                PMMSDebug("resolver", "unknown provider skipped", {
-                    url = url,
-                    provider = provider,
-                })
-                tryProvider(index + 1)
+
+                local traceStatus = payload and (provider == "embed" and "fallback" or "success") or "failed"
+                local traceReason = payload and "resolved" or (providerReason or "resolver_unavailable")
+                if traceEntry then
+                    addTrace(traceEntry)
+                elseif payload and payload.instance then
+                    addTrace(makeTraceEntry(provider, traceStatus, traceReason, { instance = payload.instance }))
+                else
+                    addTrace(makeTraceEntry(provider, traceStatus, traceReason))
+                end
+
+                if payload then
+                    chainFinished = true
+                    onResolved(payload, providerResolveReasons[provider] or ("resolved_" .. tostring(provider)))
+                    return
+                end
+
+                if providerReason ~= "cancelled" then
+                    PMMSDebug("resolver", "provider failed", {
+                        url = url,
+                        provider = provider,
+                        reason = providerReason or "resolver_unavailable",
+                    })
+                    finalFailureReason = providerReason or finalFailureReason
+                end
+
+                launchNextProvider("failure")
+                finishChainIfExhausted()
+            end)
+
+            if hedgeDelayMs > 0 then
+                SetTimeout(hedgeDelayMs, function()
+                    if not chainFinished and shouldContinueResolve(resolverOptions) and activeProviders > 0 then
+                        launchNextProvider("hedge")
+                    end
+                end)
             end
+
+            return true
         end
 
-        tryProvider(1)
+        launchNextProvider("initial")
     end)
 end
 
@@ -2880,33 +3244,118 @@ function ResolvePlaybackOptions(options, resolverOptions, callback)
     end
 
     local inflightKey = buildResolveInflightKey(options, resolverOptions)
-    local inflight = resolverOptions.forceRefresh ~= true and resolveInflight[inflightKey] or nil
+    local listener = {
+        callback = callback,
+        onProgress = type(resolverOptions.onProgress) == "function" and resolverOptions.onProgress or nil,
+        cancelKey = type(resolverOptions.cancelKey) == "string" and resolverOptions.cancelKey or nil,
+    }
+    local function deliverProgress(target, progress)
+        if type(target) ~= "table" or type(target.onProgress) ~= "function" then
+            return
+        end
+        if target.cancelKey and isResolveCancelled(target.cancelKey) then
+            return
+        end
+
+        local ok, err = pcall(target.onProgress, cloneTable(progress or {}))
+        if not ok then
+            PMMSDebug("resolver", "resolver progress callback failed", {
+                url = sourceUrl,
+                error = tostring(err),
+            })
+        end
+    end
+
+    cleanupCancelledResolves()
+
+    local inflight = resolveInflight[inflightKey]
     if inflight then
         PMMSDebug("resolver", "joining in-flight resolve", {
             url = sourceUrl,
             inflightKey = inflightKey,
-            listeners = #inflight,
+            listeners = #(inflight.listeners or {}),
         })
-        inflight[#inflight + 1] = callback
+        inflight.listeners = inflight.listeners or {}
+        inflight.listeners[#inflight.listeners + 1] = listener
+        deliverProgress(listener, {
+            status = "joined",
+            provider = "resolver",
+        })
         return
     end
 
-    if resolverOptions.forceRefresh ~= true then
-        resolveInflight[inflightKey] = { callback }
+    resolveInflight[inflightKey] = {
+        listeners = { listener },
+        startedAt = nowMs(),
+    }
+
+    local completed = false
+
+    resolverOptions.emitProgress = function(progress)
+        local state = resolveInflight[inflightKey]
+        if not state then
+            return
+        end
+        for _, item in ipairs(state.listeners or {}) do
+            deliverProgress(item, progress)
+        end
+    end
+
+    resolverOptions.shouldContinue = function()
+        if completed then
+            return false
+        end
+
+        local state = resolveInflight[inflightKey]
+        if not state then
+            return false
+        end
+
+        for _, item in ipairs(state.listeners or {}) do
+            if not item.cancelKey or not isResolveCancelled(item.cancelKey) then
+                return true
+            end
+        end
+
+        return false
     end
 
     local function finalize(ok, resolvedOptions, warning)
-        local listeners = resolveInflight[inflightKey]
-        if listeners then
-            resolveInflight[inflightKey] = nil
-            for _, listener in ipairs(listeners) do
-                listener(ok, resolvedOptions and cloneTable(resolvedOptions) or nil, warning)
+        if completed then
+            return
+        end
+
+        completed = true
+        local state = resolveInflight[inflightKey]
+        resolveInflight[inflightKey] = nil
+
+        if state then
+            for _, item in ipairs(state.listeners or {}) do
+                if (not item.cancelKey or not isResolveCancelled(item.cancelKey)) and type(item.callback) == "function" then
+                    item.callback(ok, resolvedOptions and cloneTable(resolvedOptions) or nil, warning)
+                end
             end
             return
         end
 
         callback(ok, resolvedOptions, warning)
     end
+
+    emitResolverProgress(resolverOptions, {
+        status = "started",
+        provider = "resolver",
+    })
+
+    SetTimeout(getAbsoluteResolveTimeoutMs(resolverOptions), function()
+        if completed then
+            return
+        end
+        emitResolverProgress(resolverOptions, {
+            status = "timeout",
+            provider = "resolver",
+        })
+        finalize(false, nil, "Resolver timed out.")
+    end)
 
     local resolved = cloneTable(options)
     resolved.originalUrl = resolved.originalUrl or sourceUrl

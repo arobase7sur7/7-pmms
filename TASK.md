@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**B-FIX** — Implement resolver fixes based on B-ANALYZE findings
+**C-ANALYZE** — Read server/queue.lua + server/main.lua + server/media.lua; document queue mutation and locking behavior
 
 ## Backlog
 
@@ -11,7 +11,7 @@
 
 ### Resolver (Problem 2)
 - [x] B-ANALYZE — Read `server/resolver.lua` + how it's called from `server/main.lua` or `server/media.lua`. Find: deduplication (yes/no), per-provider concurrency limits (yes/no), timeouts (yes/no), failover mechanism, how result is returned. Write findings below.
-- [ ] B-FIX     — Implement resolver fixes based on B-ANALYZE findings: dedup, semaphores, per-provider timeouts, adaptive ban, hedged failover, absolute timeout, progress events, cancel handler
+- [x] B-FIX     — Implement resolver fixes based on B-ANALYZE findings: dedup, semaphores, per-provider timeouts, adaptive ban, hedged failover, absolute timeout, progress events, cancel handler
 
 ### Queue / Race Conditions (Problem 3)
 - [ ] C-ANALYZE — Read `server/queue.lua` + `server/main.lua` + `server/media.lua`. Find: how queue is stored, what functions mutate it, whether any locking exists, whether version/optimistic locking exists. Write findings below.
@@ -79,6 +79,7 @@
 ---
 
 ## Completed
+<!-- ✅ B-FIX — 2026-05-22 -->
 <!-- ✅ B-ANALYZE — 2026-05-22 -->
 <!-- ✅ A-FIX — 2026-05-22 -->
 <!-- ✅ A-ANALYZE — 2026-05-22 -->

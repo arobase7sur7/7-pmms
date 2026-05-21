@@ -112,6 +112,20 @@ local function applyPlaybackToken(target, playbackToken)
     return target
 end
 
+local function createResolverCancelKey(handle, attemptId, playbackToken)
+    return ("%s:%s:%s"):format(tostring(handle or ""), tostring(attemptId or ""), tostring(playbackToken or ""))
+end
+
+local function cancelResolverRequestForContext(context, reason)
+    if type(CancelResolverRequest) ~= "function" or type(context) ~= "table" then
+        return
+    end
+
+    if type(context.resolverCancelKey) == "string" and context.resolverCancelKey ~= "" then
+        CancelResolverRequest(context.resolverCancelKey, reason or "cancelled")
+    end
+end
+
 local function setStartupState(handle, phase, message, details)
     local state = startupStates[handle] or {}
     state.handle = handle
@@ -194,6 +208,77 @@ local function buildStartupStateDetails(context, resolvedOptions, extras)
     end
 
     return details
+end
+
+local function getResolverProgressMessage(progress)
+    progress = type(progress) == "table" and progress or {}
+    local provider = type(progress.provider) == "string" and progress.provider or "resolver"
+    local label = ({
+        yt_dlp_local = "local resolver",
+        extractor_http = "HTTP resolver",
+        cobalt = "Cobalt resolver",
+        invidious = "Invidious",
+        piped = "Piped",
+        embed = "embedded fallback",
+        resolver = "resolver",
+    })[provider] or provider
+
+    if progress.status == "queued" then
+        return ("Waiting for %s."):format(label)
+    end
+    if progress.status == "trying" or progress.status == "started" then
+        return ("Trying %s."):format(label)
+    end
+    if progress.status == "hedged" then
+        return "Trying another resolver provider."
+    end
+    if progress.status == "cache_hit" then
+        return "Using cached resolver result."
+    end
+    if progress.status == "succeeded" then
+        return ("%s resolved the media source."):format(label)
+    end
+    if progress.status == "timeout" then
+        return ("%s timed out."):format(label)
+    end
+    if progress.status == "failed" then
+        return ("%s failed; trying fallback."):format(label)
+    end
+    if progress.status == "cancelled" then
+        return "Resolver cancelled."
+    end
+
+    return "Resolving media source."
+end
+
+local function pushResolverProgress(handle, src, options, progress)
+    handle = tonumber(handle)
+    if not handle then
+        return
+    end
+
+    local context = startContexts[handle]
+    if not context or context.source ~= src then
+        return
+    end
+
+    progress = type(progress) == "table" and cloneDeepTable(progress) or {}
+    local progressProvider = progress.provider ~= "resolver" and progress.provider or nil
+    local details = buildStartupStateDetails(context, context.currentOptions or options, {
+        resolverProgress = progress,
+        resolverStatus = progress.status,
+        resolverReason = progress.reason,
+        provider = progressProvider,
+        instance = progress.instance,
+    })
+
+    setStartupState(handle, "resolving", getResolverProgressMessage(progress), details)
+    TriggerClientEvent("pmms:resolverProgress", src, {
+        handle = handle,
+        attemptId = context.currentAttemptId,
+        playbackToken = context.playbackToken,
+        progress = progress,
+    })
 end
 
 function NormalizeLoopMode(loopMode, legacyLoop)
@@ -1293,7 +1378,7 @@ local function recordAutoProviderPlayback(options, resolver, outcome, reason, co
     RecordResolverProviderPlayback(resolver.provider, resolver.instance, outcome, elapsedMs, reason)
 end
 
-local function resolvePlaybackAndNotify(src, options, resolverOptions, callback)
+local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, callback)
     if type(ResolvePlaybackOptions) ~= "function" then
         PMMSDebug("resolver", "resolver function unavailable, using original options", {
             src = src,
@@ -1304,9 +1389,24 @@ local function resolvePlaybackAndNotify(src, options, resolverOptions, callback)
     end
 
     resolverOptions = buildEffectiveResolverOptions(options, resolverOptions)
+    local progressHandle = tonumber(handle)
+    local context = progressHandle and startContexts[progressHandle] or nil
+    if context and context.source == src then
+        resolverOptions.cancelKey = context.resolverCancelKey
+    end
+
+    local previousOnProgress = resolverOptions.onProgress
+    resolverOptions.onProgress = function(progress)
+        if type(previousOnProgress) == "function" then
+            pcall(previousOnProgress, progress)
+        end
+        pushResolverProgress(progressHandle, src, options, progress)
+    end
+
     local notifyOnFailure = resolverOptions == nil or resolverOptions.notifyOnFailure ~= false
     PMMSDebug("resolver", "resolve requested", {
         src = src,
+        handle = handle,
         url = redactUrlForDebug(options and options.url or nil),
         originalUrl = redactUrlForDebug(options and options.originalUrl or nil),
         forceRefresh = resolverOptions and resolverOptions.forceRefresh == true,
@@ -1477,6 +1577,7 @@ local function beginStartContext(handle, src, options, retries)
         audioFallbackAttempted = options and options.video == false or false,
         embedFallbackUsed = false,
     }
+    context.resolverCancelKey = createResolverCancelKey(handle, context.currentAttemptId, playbackToken)
 
     startContexts[handle] = context
     SetRestricted(handle, src)
@@ -1529,7 +1630,9 @@ local function rotateStartAttempt(handle)
     end
 
     local previousAttemptId = context.currentAttemptId
+    cancelResolverRequestForContext(context, "superseded")
     context.currentAttemptId = createStartAttemptId(handle)
+    context.resolverCancelKey = createResolverCancelKey(handle, context.currentAttemptId, context.playbackToken)
     context.updatedAt = os.time()
     startContexts[handle] = context
     return context, previousAttemptId
@@ -1538,6 +1641,7 @@ end
 local function clearStartContext(handle, preserveStartupState, notifyClient)
     local context = startContexts[handle]
     startContexts[handle] = nil
+    cancelResolverRequestForContext(context, "context_cleared")
 
     if context and notifyClient ~= false and context.source and context.currentAttemptId then
         TriggerClientEvent("pmms:startupStop", context.source, handle, context.currentAttemptId, context.playbackToken)
@@ -1618,6 +1722,7 @@ local function cancelStartupForSource(src, handle, attemptId, playbackToken)
     local currentPlaybackToken = startupContext.playbackToken
     local retryCount = tonumber(startupContext.retries) or 0
 
+    cancelResolverRequestForContext(startupContext, "cancelled")
     clearStartContext(handle, false, true)
     ClearRestricted(handle)
     expireStartupState(handle, "stopped", "Playback startup was cancelled.", {
@@ -2542,7 +2647,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             return
         end
 
-        resolvePlaybackAndNotify(src, finalIntent, resolverOptions or {}, function(ok, resolvedOptions, warning)
+        resolvePlaybackAndNotify(handle, src, finalIntent, resolverOptions or {}, function(ok, resolvedOptions, warning)
             local activeContext = startContexts[handle]
             if not activeContext or activeContext.source ~= src or tostring(activeContext.currentAttemptId) ~= tostring(attemptId) then
                 return
@@ -3337,7 +3442,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         allowEmbedFallback = retryEmbedFallbackFailure and false or resolverConfig.allowEmbedFallback == true,
     }
 
-    resolvePlaybackAndNotify(src, retryContext.options, resolverRetryOptions, function(ok, resolvedOptions, warning)
+    resolvePlaybackAndNotify(handle, src, retryContext.options, resolverRetryOptions, function(ok, resolvedOptions, warning)
         local activeContext = startContexts[handle]
         if not activeContext
             or activeContext.source ~= src
