@@ -1,15 +1,66 @@
 local entityCache = {}
 local entityHandleIndex = {}
-local entityCacheExpiry = 0
 local persistentPropEntities = {}
 local speakerPropEntities = {}
-local CACHE_DURATION = 2000
+local CACHE_DURATION_IDLE = 2400
+local CACHE_DURATION_ACTIVE = 1200
+local CACHE_DURATION_UI = 850
+local CACHE_DURATION_SELECTED = 450
+local CACHE_DURATION_ADMIN = 650
+local DISCOVERY_JOIN_JITTER_MS = 900
 local entityCacheStats = {
     objectCount = 0,
     vehicleCount = 0,
     networkedCount = 0,
     lastScanMs = 0,
+    cacheDurationMs = CACHE_DURATION_IDLE,
 }
+
+local function getInitialDiscoveryJitterMs()
+    local now = type(GetGameTimer) == "function" and GetGameTimer() or 0
+    local serverId = 0
+    if type(PlayerId) == "function" and type(GetPlayerServerId) == "function" then
+        serverId = tonumber(GetPlayerServerId(PlayerId())) or 0
+    end
+    return math.floor((now + (serverId * 131)) % DISCOVERY_JOIN_JITTER_MS)
+end
+
+local discoveryJoinJitterMs = getInitialDiscoveryJitterMs()
+local entityCacheExpiry = (type(GetGameTimer) == "function" and GetGameTimer() or 0) + discoveryJoinJitterMs
+
+function GetDiscoveryJoinJitterMs()
+    return discoveryJoinJitterMs
+end
+
+local function hasActiveMediaPlayers()
+    local players = type(GetActivePlayers) == "function" and GetActivePlayers() or nil
+    if type(players) ~= "table" then
+        return false
+    end
+    return next(players) ~= nil
+end
+
+local function getAdaptiveEntityCacheDuration()
+    local duration = CACHE_DURATION_IDLE
+
+    if hasActiveMediaPlayers() then
+        duration = math.min(duration, CACHE_DURATION_ACTIVE)
+    end
+
+    if type(IsUiOpen) == "function" and IsUiOpen() then
+        duration = math.min(duration, CACHE_DURATION_UI)
+    end
+
+    if type(GetSelectedUiHandle) == "function" and GetSelectedUiHandle() ~= nil then
+        duration = math.min(duration, CACHE_DURATION_SELECTED)
+    end
+
+    if type(GetAdminDiscoveryRange) == "function" and GetAdminDiscoveryRange() ~= nil then
+        duration = math.min(duration, CACHE_DURATION_ADMIN)
+    end
+
+    return duration
+end
 
 function GetMediaPlayerEntities()
     local now = GetGameTimer()
@@ -75,7 +126,8 @@ function GetMediaPlayerEntities()
 
     entityCache = entities
     entityHandleIndex = handleIndex
-    entityCacheExpiry = now + CACHE_DURATION
+    entityCacheStats.cacheDurationMs = getAdaptiveEntityCacheDuration()
+    entityCacheExpiry = now + entityCacheStats.cacheDurationMs
     entityCacheStats.objectCount = 0
     entityCacheStats.vehicleCount = 0
     for _, entry in ipairs(entities) do
@@ -89,8 +141,9 @@ function GetMediaPlayerEntities()
     return entities
 end
 
-function InvalidateEntityCache()
-    entityCacheExpiry = 0
+function InvalidateEntityCache(delayMs)
+    local delay = math.max(0, tonumber(delayMs) or 0)
+    entityCacheExpiry = GetGameTimer() + delay
     entityHandleIndex = {}
 end
 
@@ -136,6 +189,8 @@ function GetEntityCacheStats()
         vehicleCount = entityCacheStats.vehicleCount,
         networkedCount = entityCacheStats.networkedCount,
         lastScanMs = entityCacheStats.lastScanMs,
+        cacheDurationMs = entityCacheStats.cacheDurationMs,
+        discoveryJoinJitterMs = discoveryJoinJitterMs,
         cacheExpiresInMs = math.max(0, entityCacheExpiry - GetGameTimer()),
     }
 end

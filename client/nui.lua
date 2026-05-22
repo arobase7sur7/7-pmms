@@ -4,6 +4,7 @@ local baseVolumeKvpKey = "pmms:baseVolume:v1"
 local tooltipsEnabled = true
 local permissions = {}
 local localEqProfile = nil
+local selectedUiHandle = nil
 
 local function setBaseVolume(value)
     baseVolume = Clamp(value, 0, 100, 100)
@@ -53,6 +54,10 @@ end
 
 function GetPermissions()
     return permissions
+end
+
+function GetSelectedUiHandle()
+    return selectedUiHandle
 end
 
 local function getQueueExpectedRevision(handle)
@@ -778,8 +783,12 @@ end)
 
 function ShowUi(selectedHandle, openView)
     uiIsOpen = true
+    selectedUiHandle = selectedHandle
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
+    end
+    if type(InvalidateEntityCache) == "function" then
+        InvalidateEntityCache()
     end
     TriggerServerEvent("pmms:loadPermissions")
     SetNuiFocus(true, true)
@@ -814,8 +823,12 @@ end
 function HideUi()
     uiIsOpen = false
     adminDiscoveryRange = nil
+    selectedUiHandle = nil
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
+    end
+    if type(InvalidateEntityCache) == "function" then
+        InvalidateEntityCache(250)
     end
     SetNuiFocus(false, false)
     SendNUIMessage({ type = "hideUi" })

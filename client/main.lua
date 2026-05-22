@@ -604,6 +604,16 @@ local function getClosestActiveHandle(maxDistance)
     return nil
 end
 
+local function getUiDiscoveryRefreshMs()
+    if type(GetSelectedUiHandle) == "function" and GetSelectedUiHandle() ~= nil then
+        return 300
+    end
+    if type(GetAdminDiscoveryRange) == "function" and GetAdminDiscoveryRange() ~= nil then
+        return 450
+    end
+    return 650
+end
+
 RegisterNetEvent("pmms:startupAttempt", function(payload)
     if type(payload) ~= "table" or not payload.handle or not payload.attemptId or type(payload.resolvedOptions) ~= "table" then
         PMMSDebug("player", "client startup attempt ignored: invalid payload", {
@@ -920,9 +930,14 @@ end)
 
 Citizen.CreateThread(function()
     requestInitialStateSync(0)
+    local discoveryJitterMs = type(GetDiscoveryJoinJitterMs) == "function" and tonumber(GetDiscoveryJoinJitterMs()) or 0
+    if discoveryJitterMs and discoveryJitterMs > 0 then
+        Citizen.Wait(discoveryJitterMs)
+    end
 
     while true do
-        local waitTime = IsUiOpen() and 240 or 1000
+        local selectedHandle = type(GetSelectedUiHandle) == "function" and GetSelectedUiHandle() or nil
+        local waitTime = IsUiOpen() and (selectedHandle ~= nil and 170 or 240) or 1000
         local playerPos = GetEntityCoords(PlayerPedId())
         local maxRange = Config.maxRange or 60.0
         local rangeBuffer = 5.0
@@ -1049,7 +1064,7 @@ Citizen.CreateThread(function()
             local uiPlayerPos = GetEntityCoords(PlayerPedId())
             local usableMediaPlayers = cachedUsableMediaPlayers
 
-            if (uiNow - lastUsableMediaPlayersBuild) >= 650 then
+            if (uiNow - lastUsableMediaPlayersBuild) >= getUiDiscoveryRefreshMs() then
                 lastUsableMediaPlayersBuild = uiNow
                 usableMediaPlayers = {}
                 local entities = GetEntityDistanceSorted(uiPlayerPos)

@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**E-FIX** — Implement discovery fixes based on E-ANALYZE findings
+**F-ANALYZE** — Read server/database.lua and pmms.sql; document database behavior
 
 ## Backlog
 
@@ -23,7 +23,7 @@
 
 ### Discovery (Problem 5)
 - [x] E-ANALYZE — Read `client/entities.lua` + `client/main.lua`. Find: discovery mechanism (poll/push/both), poll interval, whether interval adapts when device is selected, whether mass-join jitter exists. Write findings below.
-- [ ] E-FIX     — Implement discovery fixes based on E-ANALYZE findings: adaptive interval, join jitter, optionally server-push nearby list
+- [x] E-FIX     — Implement discovery fixes based on E-ANALYZE findings: adaptive interval, join jitter, optionally server-push nearby list
 
 ### Database (Problem 6)
 - [ ] F-ANALYZE — Read `server/database.lua` + `pmms.sql`. Find: missing indexes, SELECT * queries, any existing caching. Write findings below.
@@ -104,6 +104,7 @@
 ---
 
 ## Completed
+<!-- ✅ E-FIX — 2026-05-22 -->
 <!-- ✅ E-ANALYZE — 2026-05-22 -->
 <!-- ✅ D-FIX — 2026-05-22 -->
 <!-- ✅ D-ANALYZE — 2026-05-22 -->
