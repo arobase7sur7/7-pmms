@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**D-ANALYZE** — Read client/main.lua and client/media.lua; document join sync behavior
+**D-FIX** — Implement join sync fixes based on D-ANALYZE findings
 
 ## Backlog
 
@@ -18,7 +18,7 @@
 - [x] C-FIX     — Implement queue fixes based on C-ANALYZE findings: per-device mutex, version counter, stale-rejection with resync
 
 ### Join Sync (Problem 4)
-- [ ] D-ANALYZE — Read `client/main.lua` + `client/media.lua` + how server sends state on join. Find: is latency compensation applied (yes/no), is there a drift correction loop (yes/no), does `onClientResourceStart` re-request state (yes/no). Write findings below.
+- [x] D-ANALYZE — Read `client/main.lua` + `client/media.lua` + how server sends state on join. Find: is latency compensation applied (yes/no), is there a drift correction loop (yes/no), does `onClientResourceStart` re-request state (yes/no). Write findings below.
 - [ ] D-FIX     — Implement join sync fixes based on D-ANALYZE findings: _sentAt timestamp, client-side latency compensation, drift correction loop, resource restart recovery
 
 ### Discovery (Problem 5)
@@ -78,7 +78,15 @@
 - Race risk for C-FIX: FiveM is cooperative, so two Lua chunks do not run at the exact same instant, but async resolver callbacks and deferred `EnqueueSync()` playback can apply stale queue decisions after later queue edits unless queue mutations are serialized per handle and checked against a queue/session revision.
 
 ### D-ANALYZE
-<!-- Fill in after reading the files -->
+- Server sync payloads are built by `BuildMediaPlayersSyncStateForPlayer()` in `server/media.lua` lines ~534-612. They include `mediaPlayers`, `startupStates`, and `deviceSessions`, but no `_sentAt`, server timer, or sync timestamp field.
+- Full and delta sync sends flow through `sendSyncToTarget()` in `server/main.lua` lines ~208-228, using `TriggerClientEvent` or `TriggerLatentClientEvent` based on encoded size. The send path does not stamp the payload immediately before dispatch.
+- Joining/initializing clients receive state from two targeted paths: `pmms:loadPermissions` sends permissions and a full sync to the requesting source in `server/media.lua` lines ~4296-4304, and `playerJoining` sends a full sync to the joining source at lines ~4307-4314.
+- `client/main.lua` applies full sync in `applyFullSyncPayload()` lines ~680-694 and delta sync in `applyDeltaSyncPayload()` lines ~696-717, then `reconcileSyncState()` records a snapshot for each active media player.
+- Latency compensation is not applied from server send time. `updateSnapshot()` stores `info.offset` plus local `GetGameTimer()` receive time at `client/main.lua` lines ~470-476, and `getInterpolatedOffset()` advances from that local receive time at lines ~487-509. Without a server `_sentAt`, network/latent delivery delay is treated as if playback started when the client received the sync.
+- There is lightweight offset interpolation, but no drift correction loop was found. The main client loop sends the computed `currentOffset` to the DUI browser at `client/main.lua` lines ~977-999, but neither `client/main.lua` nor `client/media.lua` compares browser current time against expected playback time or issues correction messages when drift exceeds a threshold.
+- Playback creation in `client/media.lua` lines ~105-187 uses the synced options directly; startup attempts are marked ready from the main loop at `client/main.lua` lines ~966-968. No join-specific offset adjustment happens in `InitMediaPlayer()` or `StartMediaPlayerStartupAttempt()`.
+- Resource restart recovery is partial. There is no `onClientResourceStart` handler in the client files; only `onResourceStop` cleanup exists at `client/main.lua` line ~1296. A startup `Citizen.CreateThread()` sends `pmms:loadSettings` and `pmms:loadPermissions` once at lines ~879-881, and `pmms:syncDelta` re-requests full state if a delta arrives before any full sync at lines ~804-810.
+- Server playback offset is computed from `os.time()` seconds in `server/main.lua` lines ~341-347 and media start stores `startTime = os.time() - options.offset` in `server/media.lua` lines ~2382-2383, so existing sync precision is one second unless D-FIX adds a millisecond timer field.
 
 ### E-ANALYZE
 <!-- Fill in after reading the files -->
@@ -89,6 +97,7 @@
 ---
 
 ## Completed
+<!-- ✅ D-ANALYZE — 2026-05-22 -->
 <!-- ✅ C-FIX — 2026-05-22 -->
 <!-- ✅ C-ANALYZE — 2026-05-22 -->
 <!-- ✅ B-FIX — 2026-05-22 -->
