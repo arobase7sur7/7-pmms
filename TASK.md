@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**E-ANALYZE** — Read client/entities.lua and client/main.lua; document discovery behavior
+**E-FIX** — Implement discovery fixes based on E-ANALYZE findings
 
 ## Backlog
 
@@ -22,7 +22,7 @@
 - [x] D-FIX     — Implement join sync fixes based on D-ANALYZE findings: _sentAt timestamp, client-side latency compensation, drift correction loop, resource restart recovery
 
 ### Discovery (Problem 5)
-- [ ] E-ANALYZE — Read `client/entities.lua` + `client/main.lua`. Find: discovery mechanism (poll/push/both), poll interval, whether interval adapts when device is selected, whether mass-join jitter exists. Write findings below.
+- [x] E-ANALYZE — Read `client/entities.lua` + `client/main.lua`. Find: discovery mechanism (poll/push/both), poll interval, whether interval adapts when device is selected, whether mass-join jitter exists. Write findings below.
 - [ ] E-FIX     — Implement discovery fixes based on E-ANALYZE findings: adaptive interval, join jitter, optionally server-push nearby list
 
 ### Database (Problem 6)
@@ -89,7 +89,14 @@
 - Server playback offset is computed from `os.time()` seconds in `server/main.lua` lines ~341-347 and media start stores `startTime = os.time() - options.offset` in `server/media.lua` lines ~2382-2383, so existing sync precision is one second unless D-FIX adds a millisecond timer field.
 
 ### E-ANALYZE
-<!-- Fill in after reading the files -->
+- Discovery is primarily client-side polling. `client/entities.lua` scans `GetGamePool("CObject")` and optionally `GetGamePool("CVehicle")` in `GetMediaPlayerEntities()` lines ~14-90, caches entries in `entityCache`, and exposes sorted results through `GetEntityDistanceSorted()` lines ~102-120.
+- Entity scan cache duration is fixed at `CACHE_DURATION = 2000` ms in `client/entities.lua` line ~6. The scan radius is `max(Config.maxDiscoveryDistance, Config.maxRange) + 10`, expanded by admin discovery range when staff controls set it, at lines ~22-32. Vehicle scan range is a fixed 50.0 when vehicle playback is enabled.
+- `client/main.lua` has the playback/discovery loop at lines ~921-1255. The loop sleeps 1000ms normally, 240ms while the UI is open, and drops to 170ms when an active media player is within playback enter range at lines ~925 and ~951-953.
+- UI device-list discovery is rebuilt only while the UI is open and only if at least 650ms elapsed since the last build, at `client/main.lua` lines ~1047-1055 and ~1192. It uses `GetEntityDistanceSorted()` for nearby entities, then supplements with audible active players, configured persistent devices, and admin devices.
+- Selected-device awareness is limited to `ShowUi(selectedHandle, openView)` passing `selectedHandle` to NUI in `client/nui.lua` lines ~779-807. No selected handle is fed back into `client/entities.lua`, no cache TTL changes for a selected/open device, and no selected-device-specific scan path was found.
+- Server push is limited to state/config events, not nearby discovery. `pmms:sync`/`pmms:syncDelta` update active state and linked speaker props, and `pmms:refreshPersistentEntities`/`pmms:loadSettings` refresh persistent props in `client/entities.lua` lines ~451-459. There is no server-pushed nearby list.
+- Cache invalidation exists when settings load or admin discovery range changes: `client/main.lua` invalidates entities on `pmms:loadSettings` lines ~861-880, and `client/nui.lua` invalidates on `setAdminDiscoveryRange` lines ~224-230.
+- No mass-join jitter was found. Startup sync requests immediately in `client/main.lua`, entity-cache expiry starts from first scan with a fixed 2000ms TTL, persistent entity refresh runs every 30000ms in `client/entities.lua` lines ~461-466, and no `math.random`/jitter is used in the discovery path.
 
 ### F-ANALYZE
 <!-- Fill in after reading the files -->
@@ -97,6 +104,7 @@
 ---
 
 ## Completed
+<!-- ✅ E-ANALYZE — 2026-05-22 -->
 <!-- ✅ D-FIX — 2026-05-22 -->
 <!-- ✅ D-ANALYZE — 2026-05-22 -->
 <!-- ✅ C-FIX — 2026-05-22 -->
