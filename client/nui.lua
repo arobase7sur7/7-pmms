@@ -55,6 +55,19 @@ function GetPermissions()
     return permissions
 end
 
+local function getQueueExpectedRevision(handle)
+    local sessions = type(GetDeviceSessions) == "function" and GetDeviceSessions() or nil
+    local session = sessions and (sessions[handle] or sessions[tostring(handle)])
+    local revision = tonumber(session and session.stateRevision)
+    if revision then
+        return revision
+    end
+
+    local mediaPlayers = type(GetMediaPlayerStates) == "function" and GetMediaPlayerStates() or nil
+    local state = mediaPlayers and (mediaPlayers[handle] or mediaPlayers[tostring(handle)])
+    return tonumber(state and state.stateRevision)
+end
+
 local function isLocalEqProfileActive()
     return type(localEqProfile) == "table" and localEqProfile.enabled == true
 end
@@ -467,17 +480,17 @@ RegisterNUICallback("seekForward", function(data, cb)
 end)
 
 RegisterNUICallback("previous", function(data, cb)
-    TriggerServerEvent("pmms:previous", data.handle)
+    TriggerServerEvent("pmms:previous", data.handle, getQueueExpectedRevision(data.handle))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("next", function(data, cb)
-    TriggerServerEvent("pmms:next", data.handle)
+    TriggerServerEvent("pmms:next", data.handle, getQueueExpectedRevision(data.handle))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("removeFromQueue", function(data, cb)
-    TriggerServerEvent("pmms:removeFromQueue", data.handle, data.index)
+    TriggerServerEvent("pmms:removeFromQueue", data.handle, data.index, getQueueExpectedRevision(data.handle))
     cb(json.encode({}))
 end)
 

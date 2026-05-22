@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**C-FIX** — Implement queue fixes based on C-ANALYZE findings
+**D-ANALYZE** — Read client/main.lua and client/media.lua; document join sync behavior
 
 ## Backlog
 
@@ -15,7 +15,7 @@
 
 ### Queue / Race Conditions (Problem 3)
 - [x] C-ANALYZE — Read `server/queue.lua` + `server/main.lua` + `server/media.lua`. Find: how queue is stored, what functions mutate it, whether any locking exists, whether version/optimistic locking exists. Write findings below.
-- [ ] C-FIX     — Implement queue fixes based on C-ANALYZE findings: per-device mutex, version counter, stale-rejection with resync
+- [x] C-FIX     — Implement queue fixes based on C-ANALYZE findings: per-device mutex, version counter, stale-rejection with resync
 
 ### Join Sync (Problem 4)
 - [ ] D-ANALYZE — Read `client/main.lua` + `client/media.lua` + how server sends state on join. Find: is latency compensation applied (yes/no), is there a drift correction loop (yes/no), does `onClientResourceStart` re-request state (yes/no). Write findings below.
@@ -89,6 +89,7 @@
 ---
 
 ## Completed
+<!-- ✅ C-FIX — 2026-05-22 -->
 <!-- ✅ C-ANALYZE — 2026-05-22 -->
 <!-- ✅ B-FIX — 2026-05-22 -->
 <!-- ✅ B-ANALYZE — 2026-05-22 -->

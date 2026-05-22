@@ -4255,7 +4255,7 @@ RegisterNetEvent("pmms:setLoopMode", function(handle, loopMode)
     end
 end)
 
-RegisterNetEvent("pmms:next", function(handle)
+RegisterNetEvent("pmms:next", function(handle, expectedRevision)
     local src = source
     if not IsMediaPlayerActive(handle) then
         return
@@ -4263,10 +4263,10 @@ RegisterNetEvent("pmms:next", function(handle)
     if not requirePermission(src, handle, "interact") then
         return
     end
-    PlayNextInQueue(handle, { manual = true, immediate = true, reason = "manual_next", source = src })
+    PlayNextInQueue(handle, { manual = true, immediate = true, reason = "manual_next", source = src, expectedRevision = expectedRevision })
 end)
 
-RegisterNetEvent("pmms:previous", function(handle)
+RegisterNetEvent("pmms:previous", function(handle, expectedRevision)
     local src = source
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
@@ -4274,10 +4274,10 @@ RegisterNetEvent("pmms:previous", function(handle)
     if not requirePermission(src, handle, "interact") then
         return
     end
-    PlayPreviousFromHistory(handle, { immediate = true, reason = "manual_previous", source = src })
+    PlayPreviousFromHistory(handle, { immediate = true, reason = "manual_previous", source = src, expectedRevision = expectedRevision })
 end)
 
-RegisterNetEvent("pmms:removeFromQueue", function(handle, id)
+RegisterNetEvent("pmms:removeFromQueue", function(handle, id, expectedRevision)
     local src = source
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
@@ -4285,7 +4285,7 @@ RegisterNetEvent("pmms:removeFromQueue", function(handle, id)
     if not requirePermission(src, handle, "interact") then
         return
     end
-    RemoveFromQueue(handle, id)
+    RemoveFromQueue(handle, id, expectedRevision, src)
 end)
 
 RegisterNetEvent("pmms:loadSettings", function()

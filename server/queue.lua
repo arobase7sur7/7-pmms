@@ -30,6 +30,47 @@ local function getQueueLookaheadCount()
     return math.max(0, tonumber(queueConfig.lookaheadCount) or 1)
 end
 
+local queueLocks = {}
+local queueLockQueues = {}
+
+local function getQueueLockKey(handle)
+    return tostring(tonumber(handle) or handle or "")
+end
+
+local function runQueueLocked(key, fn)
+    local ok, err = pcall(fn)
+    if not ok then
+        print("[7-pmms] Queue mutation error: " .. tostring(err))
+    end
+
+    local queue = queueLockQueues[key]
+    local nextRun = queue and table.remove(queue, 1) or nil
+    if nextRun then
+        Citizen.CreateThread(nextRun)
+        return
+    end
+
+    queueLocks[key] = nil
+    queueLockQueues[key] = nil
+end
+
+local function withQueueLock(handle, fn)
+    local key = getQueueLockKey(handle)
+    local function run()
+        runQueueLocked(key, fn)
+    end
+
+    if queueLocks[key] then
+        queueLockQueues[key] = queueLockQueues[key] or {}
+        queueLockQueues[key][#queueLockQueues[key] + 1] = run
+        return false
+    end
+
+    queueLocks[key] = true
+    run()
+    return true
+end
+
 local function getSessionForHandle(handle, seedOptions)
     if type(GetDeviceSession) ~= "function" then
         return nil
@@ -45,6 +86,36 @@ local function getSessionForHandle(handle, seedOptions)
     end
 
     return session
+end
+
+local function requestQueueResync(sourceId)
+    if not sourceId then
+        return
+    end
+
+    TriggerClientEvent("pmms:error", sourceId, "Queue changed. Please try again.")
+
+    if type(SendPmmsFullSync) == "function" then
+        SendPmmsFullSync(sourceId)
+    elseif type(RequestPmmsSync) == "function" then
+        RequestPmmsSync(sourceId, { full = true })
+    end
+end
+
+local function rejectStaleQueueMutation(handle, sourceId, expectedRevision)
+    local expected = tonumber(expectedRevision)
+    if not expected then
+        return false
+    end
+
+    local session = getSessionForHandle(handle)
+    local current = tonumber(session and session.stateRevision) or 0
+    if expected == current then
+        return false
+    end
+
+    requestQueueResync(sourceId)
+    return true
 end
 
 local function ensureSessionQueueMetadata(session)
@@ -69,6 +140,55 @@ local function ensureSessionQueueMetadata(session)
             entry.queueId = session.nextQueueEntryId
         end
     end
+end
+
+local function findQueueEntry(session, entry)
+    if type(session) ~= "table" or type(session.queue) ~= "table" or type(entry) ~= "table" then
+        return nil, nil
+    end
+
+    for index, candidate in ipairs(session.queue) do
+        if candidate == entry then
+            return index, candidate
+        end
+    end
+
+    local queueId = tonumber(entry.queueId)
+    if queueId then
+        for index, candidate in ipairs(session.queue) do
+            if tonumber(candidate and candidate.queueId) == queueId then
+                return index, candidate
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+local function resolveQueueIndex(session, index)
+    if type(session) ~= "table" or type(session.queue) ~= "table" then
+        return nil
+    end
+
+    ensureSessionQueueMetadata(session)
+
+    local parsedIndex = tonumber(index)
+    if not parsedIndex then
+        return nil
+    end
+
+    parsedIndex = math.floor(parsedIndex)
+    if parsedIndex >= 1 and parsedIndex <= #session.queue then
+        return parsedIndex
+    end
+
+    for queueIndex, entry in ipairs(session.queue) do
+        if tonumber(entry and entry.queueId) == parsedIndex then
+            return queueIndex
+        end
+    end
+
+    return nil
 end
 
 local function shuffleList(values)
@@ -421,32 +541,34 @@ local function prepareNextEntry(handle, mp, entry)
     ResolvePlaybackOptions(resolveIntent, {
         notifyOnFailure = false,
     }, function(ok, resolved)
-        entry.resolving = false
-        if not ok or type(resolved) ~= "table" then
-            entry.resolveFailedAt = os.time()
-            return
-        end
+        withQueueLock(handle, function()
+            entry.resolving = false
+            if not ok or type(resolved) ~= "table" then
+                entry.resolveFailedAt = os.time()
+                return
+            end
 
-        local liveSession = getSessionForHandle(handle)
-        local liveQueue = liveSession and liveSession.queue or nil
-        if type(liveQueue) ~= "table" or not liveQueue[1] then
-            return
-        end
+            local liveSession = getSessionForHandle(handle)
+            local liveQueue = liveSession and liveSession.queue or nil
+            if type(liveQueue) ~= "table" or not liveQueue[1] then
+                return
+            end
 
-        local liveEntry = liveQueue[1]
-        if getQueueEntrySignature(liveEntry) ~= signature then
-            return
-        end
+            local liveEntry = liveQueue[1]
+            if getQueueEntrySignature(liveEntry) ~= signature then
+                return
+            end
 
-        mergeResolvedIntoOptions(liveEntry.options or {}, resolved)
-        liveEntry.resolvedAt = os.time()
+            mergeResolvedIntoOptions(liveEntry.options or {}, resolved)
+            liveEntry.resolvedAt = os.time()
 
-        local liveMp = GetMediaPlayer(handle)
-        if liveMp then
-            storePreparedNext(liveMp, liveEntry, liveEntry.options)
-        end
+            local liveMp = GetMediaPlayer(handle)
+            if liveMp then
+                storePreparedNext(liveMp, liveEntry, liveEntry.options)
+            end
 
-        commitQueueState(handle, liveMp)
+            commitQueueState(handle, liveMp)
+        end)
     end)
 end
 
@@ -533,11 +655,15 @@ local function buildPlaybackOptions(handle, mp, session, queued, context)
     return options
 end
 
-function AddToQueue(handle, source, options)
+local function addToQueueUnlocked(handle, source, options, expectedRevision)
+    if rejectStaleQueueMutation(handle, source, expectedRevision) then
+        return false
+    end
+
     local mp = GetMediaPlayer(handle)
     local session = getSessionForHandle(handle, mp or options)
     if not session then
-        return
+        return false
     end
 
     ensureSessionQueueMetadata(session)
@@ -551,6 +677,7 @@ function AddToQueue(handle, source, options)
 
     queue[#queue + 1] = queueEntry
     session.queue = queue
+    ensureSessionQueueMetadata(session)
     syncShufflePreviewState(session, getLoopMode(mp or {
         loopMode = session.settings and session.settings.loopMode,
         loop = session.settings and session.settings.loopMode == "track",
@@ -567,23 +694,30 @@ function AddToQueue(handle, source, options)
         ResolvePlaybackOptions(resolveIntent, {
             notifyOnFailure = false,
         }, function(ok, resolved)
-            queueEntry.resolving = false
-            if not ok or type(resolved) ~= "table" or not queueEntry.options then
-                queueEntry.resolveFailedAt = os.time()
-                return
-            end
+            withQueueLock(handle, function()
+                local liveSession = getSessionForHandle(handle)
+                local _, liveEntry = findQueueEntry(liveSession, queueEntry)
+                if not liveEntry then
+                    return
+                end
 
-            mergeResolvedIntoOptions(queueEntry.options, resolved)
-            queueEntry.resolvedAt = os.time()
+                liveEntry.resolving = false
+                if not ok or type(resolved) ~= "table" or not liveEntry.options then
+                    liveEntry.resolveFailedAt = os.time()
+                    return
+                end
 
-            local liveMp = GetMediaPlayer(handle)
-            local liveSession = getSessionForHandle(handle)
-            local liveQueue = liveSession and liveSession.queue or nil
-            if liveMp and type(liveQueue) == "table" and liveQueue[1] == queueEntry then
-                storePreparedNext(liveMp, queueEntry, queueEntry.options)
-            end
+                mergeResolvedIntoOptions(liveEntry.options, resolved)
+                liveEntry.resolvedAt = os.time()
 
-            commitQueueState(handle, liveMp)
+                local liveMp = GetMediaPlayer(handle)
+                local liveQueue = liveSession and liveSession.queue or nil
+                if liveMp and type(liveQueue) == "table" and liveQueue[1] == liveEntry then
+                    storePreparedNext(liveMp, liveEntry, liveEntry.options)
+                end
+
+                commitQueueState(handle, liveMp)
+            end)
         end)
     end
 
@@ -592,18 +726,31 @@ function AddToQueue(handle, source, options)
     end
 
     commitQueueState(handle, mp)
+    return true
 end
 
-function RemoveFromQueue(handle, index)
+function AddToQueue(handle, source, options, expectedRevision)
+    local result
+    withQueueLock(handle, function()
+        result = addToQueueUnlocked(handle, source, options, expectedRevision)
+    end)
+    return result
+end
+
+local function removeFromQueueUnlocked(handle, index, expectedRevision, sourceId)
+    if rejectStaleQueueMutation(handle, sourceId, expectedRevision) then
+        return false
+    end
+
     local session = getSessionForHandle(handle)
     if not session then
-        return
+        return false
     end
 
     ensureSessionQueueMetadata(session)
-    local parsedIndex = tonumber(index)
+    local parsedIndex = resolveQueueIndex(session, index)
     if not parsedIndex then
-        return
+        return false
     end
 
     table.remove(session.queue, parsedIndex)
@@ -621,21 +768,34 @@ function RemoveFromQueue(handle, index)
     end
 
     commitQueueState(handle, mp)
+    return true
 end
 
-function PlayNextInQueue(handle, context)
+function RemoveFromQueue(handle, index, expectedRevision, sourceId)
+    local result
+    withQueueLock(handle, function()
+        result = removeFromQueueUnlocked(handle, index, expectedRevision, sourceId)
+    end)
+    return result
+end
+
+local function playNextInQueueUnlocked(handle, context)
+    context = context or {}
+    if rejectStaleQueueMutation(handle, context.source, context.expectedRevision) then
+        return false
+    end
+
     local mp = GetMediaPlayer(handle)
     if not mp then
-        return
+        return false
     end
 
     local session = getSessionForHandle(handle, mp)
     if not session then
-        return
+        return false
     end
 
     ensureSessionQueueMetadata(session)
-    context = context or {}
     local mode = getLoopMode(mp)
     local queue = session.queue or {}
 
@@ -674,7 +834,7 @@ function PlayNextInQueue(handle, context)
         if currentTrack and client then
             RemoveMediaPlayer(handle, true)
             if startPlaybackForOptions(client, currentTrack, preferredSource) then
-                return
+                return true
             end
         end
     end
@@ -695,7 +855,7 @@ function PlayNextInQueue(handle, context)
 
     if #queue <= 0 then
         RemoveMediaPlayer(handle)
-        return
+        return true
     end
 
     while #queue > 0 do
@@ -718,27 +878,41 @@ function PlayNextInQueue(handle, context)
 
         RemoveMediaPlayer(handle, true)
         if startPlaybackForOptions(client, queued, nextEntry and nextEntry.source) then
-            return
+            return true
         end
     end
 
     RemoveMediaPlayer(handle)
+    return true
 end
 
-function PlayPreviousFromHistory(handle, context)
+function PlayNextInQueue(handle, context)
+    local result
+    withQueueLock(handle, function()
+        result = playNextInQueueUnlocked(handle, context)
+    end)
+    return result
+end
+
+local function playPreviousFromHistoryUnlocked(handle, context)
+    context = context or {}
+    if rejectStaleQueueMutation(handle, context.source, context.expectedRevision) then
+        return false
+    end
+
     local mp = GetMediaPlayer(handle)
     local session = getSessionForHandle(handle, mp)
     if not session then
-        return
+        return false
     end
 
     local previousTrack = type(PopDeviceHistoryEntry) == "function" and PopDeviceHistoryEntry(handle) or nil
     if not previousTrack then
-        return
+        return false
     end
 
     local currentTrack = mp and captureCurrentTrackOptions(mp) or nil
-    local currentSource = mp and mp.lastSource or context and context.source or session.lastSource
+    local currentSource = mp and mp.lastSource or context.source or session.lastSource
     if currentTrack and currentTrack.url and type(PrependDeviceQueueEntry) == "function" then
         PrependDeviceQueueEntry(handle, currentSource, currentTrack)
         session = getSessionForHandle(handle, mp)
@@ -752,7 +926,7 @@ function PlayPreviousFromHistory(handle, context)
             liveSession.history[#liveSession.history + 1] = previousTrack
             commitQueueState(handle, mp)
         end
-        return
+        return false
     end
 
     local options = buildPlaybackOptions(handle, mp, session, previousTrack, {
@@ -761,7 +935,7 @@ function PlayPreviousFromHistory(handle, context)
         sourceId = currentSource or client,
     })
     if not options then
-        return
+        return false
     end
 
     if mp then
@@ -778,4 +952,13 @@ function PlayPreviousFromHistory(handle, context)
             avoidResolvedUrl = mp and mp.resolvedUrl or nil,
         })
     end)
+    return true
+end
+
+function PlayPreviousFromHistory(handle, context)
+    local result
+    withQueueLock(handle, function()
+        result = playPreviousFromHistoryUnlocked(handle, context)
+    end)
+    return result
 end
