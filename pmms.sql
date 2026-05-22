@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS `pmms_playlist_tracks` (
   `metadata` longtext DEFAULT NULL,
   `added_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  KEY `idx_pmms_playlist_tracks_playlist_added` (`playlist_id`, `added_at`, `id`),
   FOREIGN KEY (`playlist_id`) REFERENCES `pmms_playlists`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -29,7 +30,8 @@ CREATE TABLE IF NOT EXISTS `pmms_friends` (
   `status` enum('pending','accepted') NOT NULL DEFAULT 'pending',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `unique_friendship` (`user_license`, `friend_license`)
+  UNIQUE KEY `unique_friendship` (`user_license`, `friend_license`),
+  KEY `idx_pmms_friends_recipient_status` (`friend_license`, `status`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `pmms_known_players` (
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `pmms_shared_playlists` (
   `playlist_id` int(11) NOT NULL,
   `shared_with_license` varchar(64) NOT NULL,
   PRIMARY KEY (`playlist_id`, `shared_with_license`),
+  KEY `idx_pmms_shared_playlists_recipient` (`shared_with_license`, `playlist_id`),
   FOREIGN KEY (`playlist_id`) REFERENCES `pmms_playlists`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

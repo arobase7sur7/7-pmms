@@ -66,7 +66,11 @@ local function ensureSchemas()
             ensureIndex("pmms_playlists", "idx_pmms_playlists_owner_favorite", "INDEX `idx_pmms_playlists_owner_favorite` (`owner_license`, `is_favorite`, `created_at`)")
         end)
     end)
-    ensureColumn("pmms_playlist_tracks", "metadata", "LONGTEXT DEFAULT NULL")
+    ensureColumn("pmms_playlist_tracks", "metadata", "LONGTEXT DEFAULT NULL", function()
+        ensureIndex("pmms_playlist_tracks", "idx_pmms_playlist_tracks_playlist_added", "INDEX `idx_pmms_playlist_tracks_playlist_added` (`playlist_id`, `added_at`, `id`)")
+    end)
+    ensureIndex("pmms_friends", "idx_pmms_friends_recipient_status", "INDEX `idx_pmms_friends_recipient_status` (`friend_license`, `status`, `created_at`)")
+    ensureIndex("pmms_shared_playlists", "idx_pmms_shared_playlists_recipient", "INDEX `idx_pmms_shared_playlists_recipient` (`shared_with_license`, `playlist_id`)")
     ensureTable("pmms_known_players", [[
         CREATE TABLE IF NOT EXISTS `pmms_known_players` (
           `license` varchar(64) NOT NULL,

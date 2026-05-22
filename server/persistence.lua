@@ -22,6 +22,7 @@ local persistentMetaTableCreateSql = [[
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 local buildDefaultMediaPlayersForClient
+local persistentDeviceRowsCache = nil
 
 local function syncSettings(target)
     if type(InvalidateModelConfigCache) == "function" then
@@ -85,6 +86,64 @@ local function cloneForStorage(value, seen)
         copy[key] = cloneForStorage(entry, seen)
     end
     return copy
+end
+
+local function clonePersistentDeviceRows(rows)
+    local copy = {}
+    if type(rows) ~= "table" then
+        return copy
+    end
+
+    for index, row in ipairs(rows) do
+        copy[index] = {
+            handle = row.handle,
+            x = row.x,
+            y = row.y,
+            z = row.z,
+            data = row.data,
+        }
+    end
+
+    return copy
+end
+
+local function setPersistentDeviceRowsCache(rows)
+    persistentDeviceRowsCache = clonePersistentDeviceRows(rows)
+end
+
+local function upsertPersistentDeviceRowsCache(handle, plain, encoded)
+    if type(persistentDeviceRowsCache) ~= "table" then
+        return
+    end
+
+    local row = {
+        handle = handle,
+        x = plain.x,
+        y = plain.y,
+        z = plain.z,
+        data = encoded,
+    }
+
+    for index, existing in ipairs(persistentDeviceRowsCache) do
+        if tostring(existing.handle or "") == tostring(handle) then
+            persistentDeviceRowsCache[index] = row
+            return
+        end
+    end
+
+    persistentDeviceRowsCache[#persistentDeviceRowsCache + 1] = row
+end
+
+local function removePersistentDeviceRowsCache(handle)
+    if type(persistentDeviceRowsCache) ~= "table" then
+        return
+    end
+
+    for index = #persistentDeviceRowsCache, 1, -1 do
+        if tostring(persistentDeviceRowsCache[index].handle or "") == tostring(handle) then
+            table.remove(persistentDeviceRowsCache, index)
+        end
+    end
 end
 
 buildDefaultMediaPlayersForClient = function()
@@ -216,6 +275,7 @@ local function savePersistentDeviceToDatabase(coords, data)
                 `data` = VALUES(`data`),
                 `updated_at` = CURRENT_TIMESTAMP
         ]], { handle, plain.x, plain.y, plain.z, encoded })
+        upsertPersistentDeviceRowsCache(handle, plain, encoded)
         markFileMigrationDone()
     end)
 end
@@ -232,6 +292,7 @@ local function deletePersistentDeviceFromDatabase(coords)
             return
         end
         MySQL.update("DELETE FROM pmms_persistent_devices WHERE `handle` = ?", { handle })
+        removePersistentDeviceRowsCache(handle)
     end)
 end
 
@@ -272,6 +333,38 @@ local function loadFileDefaultMediaPlayers()
     return count
 end
 
+local function applyDatabaseDefaultMediaPlayersRows(rows, done)
+    local count = 0
+    if type(rows) == "table" then
+        for _, row in ipairs(rows) do
+            local decoded = decodeJson(row.data)
+            if type(decoded) == "table" then
+                local entry = normalizeLoadedPersistentEntry(decoded, { x = row.x, y = row.y, z = row.z })
+                if entry then
+                    mergeDefaultMediaPlayer(entry)
+                    count = count + 1
+                end
+            end
+        end
+    end
+
+    if count == 0 then
+        MySQL.scalar("SELECT `value` FROM pmms_persistence_meta WHERE `name` = 'default_media_players_migrated'", {}, function(value)
+            if not value then
+                if loadFileDefaultMediaPlayers() > 0 then
+                    markFileMigrationDone()
+                end
+            end
+            syncSettings()
+            if done then done() end
+        end)
+        return
+    end
+
+    syncSettings()
+    if done then done() end
+end
+
 local function loadDatabaseDefaultMediaPlayers(done)
     ensurePersistentDeviceTable(function(ready)
         if ready ~= true then
@@ -281,36 +374,14 @@ local function loadDatabaseDefaultMediaPlayers(done)
             return
         end
 
-        MySQL.query("SELECT `x`, `y`, `z`, `data` FROM pmms_persistent_devices ORDER BY `updated_at` ASC", {}, function(rows)
-            local count = 0
-            if type(rows) == "table" then
-                for _, row in ipairs(rows) do
-                    local decoded = decodeJson(row.data)
-                    if type(decoded) == "table" then
-                        local entry = normalizeLoadedPersistentEntry(decoded, { x = row.x, y = row.y, z = row.z })
-                        if entry then
-                            mergeDefaultMediaPlayer(entry)
-                            count = count + 1
-                        end
-                    end
-                end
-            end
+        if type(persistentDeviceRowsCache) == "table" then
+            applyDatabaseDefaultMediaPlayersRows(persistentDeviceRowsCache, done)
+            return
+        end
 
-            if count == 0 then
-                MySQL.scalar("SELECT `value` FROM pmms_persistence_meta WHERE `name` = 'default_media_players_migrated'", {}, function(value)
-                    if not value then
-                        if loadFileDefaultMediaPlayers() > 0 then
-                            markFileMigrationDone()
-                        end
-                    end
-                    syncSettings()
-                    if done then done() end
-                end)
-                return
-            end
-
-            syncSettings()
-            if done then done() end
+        MySQL.query("SELECT `handle`, `x`, `y`, `z`, `data` FROM pmms_persistent_devices ORDER BY `updated_at` ASC", {}, function(rows)
+            setPersistentDeviceRowsCache(rows)
+            applyDatabaseDefaultMediaPlayersRows(persistentDeviceRowsCache, done)
         end)
     end)
 end

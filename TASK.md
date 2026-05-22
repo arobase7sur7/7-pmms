@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**F-FIX** — Add missing indexes and persistence cache fixes based on F-ANALYZE findings
+**G** — Read config/config.lua in full and add missing backend config keys from PLAN_BACKEND.md
 
 ## Backlog
 
@@ -27,7 +27,7 @@
 
 ### Database (Problem 6)
 - [x] F-ANALYZE — Read `server/database.lua` + `pmms.sql`. Find: missing indexes, SELECT * queries, any existing caching. Write findings below.
-- [ ] F-FIX     — Add missing indexes to pmms.sql; fix SELECT * in database.lua; add persistent device cache if warranted
+- [x] F-FIX     — Add missing indexes to pmms.sql; fix SELECT * in database.lua; add persistent device cache if warranted
 
 ### Config
 - [ ] G         — Read `config/config.lua` in full. Add only the Config keys from PLAN_BACKEND.md that don't already exist.
@@ -112,6 +112,7 @@
 ---
 
 ## Completed
+<!-- ✅ F-FIX — 2026-05-22 -->
 <!-- ✅ F-ANALYZE — 2026-05-22 -->
 <!-- ✅ E-FIX — 2026-05-22 -->
 <!-- ✅ E-ANALYZE — 2026-05-22 -->
