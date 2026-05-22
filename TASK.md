@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**DONE** — Backend reliability backlog complete
+**H-FIX** — Fix YouTube fallback, search thumbnails, and crowded nearby-device UI based on H-ANALYZE findings
 
 ## Backlog
 
@@ -31,6 +31,10 @@
 
 ### Config
 - [x] G         — Read `config/config.lua` in full. Add only the Config keys from PLAN_BACKEND.md that don't already exist.
+
+### Playback / UI Regression
+- [x] H-ANALYZE — Read `server/resolver.lua`, `server/search.lua`, `server/media.lua`, `client/dui.lua`, `client/nui.lua`, `http/dui_runtime/index.html`, `http/dui_runtime/script.js`, `http/dui_runtime/style.css`, `nui/src/App.tsx`, `nui/src/legacy/controller.js`, `nui/src/styles.css`, and built `ui/*` assets. Find: when embed fallback is selected, why blocked playback falls back to YouTube, how search thumbnails are surfaced, and how nearby devices render when crowded. Write findings below.
+- [ ] H-FIX     — Implement fixes based on H-ANALYZE findings: avoid embedded YouTube fallback for normal playback, prefer direct/proxied resolver streams or structured failure, restore thumbnails, and keep nearby devices to one row with a More modal.
 
 ---
 
@@ -109,9 +113,21 @@
 - `pmms_known_players`, `pmms_persistent_devices`, and `pmms_persistence_meta` all have primary keys for their direct lookup paths. `pmms_persistent_devices` also has a coordinate index `(x, y, z)`.
 - `server/database.lua` ensures newer persistent tables exist, but persistent-device read/write behavior is outside this file; `server/persistence.lua` contains `SELECT x, y, z, data FROM pmms_persistent_devices ORDER BY updated_at ASC`, so F-FIX should read that file before deciding on a persistent-device cache.
 
+### H-ANALYZE
+- `server/resolver.lua` still has full embed fallback support. `isEmbedFallbackAllowed()` returns true when `Config.resolver.allowEmbedFallback` and `fallbackOnFailure` are true; `getProviderOrder()` appends `embed`; provider exhaustion and failed audio fallback create `provider = "embed"` / `instance = "youtube_embed"` payloads.
+- `config/config.lua` currently enables `Config.resolver.allowEmbedFallback = true`, `fallbackOnFailure = true`, and also exposes an enabled `youtube_embed` search source, so normal YouTube playback can end up in YouTube IFrame API playback after all direct providers fail.
+- `server/media.lua` maps `youtube`, `youtube_embed`, and `embed` provider values to `embed`; explicit non-auto provider choices disable embed fallback, but default Auto requests inherit the global config. Startup/local playback retries pass `allowEmbedFallback = resolverConfig.allowEmbedFallback == true` unless the specific failure was classified as `youtube_embed_blocked`.
+- `http/dui_runtime/script.js` only creates the YouTube IFrame player when resolver metadata or explicit provider marks playback as embed. The repeated `web-share`, permissions-policy, and postMessage warnings are side effects of loading YouTube's iframe/widget scripts; the actual fatal path is `onError` 101/150 mapped to "Embedded YouTube playback is blocked by the video owner."
+- Direct resolver streams are played through `<video>`/MediaElement/HLS.js. The `NotSupportedError` / media error code 4 path reports back through `pmms:startupError` or `pmms:localPlaybackError`, so H-FIX should keep retrying direct providers and then fail cleanly instead of selecting embed.
+- `server/search.lua` normalizes thumbnails by accepting only absolute/protocol-relative URLs. Piped and some Invidious search responses can return relative thumbnail paths, so those are dropped; Piped results also do not extract/store `videoId`, removing the easiest fallback to `i.ytimg.com`.
+- `nui/src/legacy/controller.js` renders search thumbnails as an unquoted CSS `background-image:url(...)` string. If the server sends a usable URL with query characters, this can still be fragile in NUI.
+- Nearby devices are rendered by `renderDevicesGrid()` / `updateDevicesGridInPlace()` in `nui/src/legacy/controller.js`. It currently renders every usable device as a full `.device-card`; CSS uses a wrapping grid, so many nearby devices create multiple rows of cards and animated gradient overlays.
+- The React shell in `nui/src/App.tsx` only supplies containers and static modals; the legacy controller owns search result rendering and device-card behavior. Built `ui/app.js` and `ui/style.css` are served by `fxmanifest.lua`, so source changes must be rebuilt into `ui/*`.
+
 ---
 
 ## Completed
+<!-- ✅ H-ANALYZE — 2026-05-22 -->
 <!-- ✅ G — 2026-05-22 -->
 <!-- ✅ F-FIX — 2026-05-22 -->
 <!-- ✅ F-ANALYZE — 2026-05-22 -->
