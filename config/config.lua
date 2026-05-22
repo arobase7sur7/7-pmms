@@ -8,6 +8,7 @@ Config.commandPrefix                   = "pmms"
 Config.commandSeparator                = "_"
 
 Config.maxDiscoveryDistance            = 30.0
+Config.discoveryUpdateDistance         = 10.0
 Config.defaultRange                    = 30.0
 Config.maxRange                        = 200.0
 Config.adminMaxRange                   = 10000.0
@@ -47,6 +48,14 @@ Config.debug                           = {
 
 Config.ui                              = {
     maxHistorySyncItems = 30,
+}
+
+Config.sync                            = {
+    throttleMs = 500,
+    fullSyncIntervalMs = 30000,
+    driftCheckIntervalS = 30,
+    maxDriftSeconds = 2.0,
+    joinJitterMs = 500,
 }
 
 Config.admin                           = {
@@ -266,6 +275,18 @@ Config.resolver                        = {
         timeoutMs = 9000,
         cooldownSeconds = 300,
         maxAttemptsPerProvider = 2,
+        maxGlobalConcurrent = 8,
+        absoluteTimeoutSeconds = 45,
+        hedgeRatio = 0.6,
+        softBanDurationSeconds = 60,
+        hardBanDurationSeconds = 300,
+        providers = {
+            yt_dlp_local = { maxConcurrent = 3, timeoutSeconds = 20 },
+            extractor_http = { maxConcurrent = 5, timeoutSeconds = 15 },
+            cobalt = { maxConcurrent = 4, timeoutSeconds = 12 },
+            invidious = { maxConcurrent = 6, timeoutSeconds = 10 },
+            piped = { maxConcurrent = 6, timeoutSeconds = 10 },
+        },
     },
 
     -- Optional Cobalt media downloader API endpoints. This is the most reliable

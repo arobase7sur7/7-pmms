@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**G** — Read config/config.lua in full and add missing backend config keys from PLAN_BACKEND.md
+**DONE** — Backend reliability backlog complete
 
 ## Backlog
 
@@ -30,7 +30,7 @@
 - [x] F-FIX     — Add missing indexes to pmms.sql; fix SELECT * in database.lua; add persistent device cache if warranted
 
 ### Config
-- [ ] G         — Read `config/config.lua` in full. Add only the Config keys from PLAN_BACKEND.md that don't already exist.
+- [x] G         — Read `config/config.lua` in full. Add only the Config keys from PLAN_BACKEND.md that don't already exist.
 
 ---
 
@@ -112,6 +112,7 @@
 ---
 
 ## Completed
+<!-- ✅ G — 2026-05-22 -->
 <!-- ✅ F-FIX — 2026-05-22 -->
 <!-- ✅ F-ANALYZE — 2026-05-22 -->
 <!-- ✅ E-FIX — 2026-05-22 -->
