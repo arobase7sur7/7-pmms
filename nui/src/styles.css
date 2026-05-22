@@ -810,10 +810,22 @@ nav {
 }
 
 #devices-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
   gap: 12px;
   margin-bottom: 28px;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+#devices-grid .device-card {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 210px;
+}
+
+#devices-grid .empty-state {
+  flex: 1 1 100%;
 }
 
 .device-card {
@@ -831,6 +843,9 @@ nav {
   gap: 12px;
   position: relative;
   overflow: hidden;
+  font: inherit;
+  color: inherit;
+  text-align: left;
 }
 
 .device-card::before {
@@ -840,6 +855,12 @@ nav {
   background: linear-gradient(135deg, var(--accent-dim) 0%, transparent 60%);
   opacity: 0;
   transition: opacity var(--transition);
+  pointer-events: none;
+}
+
+.device-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .device-card:hover {
@@ -908,6 +929,35 @@ nav {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.device-more-card {
+  border-style: dashed;
+}
+
+.device-more-card:hover {
+  border-color: var(--accent);
+}
+
+.device-more-icon {
+  color: var(--text-accent);
+}
+
+.nearby-devices-modal {
+  width: 620px;
+}
+
+.nearby-device-modal-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  max-height: 54vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.nearby-device-modal-list .device-card {
+  min-height: 126px;
 }
 
 #now-playing-panel {

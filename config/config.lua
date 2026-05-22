@@ -348,7 +348,7 @@ Config.resolver                        = {
     allowAudioFallback = true,
 
     -- Embedded YouTube can show ads or hang in DUI. Keep it opt-in so false if you see too many ads
-    allowEmbedFallback = true,
+    allowEmbedFallback = false,
 
     -- Legacy switch for resolver fallback behavior. Embedded fallback still requires allowEmbedFallback
     fallbackOnFailure = true,
@@ -583,7 +583,7 @@ Config.searchSources                   = {
     },
     ["youtube_embed"] = {
         label = "YouTube Embed",
-        enabled = true,
+        enabled = false,
         icon = "video",
         placeholder = "Search YouTube (embed)...",
         maxResults = 10,

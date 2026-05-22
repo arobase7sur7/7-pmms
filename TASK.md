@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**H-FIX** — Fix YouTube fallback, search thumbnails, and crowded nearby-device UI based on H-ANALYZE findings
+**DONE** — Playback/UI regression fixes complete
 
 ## Backlog
 
@@ -34,7 +34,7 @@
 
 ### Playback / UI Regression
 - [x] H-ANALYZE — Read `server/resolver.lua`, `server/search.lua`, `server/media.lua`, `client/dui.lua`, `client/nui.lua`, `http/dui_runtime/index.html`, `http/dui_runtime/script.js`, `http/dui_runtime/style.css`, `nui/src/App.tsx`, `nui/src/legacy/controller.js`, `nui/src/styles.css`, and built `ui/*` assets. Find: when embed fallback is selected, why blocked playback falls back to YouTube, how search thumbnails are surfaced, and how nearby devices render when crowded. Write findings below.
-- [ ] H-FIX     — Implement fixes based on H-ANALYZE findings: avoid embedded YouTube fallback for normal playback, prefer direct/proxied resolver streams or structured failure, restore thumbnails, and keep nearby devices to one row with a More modal.
+- [x] H-FIX     — Implement fixes based on H-ANALYZE findings: avoid embedded YouTube fallback for normal playback, prefer direct/proxied resolver streams or structured failure, restore thumbnails, and keep nearby devices to one row with a More modal.
 
 ---
 
@@ -127,6 +127,7 @@
 ---
 
 ## Completed
+<!-- ✅ H-FIX — 2026-05-22 -->
 <!-- ✅ H-ANALYZE — 2026-05-22 -->
 <!-- ✅ G — 2026-05-22 -->
 <!-- ✅ F-FIX — 2026-05-22 -->

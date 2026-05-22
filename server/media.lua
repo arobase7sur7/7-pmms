@@ -1268,7 +1268,10 @@ local function normalizeYoutubeResolverProvider(value)
     if provider == "" or provider == "auto" then
         return "auto"
     end
-    if provider == "youtube" or provider == "youtube_embed" or provider == "embed" then
+    if provider == "youtube" then
+        return "auto"
+    end
+    if provider == "youtube_embed" or provider == "embed" then
         return "embed"
     end
     if provider == "yt_dlp" or provider == "ytdlp" or provider == "yt_dlp_local" then
@@ -1301,18 +1304,30 @@ end
 local function buildEffectiveResolverOptions(options, resolverOptions)
     local effective = cloneDeepTable(resolverOptions or {})
     local provider, explicit = getRequestedYoutubeResolverProvider(options)
+    local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
+    local sourceUrl = type(options) == "table" and (options.originalUrl or options.url) or nil
+    local embedAllowed = resolverConfig.allowEmbedFallback == true
 
     if provider and provider ~= "auto" then
-        effective.forceProvider = provider
         effective.forceRefresh = true
         effective.allowAudioFallback = false
         if provider == "embed" then
-            effective.allowFallback = true
-            effective.allowEmbedFallback = true
+            if embedAllowed then
+                effective.forceProvider = provider
+                effective.allowFallback = true
+                effective.allowEmbedFallback = true
+            else
+                effective.allowFallback = false
+                effective.allowEmbedFallback = false
+                effective.forceProvider = nil
+            end
         else
+            effective.forceProvider = provider
             effective.allowEmbedFallback = false
         end
     elseif explicit then
+        effective.allowEmbedFallback = false
+    elseif isYoutubeLikeUrl(sourceUrl) then
         effective.allowEmbedFallback = false
     end
 
@@ -3439,7 +3454,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         notifyOnFailure = false,
         allowFallback = true,
         allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
-        allowEmbedFallback = retryEmbedFallbackFailure and false or resolverConfig.allowEmbedFallback == true,
+        allowEmbedFallback = false,
     }
 
     resolvePlaybackAndNotify(handle, src, retryContext.options, resolverRetryOptions, function(ok, resolvedOptions, warning)
@@ -3608,7 +3623,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         notifyOnFailure = false,
         allowFallback = true,
         allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
-        allowEmbedFallback = retryEmbedFallbackFailure and false or resolverConfig.allowEmbedFallback == true,
+        allowEmbedFallback = false,
         replaceActiveOnReady = true,
     })
 end)

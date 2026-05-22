@@ -104,8 +104,7 @@ var YOUTUBE_PROVIDER_OPTIONS = [
     { value: 'extractor_http', label: 'Extractor API', description: 'Use configured resolver endpoints.' },
     { value: 'cobalt', label: 'Cobalt', description: 'Use configured Cobalt endpoints.' },
     { value: 'invidious', label: 'Invidious', description: 'Use public/private Invidious streams.' },
-    { value: 'piped', label: 'Piped', description: 'Use public/private Piped streams.' },
-    { value: 'embed', label: 'YouTube Embed', description: 'Opt-in only. May show ads.', danger: true }
+    { value: 'piped', label: 'Piped', description: 'Use public/private Piped streams.' }
 ];
 var LOOP_MODE_ORDER = ['off', 'track', 'queue', 'shuffle_once', 'shuffle_loop'];
 var LOOP_MODE_LABELS = {
@@ -739,19 +738,12 @@ function updateYoutubeProviderControl() {
     var option = getYoutubeProviderOption(mode);
     var visible = shouldShowYoutubeProviderControl();
     btn.classList.toggle('visible', visible);
-    btn.classList.toggle('embed-selected', mode === 'embed');
+    btn.classList.remove('embed-selected');
     btn.textContent = option && option.label ? option.label : 'Auto';
-    btn.title = mode === 'embed'
-        ? 'YouTube Embed is opt-in and can show ads.'
-        : 'Choose the YouTube resolver provider.';
+    btn.title = 'Choose the YouTube resolver provider.';
 
     if (!visible) {
         closeYoutubeProviderMenu();
-    }
-
-    var warning = document.querySelector('#youtube-provider-menu .youtube-provider-warning');
-    if (warning) {
-        warning.classList.toggle('visible', mode === 'embed');
     }
 
     document.querySelectorAll('#youtube-provider-menu .youtube-provider-option').forEach(function(item) {
@@ -773,17 +765,13 @@ function ensureYoutubeProviderMenu() {
                 '<span class="youtube-provider-option-title">' + safeText(option.label) + '</span>' +
                 '<span class="youtube-provider-option-desc">' + safeText(option.description) + '</span>' +
             '</button>';
-        }).join('') +
-        '<div class="youtube-provider-warning">YouTube Embed is not ad-free. It can show ads or fail in DUI, so it is only used when selected here.</div>';
+        }).join('');
         document.body.appendChild(menu);
 
         menu.querySelectorAll('.youtube-provider-option').forEach(function(item) {
             item.onclick = function(e) {
                 e.stopPropagation();
                 youtubeProviderMode = this.dataset.provider || 'auto';
-                if (youtubeProviderMode === 'embed') {
-                    showNotification('YouTube Embed can show ads and is not recommended for RP.', 'YouTube Provider', '#ff4444');
-                }
                 updateYoutubeProviderControl();
                 closeYoutubeProviderMenu();
             };
@@ -819,10 +807,7 @@ function applyYoutubeProviderPreference(options) {
     var currentSource = getCurrentSearchSource && getCurrentSearchSource();
 
     if (currentSource === 'youtube_embed' || next.source === 'youtube_embed') {
-        next.youtubeProvider = 'embed';
-        next.youtubeProviderExplicit = true;
-        next.resolverProvider = 'embed';
-        next.allowEmbedFallback = true;
+        next.source = 'youtube';
         return next;
     }
 
@@ -837,9 +822,6 @@ function applyYoutubeProviderPreference(options) {
     next.youtubeProvider = mode;
     next.youtubeProviderExplicit = true;
     next.resolverProvider = mode;
-    if (mode === 'embed') {
-        next.allowEmbedFallback = true;
-    }
     return next;
 }
 
@@ -1529,6 +1511,158 @@ function showNotification(text, title, color, dur) {
 
 'use strict';
 
+function _getNearbyDeviceRowLimit() {
+    var grid = document.getElementById('devices-grid');
+    var width = grid ? grid.clientWidth : 0;
+    if (!width && typeof window !== 'undefined' && window.innerWidth) {
+        width = Math.max(0, window.innerWidth - 320);
+    }
+    if (!width) return 4;
+    var limit = Math.floor((width + 12) / 192);
+    return Math.max(2, Math.min(4, limit));
+}
+
+function _splitNearbyDevices(devices) {
+    var source = (devices || []).filter(function(device) {
+        return device && device.handle != null;
+    });
+    var limit = _getNearbyDeviceRowLimit();
+    if (source.length <= limit) {
+        return { visible: source, hidden: [] };
+    }
+
+    var capacity = Math.max(1, limit - 1);
+    var visible = source.slice(0, capacity);
+    var activeDevice = null;
+    if (activePlayerHandle) {
+        for (var i = 0; i < source.length; i++) {
+            if (String(source[i].handle) === String(activePlayerHandle)) {
+                activeDevice = source[i];
+                break;
+            }
+        }
+    }
+
+    if (activeDevice) {
+        var hasActive = visible.some(function(device) {
+            return String(device.handle) === String(activeDevice.handle);
+        });
+        if (!hasActive) {
+            visible[visible.length - 1] = activeDevice;
+        }
+    }
+
+    var visibleMap = {};
+    visible.forEach(function(device) {
+        visibleMap[String(device.handle)] = true;
+    });
+
+    return {
+        visible: visible,
+        hidden: source.filter(function(device) {
+            return !visibleMap[String(device.handle)];
+        })
+    };
+}
+
+function closeNearbyDevicesModal() {
+    var modal = document.getElementById('nearby-devices-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function ensureNearbyDevicesModal() {
+    var modal = document.getElementById('nearby-devices-modal');
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = 'nearby-devices-modal';
+    modal.className = 'modal-backdrop';
+    modal.style.display = 'none';
+    modal.innerHTML =
+        '<div class="modal modal-wide nearby-devices-modal">' +
+            '<div class="modal-header">' +
+                '<h3>Nearby Devices</h3>' +
+                '<button class="btn-icon btn-sm" id="nearby-devices-close" aria-label="Close nearby devices">' +
+                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+                '</button>' +
+            '</div>' +
+            '<div class="modal-body">' +
+                '<div id="nearby-devices-modal-list" class="nearby-device-modal-list"></div>' +
+            '</div>' +
+        '</div>';
+
+    var host = document.getElementById('app-container') || document.body;
+    host.appendChild(modal);
+
+    var closeBtn = document.getElementById('nearby-devices-close');
+    if (closeBtn) closeBtn.onclick = closeNearbyDevicesModal;
+    modal.onclick = function(event) {
+        if (event.target === modal) {
+            closeNearbyDevicesModal();
+        }
+    };
+
+    return modal;
+}
+
+function populateNearbyDevicesModal(devices) {
+    var modal = ensureNearbyDevicesModal();
+    var list = modal.querySelector('#nearby-devices-modal-list');
+    if (!list) return;
+
+    list.innerHTML = '';
+    devices.forEach(function(device) {
+        if (!device || device.handle == null) return;
+        var handle = device.handle.toString();
+        var card = _buildDeviceCard(device, handle, activePlayerHandle === handle);
+        if (!card) return;
+        card.classList.add('device-modal-card');
+        card.onclick = function() {
+            selectDevice(handle);
+            closeNearbyDevicesModal();
+        };
+        card.onkeydown = function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                selectDevice(handle);
+                closeNearbyDevicesModal();
+            }
+        };
+        list.appendChild(card);
+    });
+}
+
+function openNearbyDevicesModal(devices) {
+    var modal = ensureNearbyDevicesModal();
+    populateNearbyDevicesModal(devices || usableMediaPlayers || []);
+    modal.style.display = 'flex';
+    applyStaticTooltips();
+}
+
+function _buildMoreDevicesCard(hiddenCount, devices) {
+    var card = document.createElement('div');
+    card.className = 'device-card device-more-card';
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.onclick = function() { openNearbyDevicesModal(devices); };
+    card.onkeydown = function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openNearbyDevicesModal(devices);
+        }
+    };
+    card.innerHTML =
+        '<div class="device-card-icon device-more-icon">' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>' +
+        '</div>' +
+        '<div class="device-card-body">' +
+            '<div class="device-label">More devices</div>' +
+            '<div class="device-dist">' + hiddenCount + ' hidden</div>' +
+        '</div>' +
+        '<div class="device-card-badges"><span class="badge badge-type">+' + hiddenCount + '</span></div>';
+    return card;
+}
+
 function renderDevicesGrid(devices) {
     var grid  = document.getElementById('devices-grid');
     if (!grid) return;
@@ -1539,71 +1673,24 @@ function renderDevicesGrid(devices) {
         return;
     }
 
+    var split = _splitNearbyDevices(devices);
     grid.innerHTML = '';
     _updateDevicesCount(devices);
-    devices.forEach(function(device) {
+    split.visible.forEach(function(device) {
         if (!device || device.handle == null) return;
         var handle = device.handle.toString();
         var isActive = activePlayerHandle === handle;
         var newCard = _buildDeviceCard(device, handle, isActive);
         if (newCard) grid.appendChild(newCard);
     });
+    if (split.hidden.length > 0) {
+        grid.appendChild(_buildMoreDevicesCard(split.hidden.length, devices));
+    }
     applyStaticTooltips();
 }
 
 function updateDevicesGridInPlace(devices) {
-    var grid = document.getElementById('devices-grid');
-    if (!grid) return;
-
-    var expectedHandles = (devices || []).map(function(device) {
-        return device && device.handle != null ? String(device.handle) : null;
-    }).filter(Boolean);
-    var existingCards = Array.prototype.slice.call(grid.querySelectorAll('.device-card'));
-    var existingHandles = existingCards.map(function(card) {
-        return card.dataset.handle;
-    }).filter(Boolean);
-    var hasEmptyState = !!grid.querySelector('.empty-state');
-
-    if (!devices || devices.length === 0) {
-        if (existingCards.length > 0 || !hasEmptyState) {
-            renderDevicesGrid([]);
-        } else {
-            _updateDevicesCount([]);
-        }
-        return;
-    }
-
-    if (hasEmptyState || existingHandles.length !== expectedHandles.length) {
-        renderDevicesGrid(devices);
-        return;
-    }
-
-    for (var i = 0; i < expectedHandles.length; i++) {
-        if (existingHandles[i] !== expectedHandles[i]) {
-            renderDevicesGrid(devices);
-            return;
-        }
-    }
-
-    _updateDevicesCount(devices);
-
-    devices.forEach(function(device) {
-        var handle = device.handle.toString();
-        var card = document.querySelector('[data-handle="' + handle + '"]');
-        if (!card) {
-            renderDevicesGrid(devices);
-            return;
-        }
-
-        var labelEl = card.querySelector('.device-label');
-        var distEl = card.querySelector('.device-dist');
-        var badgesEl = card.querySelector('.device-card-badges');
-
-        if (labelEl) labelEl.textContent = _deviceLabel(device);
-        if (distEl) distEl.textContent = _formatDist(device.distance);
-        if (badgesEl) badgesEl.innerHTML = _buildDeviceCardBadges(device, handle);
-        card.classList.toggle('active', activePlayerHandle === handle);
-    });
+    renderDevicesGrid(devices);
 }
 
 function _isDevicePlaying(handle) {
@@ -3270,7 +3357,7 @@ function renderSearchResults(results, requestId) {
 
             var thumbSrc = normalizeRemoteAssetUrl(res.thumbnail || '');
             var thumbHtml = thumbSrc
-                ? '<div class="sr-thumb" style="background-image:url(' + encodeURI(thumbSrc) + ')"></div>'
+                ? '<div class="sr-thumb" data-thumb="1"></div>'
                 : '<div class="sr-thumb sr-thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
                     (isRadioResult
                         ? '<path d="M4.9 19.1A10 10 0 0 1 2 12a10 10 0 0 1 20 0 10 10 0 0 1-2.9 7.1"/><circle cx="12" cy="12" r="2"/><path d="M12 14v8"/>'
@@ -3303,6 +3390,11 @@ function renderSearchResults(results, requestId) {
                         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
                     '</button>' +
                 '</div>';
+
+            var thumbEl = item.querySelector('.sr-thumb[data-thumb="1"]');
+            if (thumbEl) {
+                thumbEl.style.backgroundImage = 'url("' + thumbSrc.replace(/"/g, '%22') + '")';
+            }
 
             function playThis(e) {
                 if (e && e.target.closest('.sr-add-btn')) return;
@@ -5728,11 +5820,12 @@ export function initLegacyUi() {
 
     document.addEventListener('keydown', function(e) {
         if (e.key !== 'Escape') return;
-        var modals = ['admin-modal', 'share-modal', 'add-to-playlist-modal', 'loop-help-modal', 'confirm-modal', 'prompt-modal'];
+        var modals = ['admin-modal', 'share-modal', 'add-to-playlist-modal', 'loop-help-modal', 'nearby-devices-modal', 'confirm-modal', 'prompt-modal'];
         for (var i = 0; i < modals.length; i++) {
             var m = document.getElementById(modals[i]);
             if (m && m.style.display === 'flex') {
                 if (modals[i] === 'admin-modal')        closeAdminModal();
+                else if (modals[i] === 'nearby-devices-modal') closeNearbyDevicesModal();
                 else if (modals[i] === 'confirm-modal') document.getElementById('confirm-cancel') && document.getElementById('confirm-cancel').click();
                 else if (modals[i] === 'prompt-modal')  document.getElementById('prompt-cancel')  && document.getElementById('prompt-cancel').click();
                 else m.style.display = 'none';

@@ -109,6 +109,14 @@ local function createSemaphore(max)
 end
 
 local function getProviderConcurrency(provider)
+    local extractorConfig = type(resolverConfig.extractor) == "table" and resolverConfig.extractor or {}
+    local providerConfigs = type(extractorConfig.providers) == "table" and extractorConfig.providers or {}
+    local providerConfig = type(providerConfigs[provider]) == "table" and providerConfigs[provider] or {}
+    local providerLimit = tonumber(providerConfig.maxConcurrent)
+    if providerLimit and providerLimit > 0 then
+        return math.max(1, math.floor(providerLimit))
+    end
+
     local configured = resolverConfig.providerConcurrency
     local value = nil
 
@@ -488,6 +496,13 @@ local function getExtractorMaxAttempts()
     return math.max(1, tonumber(extractorConfig.maxAttemptsPerProvider) or 2)
 end
 
+local function getExtractorProviderConfig(provider)
+    local extractorConfig = getExtractorConfig()
+    local providers = type(extractorConfig.providers) == "table" and extractorConfig.providers or {}
+    local providerConfig = type(providers[provider]) == "table" and providers[provider] or {}
+    return providerConfig
+end
+
 local function getRequestTimeoutMs()
     local timeout = tonumber(resolverConfig.timeoutMs)
     if timeout and timeout > 0 then
@@ -497,6 +512,12 @@ local function getRequestTimeoutMs()
 end
 
 local function getProviderTimeoutMs(provider, context)
+    local providerConfig = getExtractorProviderConfig(provider)
+    local providerTimeoutSeconds = tonumber(providerConfig.timeoutSeconds)
+    if providerTimeoutSeconds and providerTimeoutSeconds > 0 then
+        return math.max(1000, math.floor(providerTimeoutSeconds * 1000))
+    end
+
     local configured = resolverConfig.providerTimeoutMs
     if type(configured) == "table" then
         local timeout = tonumber(configured[provider]) or tonumber(configured.default)
@@ -527,8 +548,11 @@ local function getProviderTimeoutMs(provider, context)
 end
 
 local function getAbsoluteResolveTimeoutMs(resolverOptions)
+    local extractorConfig = getExtractorConfig()
+    local absoluteTimeoutSeconds = tonumber(extractorConfig.absoluteTimeoutSeconds)
     local configured = tonumber(resolverOptions and resolverOptions.absoluteTimeoutMs)
         or tonumber(resolverConfig.absoluteTimeoutMs)
+        or (absoluteTimeoutSeconds and absoluteTimeoutSeconds * 1000)
 
     if configured and configured > 0 then
         return math.floor(configured)
@@ -542,6 +566,12 @@ local function getAbsoluteResolveTimeoutMs(resolverOptions)
 end
 
 local function getHedgeDelayMs()
+    local extractorConfig = getExtractorConfig()
+    local hedgeRatio = tonumber(extractorConfig.hedgeRatio)
+    if hedgeRatio and hedgeRatio > 0 then
+        return math.max(0, math.floor(getRequestTimeoutMs() * hedgeRatio))
+    end
+
     local configured = tonumber(resolverConfig.hedgeDelayMs)
     if configured ~= nil then
         return math.max(0, math.floor(configured))
@@ -747,11 +777,12 @@ local function getAdaptiveBanConfig()
     if type(configured) ~= "table" then
         configured = {}
     end
+    local extractorConfig = type(resolverConfig.extractor) == "table" and resolverConfig.extractor or {}
 
     return {
         enabled = configured.enabled ~= false,
         failures = math.max(1, tonumber(configured.failures) or 3),
-        cooldownSeconds = math.max(30, tonumber(configured.cooldownSeconds) or getExtractorCooldownSeconds()),
+        cooldownSeconds = math.max(30, tonumber(configured.cooldownSeconds) or tonumber(extractorConfig.softBanDurationSeconds) or getExtractorCooldownSeconds()),
     }
 end
 

@@ -132,6 +132,76 @@ local function normalizeRemoteAssetUrl(url)
     return nil
 end
 
+local function extractYoutubeVideoId(url)
+    local value = trimText(url)
+    if not value then
+        return nil
+    end
+
+    local patterns = {
+        "[?&]v=([%w_-]+)",
+        "youtu%.be/([%w_-]+)",
+        "/shorts/([%w_-]+)",
+        "/embed/([%w_-]+)",
+        "/watch/([%w_-]+)",
+    }
+
+    for _, pattern in ipairs(patterns) do
+        local videoId = value:match(pattern)
+        if videoId and #videoId >= 6 then
+            return videoId
+        end
+    end
+
+    return nil
+end
+
+local function youtubeThumbnailUrl(videoId)
+    if type(videoId) ~= "string" or videoId == "" then
+        return nil
+    end
+    return ("https://i.ytimg.com/vi/%s/hqdefault.jpg"):format(videoId)
+end
+
+local function normalizeSearchThumbnailUrl(instance, rawUrl, videoId)
+    local normalized = normalizeRemoteAssetUrl(rawUrl)
+    if normalized then
+        return normalized
+    end
+
+    local trimmed = trimText(rawUrl)
+    if trimmed then
+        if trimmed:match("^/vi/") or trimmed:match("^/vi_webp/") then
+            return "https://i.ytimg.com" .. trimmed
+        end
+        if trimmed:sub(1, 1) == "/" and type(instance) == "string" and instance ~= "" then
+            return instance:gsub("/$", "") .. trimmed
+        end
+    end
+
+    return youtubeThumbnailUrl(videoId)
+end
+
+local function pickSearchThumbnail(instance, thumbnails, videoId)
+    if type(thumbnails) ~= "table" then
+        return normalizeSearchThumbnailUrl(instance, nil, videoId)
+    end
+
+    local bestUrl = nil
+    local bestArea = -1
+    for _, thumb in ipairs(thumbnails) do
+        if type(thumb) == "table" and type(thumb.url) == "string" then
+            local area = (tonumber(thumb.width) or 0) * (tonumber(thumb.height) or 0)
+            if area > bestArea then
+                bestUrl = thumb.url
+                bestArea = area
+            end
+        end
+    end
+
+    return normalizeSearchThumbnailUrl(instance, bestUrl, videoId)
+end
+
 local function shuffleTable(values)
     for index = #values, 2, -1 do
         local swapIndex = math.random(index)
@@ -306,14 +376,15 @@ local function searchInvidious(query, maxResults, instances, index, callback, at
             if ok and type(data) == "table" and #data > 0 then
                 local results = {}
                 for _, item in ipairs(data) do
-                    if item.type == "video" and #results < maxResults then
+                    if item.type == "video" and item.videoId and #results < maxResults then
+                        local videoId = item.videoId
                         results[#results + 1] = {
                             title = item.title,
-                            videoId = item.videoId,
-                            url = "https://www.youtube.com/watch?v=" .. item.videoId,
+                            videoId = videoId,
+                            url = "https://www.youtube.com/watch?v=" .. videoId,
                             duration = item.lengthSeconds,
                             author = item.author,
-                            thumbnail = normalizeRemoteAssetUrl(item.videoThumbnails and item.videoThumbnails[1] and item.videoThumbnails[1].url or nil),
+                            thumbnail = pickSearchThumbnail(instance, item.videoThumbnails, videoId),
                             source = "youtube",
                         }
                     end
@@ -367,13 +438,15 @@ local function searchPiped(query, maxResults, instances, index, callback, attemp
                         if videoUrl:sub(1, 1) == "/" then
                             videoUrl = "https://www.youtube.com" .. videoUrl
                         end
+                        local videoId = item.videoId or extractYoutubeVideoId(videoUrl)
 
                         results[#results + 1] = {
                             title = item.title or "Untitled",
+                            videoId = videoId,
                             url = videoUrl,
                             duration = item.duration or 0,
                             author = item.uploaderName or item.uploader or "Unknown",
-                            thumbnail = normalizeRemoteAssetUrl(item.thumbnail),
+                            thumbnail = normalizeSearchThumbnailUrl(instance, item.thumbnail, videoId),
                             source = "youtube",
                         }
                     end
