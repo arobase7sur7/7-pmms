@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**F-ANALYZE** — Read server/database.lua and pmms.sql; document database behavior
+**F-FIX** — Add missing indexes and persistence cache fixes based on F-ANALYZE findings
 
 ## Backlog
 
@@ -26,7 +26,7 @@
 - [x] E-FIX     — Implement discovery fixes based on E-ANALYZE findings: adaptive interval, join jitter, optionally server-push nearby list
 
 ### Database (Problem 6)
-- [ ] F-ANALYZE — Read `server/database.lua` + `pmms.sql`. Find: missing indexes, SELECT * queries, any existing caching. Write findings below.
+- [x] F-ANALYZE — Read `server/database.lua` + `pmms.sql`. Find: missing indexes, SELECT * queries, any existing caching. Write findings below.
 - [ ] F-FIX     — Add missing indexes to pmms.sql; fix SELECT * in database.lua; add persistent device cache if warranted
 
 ### Config
@@ -99,11 +99,20 @@
 - No mass-join jitter was found. Startup sync requests immediately in `client/main.lua`, entity-cache expiry starts from first scan with a fixed 2000ms TTL, persistent entity refresh runs every 30000ms in `client/entities.lua` lines ~461-466, and no `math.random`/jitter is used in the discovery path.
 
 ### F-ANALYZE
-<!-- Fill in after reading the files -->
+- `server/database.lua` is mostly schema bootstrap plus known-player helpers. It loads and executes every statement from `pmms.sql` in `initDatabase()` lines ~101-126, then calls `ensureSchemas()` lines ~63-99 to add missing columns/tables/indexes for older installs.
+- No `SELECT *` queries were found in `server/database.lua`; reads are `INFORMATION_SCHEMA` count checks and `SELECT display_name FROM pmms_known_players WHERE license = ?` at line ~194.
+- Existing caching in `server/database.lua`: none. `GetKnownPlayerDisplayName()` checks live players first, then queries `pmms_known_players` every miss; persistent-device caching is not implemented in this file.
+- `pmms_playlists` has primary key `id`, unique `(owner_license, id)`, and `idx_pmms_playlists_owner_favorite (owner_license, is_favorite, created_at)` in `pmms.sql` lines ~1-10. `ensureSchemas()` also backfills the same playlist indexes.
+- `pmms_playlist_tracks` has primary key `id` and a foreign key on `playlist_id`, but no explicit covering index for `WHERE playlist_id = ? ORDER BY added_at ASC`. A useful missing index is `(playlist_id, added_at, id)`.
+- `pmms_friends` has primary key `id` and unique `(user_license, friend_license)`, but no index for recipient/status lookups. Friend-request reads commonly need `friend_license` plus `status`, so a missing index is `(friend_license, status, created_at)`.
+- `pmms_shared_playlists` has primary key `(playlist_id, shared_with_license)`, which helps playlist-owner lookups, but no reverse index for playlists shared with this player; a missing index is `(shared_with_license, playlist_id)`.
+- `pmms_known_players`, `pmms_persistent_devices`, and `pmms_persistence_meta` all have primary keys for their direct lookup paths. `pmms_persistent_devices` also has a coordinate index `(x, y, z)`.
+- `server/database.lua` ensures newer persistent tables exist, but persistent-device read/write behavior is outside this file; `server/persistence.lua` contains `SELECT x, y, z, data FROM pmms_persistent_devices ORDER BY updated_at ASC`, so F-FIX should read that file before deciding on a persistent-device cache.
 
 ---
 
 ## Completed
+<!-- ✅ F-ANALYZE — 2026-05-22 -->
 <!-- ✅ E-FIX — 2026-05-22 -->
 <!-- ✅ E-ANALYZE — 2026-05-22 -->
 <!-- ✅ D-FIX — 2026-05-22 -->
