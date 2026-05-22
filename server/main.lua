@@ -141,6 +141,32 @@ local function buildSyncPayloadForTarget(target)
     return cloneDeepTable(mediaPlayers)
 end
 
+local function getEstimatedOneWayLatencyMs(target)
+    if type(GetPlayerPing) ~= "function" then
+        return 0
+    end
+
+    local ping = tonumber(GetPlayerPing(target)) or 0
+    if ping < 0 then
+        ping = 0
+    end
+    if ping > 5000 then
+        ping = 5000
+    end
+
+    return math.floor(ping / 2)
+end
+
+local function stampSyncPayload(payload, target)
+    if type(payload) ~= "table" then
+        return payload
+    end
+
+    payload._sentAt = GetGameTimer()
+    payload._latencyMs = getEstimatedOneWayLatencyMs(target)
+    return payload
+end
+
 local function buildSectionDelta(section, current, previous)
     local updates = {}
     local removed = {}
@@ -212,7 +238,7 @@ local function sendSyncToTarget(target, full)
         return false
     end
 
-    local payload = buildSyncPayloadForTarget(resolved)
+    local payload = stampSyncPayload(buildSyncPayloadForTarget(resolved), resolved)
     local previous = syncStateByTarget[key]
     local shouldSendFull = full == true or previous == nil or type(payload) ~= "table" or payload.mediaPlayers == nil
 
@@ -224,6 +250,8 @@ local function sendSyncToTarget(target, full)
 
     local delta, hasChanges = buildSyncDelta(payload, previous)
     if hasChanges then
+        delta._sentAt = payload._sentAt
+        delta._latencyMs = payload._latencyMs
         triggerSizedClientEvent("pmms:syncDelta", resolved, delta, NORMAL_SYNC_BPS)
         syncStateByTarget[key] = cloneDeepTable(payload)
         return true

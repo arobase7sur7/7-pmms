@@ -19,6 +19,7 @@ local lastUiClosedSignature = nil
 local lastUiOpenSendAt = 0
 local lastUiClosedSendAt = 0
 local lastUiPayloadSize = 0
+local maxSyncCompensationSeconds = 3.0
 
 local function countTableEntries(value)
     local count = 0
@@ -467,12 +468,49 @@ local function resolveActiveLabel(handle, info, player)
     return "Device"
 end
 
-local function updateSnapshot(handle, info)
+local function normalizePlaybackOffset(offset, info)
+    offset = math.max(0.0, tonumber(offset) or 0.0)
+    local duration = tonumber(info and info.duration)
+    if duration and duration > 0 then
+        if info and (info.loop == true or info.loopMode == "track") then
+            offset = offset % duration
+        elseif offset > duration then
+            offset = duration
+        end
+    end
+    return offset
+end
+
+local function getSyncLatencySeconds(payload)
+    local latencyMs = tonumber(payload and payload._latencyMs) or 0
+    if latencyMs < 0 then
+        latencyMs = 0
+    end
+
+    local maxLatencyMs = maxSyncCompensationSeconds * 1000
+    if latencyMs > maxLatencyMs then
+        latencyMs = maxLatencyMs
+    end
+
+    return latencyMs / 1000.0
+end
+
+local function updateSnapshot(handle, info, syncLatencySeconds)
+    local offset = tonumber(info.offset) or 0.0
+    local latencySeconds = tonumber(syncLatencySeconds) or 0.0
+    if info.paused ~= true then
+        offset = offset + latencySeconds
+    end
+
+    offset = normalizePlaybackOffset(offset, info)
+    info.offset = offset
+
     syncSnapshots[handle] = {
-        offset = tonumber(info.offset) or 0.0,
+        offset = offset,
         paused = info.paused and true or false,
         duration = tonumber(info.duration),
         receivedAt = GetGameTimer(),
+        latencySeconds = latencySeconds,
     }
 end
 
@@ -497,16 +535,7 @@ local function getInterpolatedOffset(handle, info, nowMs)
         baseOffset = baseOffset + elapsedSeconds
     end
 
-    local duration = tonumber(info.duration)
-    if duration and duration > 0 then
-        if info.loop then
-            baseOffset = baseOffset % duration
-        elseif baseOffset > duration then
-            baseOffset = duration
-        end
-    end
-
-    return baseOffset
+    return normalizePlaybackOffset(baseOffset, info)
 end
 
 local function getConfiguredPlaybackRange(info)
@@ -716,13 +745,14 @@ local function applyDeltaSyncPayload(payload)
     return true
 end
 
-local function reconcileSyncState(syncType)
+local function reconcileSyncState(syncType, syncLatencySeconds)
     local now = GetGameTimer()
     PMMSDebug("player", "client sync received", {
         syncType = syncType,
         mediaPlayerCount = countTableEntries(mediaPlayerStates),
         startupStateCount = countTableEntries(startupStates),
         deviceSessionCount = countTableEntries(deviceSessions),
+        latencySeconds = syncLatencySeconds,
     })
 
     for handle, info in pairs(mediaPlayerStates) do
@@ -742,7 +772,7 @@ local function reconcileSyncState(syncType)
             failedPlayers[handle] = nil
         end
 
-        updateSnapshot(handle, info)
+        updateSnapshot(handle, info, syncLatencySeconds)
     end
 
     for handle, startupState in pairs(startupStates) do
@@ -762,14 +792,15 @@ local function reconcileSyncState(syncType)
 
     for handle, player in pairs(GetActivePlayers()) do
         if not mediaPlayerStates[handle] then
-            if player.pendingStart and startupStates[handle] and tostring(startupStates[handle].attemptId) == tostring(player.startupAttemptId) then
-                goto continue_active_player
+            local keepPendingStart = player.pendingStart
+                and startupStates[handle]
+                and tostring(startupStates[handle].attemptId) == tostring(player.startupAttemptId)
+            if not keepPendingStart then
+                DestroyMediaPlayer(handle)
+                syncSnapshots[handle] = nil
+                handleRangeState[handle] = nil
             end
-            DestroyMediaPlayer(handle)
-            syncSnapshots[handle] = nil
-            handleRangeState[handle] = nil
         end
-        ::continue_active_player::
     end
 
     for handle, snapshot in pairs(syncSnapshots) do
@@ -796,23 +827,34 @@ local function reconcileSyncState(syncType)
     end
 end
 
+local function requestInitialStateSync(minIntervalMs)
+    local now = GetGameTimer()
+    local interval = tonumber(minIntervalMs) or 1000
+    if lastFullSyncRequestAt ~= 0 and (now - lastFullSyncRequestAt) < interval then
+        return false
+    end
+
+    lastFullSyncRequestAt = now
+    TriggerServerEvent("pmms:loadSettings")
+    TriggerServerEvent("pmms:loadPermissions")
+    return true
+end
+
 RegisterNetEvent("pmms:sync", function(payload)
+    local syncLatencySeconds = getSyncLatencySeconds(payload)
     applyFullSyncPayload(payload)
-    reconcileSyncState("full")
+    reconcileSyncState("full", syncLatencySeconds)
 end)
 
 RegisterNetEvent("pmms:syncDelta", function(payload)
+    local syncLatencySeconds = getSyncLatencySeconds(payload)
     if not hasReceivedFullSync then
-        local now = GetGameTimer()
-        if lastFullSyncRequestAt == 0 or (now - lastFullSyncRequestAt) > 2000 then
-            lastFullSyncRequestAt = now
-            TriggerServerEvent("pmms:loadPermissions")
-        end
+        requestInitialStateSync(2000)
         return
     end
 
     if applyDeltaSyncPayload(payload) then
-        reconcileSyncState("delta")
+        reconcileSyncState("delta", syncLatencySeconds)
     end
 end)
 
@@ -877,8 +919,7 @@ RegisterNetEvent("pmms:stopClosestMediaPlayer", function()
 end)
 
 Citizen.CreateThread(function()
-    TriggerServerEvent("pmms:loadSettings")
-    TriggerServerEvent("pmms:loadPermissions")
+    requestInitialStateSync(0)
 
     while true do
         local waitTime = IsUiOpen() and 240 or 1000
@@ -1297,5 +1338,11 @@ AddEventHandler("onResourceStop", function(name)
     if name == GetCurrentResourceName() then
         DestroyAllMediaPlayers()
         autoEnableStaticEmitters()
+    end
+end)
+
+AddEventHandler("onClientResourceStart", function(name)
+    if name == GetCurrentResourceName() then
+        requestInitialStateSync(1000)
     end
 end)

@@ -1,7 +1,7 @@
 # 7-pmms Backend — Task Tracker
 
 ## Current Task
-**D-FIX** — Implement join sync fixes based on D-ANALYZE findings
+**E-ANALYZE** — Read client/entities.lua and client/main.lua; document discovery behavior
 
 ## Backlog
 
@@ -19,7 +19,7 @@
 
 ### Join Sync (Problem 4)
 - [x] D-ANALYZE — Read `client/main.lua` + `client/media.lua` + how server sends state on join. Find: is latency compensation applied (yes/no), is there a drift correction loop (yes/no), does `onClientResourceStart` re-request state (yes/no). Write findings below.
-- [ ] D-FIX     — Implement join sync fixes based on D-ANALYZE findings: _sentAt timestamp, client-side latency compensation, drift correction loop, resource restart recovery
+- [x] D-FIX     — Implement join sync fixes based on D-ANALYZE findings: _sentAt timestamp, client-side latency compensation, drift correction loop, resource restart recovery
 
 ### Discovery (Problem 5)
 - [ ] E-ANALYZE — Read `client/entities.lua` + `client/main.lua`. Find: discovery mechanism (poll/push/both), poll interval, whether interval adapts when device is selected, whether mass-join jitter exists. Write findings below.
@@ -97,6 +97,7 @@
 ---
 
 ## Completed
+<!-- ✅ D-FIX — 2026-05-22 -->
 <!-- ✅ D-ANALYZE — 2026-05-22 -->
 <!-- ✅ C-FIX — 2026-05-22 -->
 <!-- ✅ C-ANALYZE — 2026-05-22 -->
