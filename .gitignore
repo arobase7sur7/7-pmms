@@ -9,3 +9,5 @@ pnpm-debug.log*
 data/admin_state.json
 data/provider_stats.json
 PROD.md
+PLAN.md
+TASK.md

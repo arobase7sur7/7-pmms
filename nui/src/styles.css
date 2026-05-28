@@ -176,6 +176,7 @@ body.pmms-ui-hidden {
 }
 
 #app-container {
+  will-change: transform, opacity, background, box-shadow, border-color;
   display: flex;
   flex-direction: column;
   width: 70vw;
@@ -261,6 +262,7 @@ nav {
 }
 
 .nav-item {
+  will-change: transform, opacity, background-color, color;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -446,6 +448,11 @@ nav {
 }
 .view.active {
   display: block;
+}
+
+.view-motion-in {
+  will-change: transform, opacity, filter;
+  animation: viewRiseIn 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes fadeIn {
@@ -1971,6 +1978,7 @@ input[type="range"]:hover::-webkit-slider-thumb {
   flex-direction: column;
   box-shadow: var(--shadow-lg);
   animation: modalIn var(--motion);
+  will-change: transform, opacity;
   transform-origin: 50% 44%;
 }
 

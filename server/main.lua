@@ -467,6 +467,204 @@ local function getContentType(path)
     return contentTypes[ext] or "application/octet-stream"
 end
 
+local function normalizeHttpHost(url)
+    if type(url) ~= "string" then
+        return nil
+    end
+
+    local host = url:match("^https://([^/%?#]+)")
+    if not host or host:find("@", 1, true) then
+        return nil
+    end
+
+    host = host:lower():gsub(":%d+$", "")
+    if host == "" or host:find("[%c%s]") then
+        return nil
+    end
+    return host
+end
+
+local function hostMatchesSuffix(host, suffix)
+    if host == suffix then
+        return true
+    end
+    return host:sub(-#suffix - 1) == "." .. suffix
+end
+
+local function collectConfiguredThumbnailHosts()
+    local hosts = {
+        ["i.ytimg.com"] = true,
+        ["img.youtube.com"] = true,
+        ["static-cdn.jtvnw.net"] = true,
+    }
+    local instances = type(Config.resolver) == "table" and Config.resolver.instances or {}
+
+    local function addHost(url)
+        local host = normalizeHttpHost(url)
+        if not host then
+            return
+        end
+        hosts[host] = true
+        if host:sub(1, 4) == "api." then
+            hosts[host:sub(5)] = true
+        end
+    end
+
+    if type(instances) == "table" then
+        for _, url in ipairs(instances.invidious or {}) do
+            addHost(url)
+        end
+        for _, url in ipairs(instances.piped or {}) do
+            addHost(url)
+        end
+    end
+
+    return hosts
+end
+
+local function isAllowedThumbnailHost(host)
+    if type(host) ~= "string" or host == "" then
+        return false
+    end
+
+    if hostMatchesSuffix(host, "ytimg.com") or host == "img.youtube.com" then
+        return true
+    end
+
+    if host == "static-cdn.jtvnw.net" then
+        return true
+    end
+
+    local hosts = collectConfiguredThumbnailHosts()
+    for allowedHost in pairs(hosts) do
+        if host == allowedHost or hostMatchesSuffix(host, allowedHost) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local thumbnailProxyLogThrottle = {}
+
+local function logThumbnailProxyFailure(reason, data)
+    local now = os.time()
+    local key = tostring(reason or "unknown") .. ":" .. tostring(data and data.host or "")
+    if thumbnailProxyLogThrottle[key] and thumbnailProxyLogThrottle[key] > now then
+        return
+    end
+    thumbnailProxyLogThrottle[key] = now + 30
+    PMMSDebug("search", "thumbnail proxy failed", {
+        reason = reason,
+        host = data and data.host or nil,
+        statusCode = data and data.statusCode or nil,
+        contentType = data and data.contentType or nil,
+        size = data and data.size or nil,
+    })
+end
+
+local function getHeaderValue(headers, name)
+    if type(headers) ~= "table" then
+        return nil
+    end
+
+    local needle = name:lower()
+    for key, value in pairs(headers) do
+        if type(key) == "string" and key:lower() == needle then
+            if type(value) == "table" then
+                return value[1]
+            end
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function sendThumbnailProxy(reqPath, res)
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    if searchConfig.proxyThumbnails == false then
+        res.writeHead(404, { ["Content-Type"] = "text/plain" })
+        res.send("Not Found")
+        return
+    end
+
+    local encoded = reqPath:sub(8)
+    if encoded == "" or not encoded:match("^[A-Za-z0-9_%-=]+$") then
+        logThumbnailProxyFailure("invalid_encoded_url")
+        res.writeHead(400, { ["Content-Type"] = "text/plain" })
+        res.send("Invalid thumbnail URL.")
+        return
+    end
+
+    local url = type(Base64Decode) == "function" and Base64Decode(encoded) or nil
+    if type(url) ~= "string"
+        or not url:match("^https://")
+        or url:find("[%c<>\"'`]", 1, false)
+        or url:find("^https://[^/]-@", 1, false) then
+        logThumbnailProxyFailure("invalid_url")
+        res.writeHead(400, { ["Content-Type"] = "text/plain" })
+        res.send("Invalid thumbnail URL.")
+        return
+    end
+
+    local host = normalizeHttpHost(url)
+    if not isAllowedThumbnailHost(host) then
+        logThumbnailProxyFailure("host_not_allowed", { host = host })
+        res.writeHead(403, { ["Content-Type"] = "text/plain" })
+        res.send("Thumbnail host is not allowed.")
+        return
+    end
+
+    local timeoutMs = math.max(500, tonumber(searchConfig.thumbnailProxyTimeoutMs) or 1500)
+    local maxBytes = 512 * 1024
+    PerformHttpRequest(url, function(statusCode, body, headers)
+        if statusCode ~= 200 or type(body) ~= "string" or body == "" then
+            logThumbnailProxyFailure("fetch_failed", {
+                host = host,
+                statusCode = statusCode,
+                size = type(body) == "string" and #body or 0,
+            })
+            res.writeHead(502, { ["Content-Type"] = "text/plain" })
+            res.send("Thumbnail fetch failed.")
+            return
+        end
+
+        if #body > maxBytes then
+            logThumbnailProxyFailure("too_large", { host = host, size = #body })
+            res.writeHead(413, { ["Content-Type"] = "text/plain" })
+            res.send("Thumbnail is too large.")
+            return
+        end
+
+        local contentType = getHeaderValue(headers, "content-type") or ""
+        contentType = tostring(contentType):match("^%s*([^;]+)") or ""
+        contentType = contentType:lower()
+        if not contentType:match("^image/") then
+            logThumbnailProxyFailure("invalid_content_type", {
+                host = host,
+                contentType = contentType,
+                size = #body,
+            })
+            res.writeHead(415, { ["Content-Type"] = "text/plain" })
+            res.send("Thumbnail response is not an image.")
+            return
+        end
+
+        res.writeHead(200, {
+            ["Content-Type"] = contentType,
+            ["Cache-Control"] = "public, max-age=86400",
+            ["Access-Control-Allow-Origin"] = "*",
+        })
+        res.send(body)
+    end, "GET", "", {
+        ["User-Agent"] = "7-PMMS-ThumbnailProxy",
+        ["Accept"] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }, {
+        timeout = math.floor(timeoutMs),
+    })
+end
+
 SetHttpHandler(function(req, res)
     local path = req.path or "/"
     path = path:gsub("[?#].*$", "")
@@ -490,7 +688,10 @@ SetHttpHandler(function(req, res)
         ["hls.min.js"] = "http/dui_runtime/hls.min.js",
     }
 
-    if path == "/dui" or path == "/dui/" then
+    if path:sub(1, 7) == "/thumb/" then
+        sendThumbnailProxy(path, res)
+        return
+    elseif path == "/dui" or path == "/dui/" then
         filePath = duiRuntimeOverrides["index.html"]
         isDuiRequest = true
     elseif path:sub(1, 5) == "/dui/" then

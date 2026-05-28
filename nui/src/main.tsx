@@ -1,5 +1,5 @@
 import React, { StrictMode, useEffect } from 'react';
-import ReactDOM from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { installDevMock } from './devMock';
 import { initLegacyUi } from './legacy/controller';
@@ -20,9 +20,8 @@ if (!rootElement) {
   throw new Error('Missing #root element');
 }
 
-ReactDOM.render(
+createRoot(rootElement).render(
   <StrictMode>
     <Bootstrap />
   </StrictMode>,
-  rootElement
 );

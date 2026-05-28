@@ -6,13 +6,17 @@ local startPlaybackSequence = 0
 local endedEventGuards = {}
 local deviceSessions = {}
 local deviceSessionRevision = 0
+local deviceQueueRevision = 0
 local maxDeviceHistoryEntries = 50
 local sessionLocks = {}
 local sessionLockIdleSeconds = 10 * 60
+local sourceFailureQuarantine = {}
 local commitDeviceSession
 local isYoutubeLikeUrl
 local pushImmediateSync
 local getDeviceCapabilityState
+local buildAudioFallbackIntent
+local canAttemptAudioOnlyFallback
 
 local function cloneTable(source)
     local copy = {}
@@ -550,6 +554,7 @@ function BuildMediaPlayersSyncStateForPlayer(src)
         copy.equalizerProfile = type(GetDeviceEqProfile) == "function" and GetDeviceEqProfile(handle) or copy.equalizerProfile
         if session then
             copy.stateRevision = session.stateRevision
+            copy.queueRevision = tonumber(session.queueRevision) or 0
             copy.idleResetAt = session.idleResetAt
             copy.resetActive = session.resetActive == true
         end
@@ -584,6 +589,7 @@ function BuildMediaPlayersSyncStateForPlayer(src)
             idleResetAt = session.idleResetAt,
             resetActive = session.resetActive == true,
             stateRevision = session.stateRevision,
+            queueRevision = tonumber(session.queueRevision) or 0,
             playbackActive = IsMediaPlayerActive(handle),
             sessionLock = sessionLock,
             sessionLocked = sessionLock ~= nil,
@@ -905,6 +911,26 @@ local function nextDeviceSessionRevision()
     return deviceSessionRevision
 end
 
+local function nextDeviceQueueRevision()
+    deviceQueueRevision = deviceQueueRevision + 1
+    return deviceQueueRevision
+end
+
+function BumpDeviceQueueRevision(handle, reason)
+    local session = deviceSessions[handle]
+    if not session then
+        return nil
+    end
+
+    session.queueRevision = nextDeviceQueueRevision()
+    PMMSDebug("player", "queue revision bumped", {
+        handle = handle,
+        queueRevision = session.queueRevision,
+        reason = reason,
+    })
+    return session.queueRevision
+end
+
 local function buildRuntimeSettings(options)
     options = options or {}
     local attenuation = options.attenuation or {}
@@ -969,6 +995,7 @@ local function buildTrackSnapshot(options)
         duration = normalizeDuration(options.duration),
         author = options.author,
         thumbnail = options.thumbnail,
+        thumbnailCandidates = cloneDeepTable(options.thumbnailCandidates),
         live = options.live == true,
         volume = options.volume,
         offset = 0,
@@ -1030,6 +1057,7 @@ local function syncActiveMediaPlayerWithSession(handle, session)
     applySessionSettingsToTarget(mp, session)
     mp.queue = session.queue
     mp.stateRevision = session.stateRevision
+    mp.queueRevision = tonumber(session.queueRevision) or 0
 end
 
 commitDeviceSession = function(handle, session)
@@ -1059,6 +1087,7 @@ local function buildDeviceSession(handle, seedOptions)
         currentTrack = nil,
         playerTemplate = nil,
         nextQueueEntryId = 0,
+        queueRevision = 0,
         shufflePreviewIds = {},
         idleResetAt = nil,
         resetActive = false,
@@ -1094,6 +1123,7 @@ function EnsureDeviceSession(handle, seedOptions)
         if type(session.history) ~= "table" then
             session.history = {}
         end
+        session.queueRevision = tonumber(session.queueRevision) or 0
         session.nextQueueEntryId = tonumber(session.nextQueueEntryId) or 0
         session.shufflePreviewIds = type(session.shufflePreviewIds) == "table" and session.shufflePreviewIds or {}
         if type(session.defaults) ~= "table" then
@@ -1194,6 +1224,7 @@ local function pushDeviceHistoryEntry(handle, options)
 
     session.history = history
     session.currentTrack = nil
+    BumpDeviceQueueRevision(handle, "history_push")
     commitDeviceSession(handle, session)
 end
 
@@ -1205,6 +1236,7 @@ function PopDeviceHistoryEntry(handle)
 
     local entry = table.remove(session.history)
     session.currentTrack = nil
+    BumpDeviceQueueRevision(handle, "history_pop")
     commitDeviceSession(handle, session)
     return cloneDeepTable(entry)
 end
@@ -1223,6 +1255,7 @@ function PrependDeviceQueueEntry(handle, sourceId, options)
         options = snapshot,
     })
     session.queue = queue
+    BumpDeviceQueueRevision(handle, "queue_prepend")
     commitDeviceSession(handle, session)
 end
 
@@ -1270,6 +1303,9 @@ local function normalizeYoutubeResolverProvider(value)
     end
     if provider == "youtube" then
         return "auto"
+    end
+    if provider == "chromium" or provider == "chromium_youtube" or provider == "youtube_browser" or provider == "browser" or provider == "nui" then
+        return "chromium_youtube"
     end
     if provider == "youtube_embed" or provider == "embed" then
         return "embed"
@@ -2182,6 +2218,156 @@ isYoutubeLikeUrl = function(url)
         or lower:find("youtu%.be", 1, false) ~= nil
 end
 
+local function getSourceFailureCooldownSeconds()
+    local resolver = type(Config.resolver) == "table" and Config.resolver or {}
+    return math.max(30, tonumber(resolver.sourceFailureCooldownSeconds) or 900)
+end
+
+local function normalizeQuarantineUrl(url)
+    if type(url) ~= "string" then
+        return nil
+    end
+
+    local value = url:match("^%s*(.-)%s*$")
+    if value == "" then
+        return nil
+    end
+
+    value = value:gsub("#.*$", "")
+    value = value:gsub("/$", "")
+    return value:lower()
+end
+
+local function extractYoutubeSourceId(url)
+    if type(url) ~= "string" then
+        return nil
+    end
+
+    local patterns = {
+        "[?&]v=([%w_-]+)",
+        "youtu%.be/([%w_-]+)",
+        "/shorts/([%w_-]+)",
+        "/embed/([%w_-]+)",
+        "/watch/([%w_-]+)",
+    }
+
+    for _, pattern in ipairs(patterns) do
+        local videoId = url:match(pattern)
+        if type(videoId) == "string" and #videoId >= 6 then
+            return videoId:lower()
+        end
+    end
+
+    return nil
+end
+
+local function normalizeSourceFailureMode(input, mode)
+    if type(mode) == "string" and mode ~= "" then
+        mode = mode:lower()
+        if mode == "audio" or mode == "video" or mode == "any" then
+            return mode
+        end
+    end
+
+    if type(input) == "table" and input.video == false then
+        return "audio"
+    end
+
+    return "video"
+end
+
+local function getSourceFailureKey(input, mode)
+    local sourceUrl = input
+    if type(input) == "table" then
+        sourceUrl = input.originalUrl or input.url
+    end
+
+    local normalizedUrl = normalizeQuarantineUrl(sourceUrl)
+    if not normalizedUrl then
+        return nil
+    end
+
+    local normalizedMode = normalizeSourceFailureMode(input, mode)
+    local baseKey
+    if isYoutubeLikeUrl(sourceUrl) then
+        local videoId = extractYoutubeSourceId(sourceUrl)
+        baseKey = videoId and ("youtube:" .. videoId) or ("youtube_url:" .. normalizedUrl)
+    else
+        baseKey = "url:" .. normalizedUrl
+    end
+
+    return ("%s:%s"):format(baseKey, normalizedMode), baseKey, normalizedMode, sourceUrl
+end
+
+local function cleanupSourceFailureQuarantine(now)
+    now = now or os.time()
+    for key, entry in pairs(sourceFailureQuarantine) do
+        if (tonumber(entry.expiresAt) or 0) <= now then
+            sourceFailureQuarantine[key] = nil
+        end
+    end
+end
+
+function IsPmmsSourceQuarantined(input, mode)
+    local key, baseKey = getSourceFailureKey(input, mode)
+    if not key then
+        return false
+    end
+
+    local now = os.time()
+    cleanupSourceFailureQuarantine(now)
+
+    for _, candidate in ipairs({ key, baseKey .. ":any" }) do
+        local entry = sourceFailureQuarantine[candidate]
+        if entry and (tonumber(entry.expiresAt) or 0) > now then
+            return true, entry.reason, entry.expiresAt
+        end
+    end
+
+    return false
+end
+
+function QuarantinePmmsSourceFailure(input, reason, mode)
+    local key, _, normalizedMode, sourceUrl = getSourceFailureKey(input, mode)
+    if not key then
+        return false
+    end
+
+    local expiresAt = os.time() + getSourceFailureCooldownSeconds()
+    sourceFailureQuarantine[key] = {
+        reason = reason or "playback_failed",
+        sourceUrl = sourceUrl,
+        mode = normalizedMode,
+        expiresAt = expiresAt,
+    }
+
+    PMMSDebug("player", "source quarantined after playback failure", {
+        key = key,
+        mode = normalizedMode,
+        url = redactUrlForDebug(sourceUrl),
+        reason = reason,
+        expiresAt = expiresAt,
+    })
+    return true
+end
+
+function ClearPmmsSourceQuarantine(input, mode)
+    local key = getSourceFailureKey(input, mode)
+    if key and sourceFailureQuarantine[key] then
+        sourceFailureQuarantine[key] = nil
+        return true
+    end
+    return false
+end
+
+local function quarantineFinalPlaybackFailure(options, reason)
+    if type(options) ~= "table" then
+        return
+    end
+    QuarantinePmmsSourceFailure(options, reason or "playback_failed")
+    QuarantinePmmsSourceFailure(options, reason or "playback_failed", "any")
+end
+
 local function failPlaybackStart(handle, src, message, details)
     local finalMessage = message or "Playback failed after retries. Please try another source."
     if type(details) == "string" and details ~= "" then
@@ -2195,6 +2381,7 @@ local function failPlaybackStart(handle, src, message, details)
     local context = startContexts[handle]
     local stateDetails = buildStartupStateDetails(context, context and context.currentOptions or nil)
     stateDetails.message = finalMessage
+    quarantineFinalPlaybackFailure(context and (context.currentOptions or context.options), stateDetails.resolverReason or finalMessage)
     PMMSDebug("player", "playback start failed", {
         src = src,
         handle = handle,
@@ -2284,6 +2471,7 @@ local function failActiveLocalPlayback(handle, src, message, details)
         url = mp and (mp.originalUrl or mp.url) or nil,
         message = finalMessage,
     }
+    quarantineFinalPlaybackFailure(mp, resolver.reason or finalMessage)
 
     PMMSDebug("player", "active local playback failed", {
         src = src,
@@ -2669,6 +2857,62 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             end
 
             if not ok then
+                if resolverOptions.finalAudioFallbackOnResolveFailure == true
+                    and canAttemptAudioOnlyFallback
+                    and canAttemptAudioOnlyFallback(finalIntent, Config.resolver or {}) then
+                    local audioContext = startContexts[handle]
+                    if audioContext
+                        and audioContext.source == src
+                        and tostring(audioContext.currentAttemptId) == tostring(attemptId)
+                        and audioContext.audioFallbackAttempted ~= true then
+                        local sourceUrl = finalIntent.originalUrl or finalIntent.url
+                        audioContext.audioFallbackAttempted = true
+                        audioContext.retries = (tonumber(audioContext.retries) or 0) + 1
+                        audioContext.options = buildAudioFallbackIntent(finalIntent, sourceUrl)
+                        audioContext.updatedAt = os.time()
+                        startContexts[handle] = audioContext
+
+                        setStartupState(
+                            handle,
+                            "fallback",
+                            "Trying audio-only fallback.",
+                            buildStartupStateDetails(audioContext, audioContext.options, {
+                                audioOnlyFallback = true,
+                                previousError = warning,
+                            })
+                        )
+
+                        resolvePlaybackAndNotify(handle, src, audioContext.options, {
+                            forceRefresh = true,
+                            avoidResolvedUrl = resolverOptions.avoidResolvedUrl,
+                            avoidProvider = resolverOptions.avoidProvider,
+                            avoidInstance = resolverOptions.avoidInstance,
+                            maxInstances = resolverOptions.maxInstances,
+                            notifyOnFailure = false,
+                            allowFallback = true,
+                            allowAudioFallback = false,
+                            allowEmbedFallback = false,
+                        }, function(audioOk, audioResolvedOptions, audioWarning)
+                            local liveAudioContext = startContexts[handle]
+                            if not liveAudioContext
+                                or liveAudioContext.source ~= src
+                                or tostring(liveAudioContext.currentAttemptId) ~= tostring(attemptId) then
+                                return
+                            end
+
+                            if not audioOk then
+                                failPlaybackStart(handle, src, "Playback failed after audio-only fallback. Please try another source.", audioWarning)
+                                return
+                            end
+
+                            audioResolvedOptions.video = false
+                            audioResolvedOptions.audioFallbackAttempted = true
+                            triggerStartOnClient(handle, src, audioResolvedOptions, audioContext.options, audioContext.retries, "fallback", "Using audio-only fallback.")
+                        end)
+                        return
+                    end
+                end
+
                 local failureMessage = warning or "Failed to resolve media source."
                 if type(warning) == "string" and warning:find("No ad-free playable source found", 1, true) then
                     failureMessage = "No ad-free playable source found."
@@ -2684,6 +2928,165 @@ end
 
 function StartMediaPlayerForClient(handle, src, intentOptions, resolverOptions)
     startMediaPlayerForClient(handle, src, intentOptions, resolverOptions)
+end
+
+buildAudioFallbackIntent = function(options, sourceUrl)
+    local intent = cloneDeepTable(options or {})
+    intent.url = sourceUrl or intent.originalUrl or intent.url
+    intent.originalUrl = intent.originalUrl or intent.url
+    intent.resolvedUrl = nil
+    intent.resolver = nil
+    intent.directLink = nil
+    intent.resolverStatus = nil
+    intent.resolverReason = nil
+    intent.resolverWarning = nil
+    intent.resolverFallback = nil
+    intent.audioUrl = nil
+    intent.pairedStreams = nil
+    intent.videoMime = nil
+    intent.audioMime = nil
+    intent.video = false
+    intent.audioFallbackAttempted = true
+    intent.playbackToken = nil
+    return intent
+end
+
+canAttemptAudioOnlyFallback = function(options, resolverConfig)
+    if not options or type(options) ~= "table" then
+        return false
+    end
+    if resolverConfig and resolverConfig.allowAudioFallback == false then
+        return false
+    end
+    if options.audioFallbackAttempted == true or options.video == false then
+        return false
+    end
+    return isYoutubeLikeUrl(options.originalUrl or options.url)
+end
+
+local function attemptStartupAudioOnlyFallback(handle, src, context, failedUrl, failedMessage, resolverConfig, currentResolver)
+    context = type(context) == "table" and context or startContexts[handle]
+    local baseOptions = context and (context.currentOptions or context.options)
+    if not canAttemptAudioOnlyFallback(baseOptions, resolverConfig) or context.audioFallbackAttempted == true then
+        return false
+    end
+
+    local audioContext, previousAttemptId = rotateStartAttempt(handle)
+    if not audioContext then
+        return false
+    end
+
+    local sourceUrl = baseOptions.originalUrl or baseOptions.url
+    audioContext.audioFallbackAttempted = true
+    audioContext.retries = (tonumber(context.retries) or 0) + 1
+    audioContext.options = buildAudioFallbackIntent(baseOptions, sourceUrl)
+    audioContext.updatedAt = os.time()
+    startContexts[handle] = audioContext
+
+    if previousAttemptId and previousAttemptId ~= audioContext.currentAttemptId then
+        TriggerClientEvent("pmms:startupStop", src, handle, previousAttemptId, audioContext.playbackToken)
+    end
+
+    setStartupState(
+        handle,
+        "fallback",
+        "Trying audio-only fallback.",
+        buildStartupStateDetails(audioContext, audioContext.options, {
+            audioOnlyFallback = true,
+            previousError = failedMessage,
+        })
+    )
+
+    PMMSDebug("player", "startup audio-only fallback scheduled", {
+        src = src,
+        handle = handle,
+        attemptId = audioContext.currentAttemptId,
+        sourceUrl = redactUrlForDebug(sourceUrl),
+        failedUrl = redactUrlForDebug(failedUrl),
+        previousProvider = currentResolver and currentResolver.provider or nil,
+        previousInstance = currentResolver and currentResolver.instance or nil,
+    })
+
+    resolvePlaybackAndNotify(handle, src, audioContext.options, {
+        forceRefresh = true,
+        avoidResolvedUrl = failedUrl,
+        avoidProvider = currentResolver and currentResolver.provider or nil,
+        avoidInstance = currentResolver and currentResolver.instance or nil,
+        maxInstances = getRetryMaxInstances(resolverConfig or {}, false),
+        notifyOnFailure = false,
+        allowFallback = true,
+        allowAudioFallback = false,
+        allowEmbedFallback = false,
+    }, function(ok, resolvedOptions, warning)
+        local activeContext = startContexts[handle]
+        if not activeContext
+            or activeContext.source ~= src
+            or tostring(activeContext.currentAttemptId) ~= tostring(audioContext.currentAttemptId) then
+            return
+        end
+
+        if not ok then
+            failPlaybackStart(handle, src, "Playback failed after audio-only fallback. Please try another source.", warning)
+            return
+        end
+
+        resolvedOptions.video = false
+        resolvedOptions.audioFallbackAttempted = true
+        triggerStartOnClient(handle, src, resolvedOptions, audioContext.options, audioContext.retries, "fallback", "Using audio-only fallback.")
+    end)
+
+    return true
+end
+
+local function attemptActiveAudioOnlyFallback(handle, src, mp, failedUrl, failedMessage, resolverConfig, currentResolver)
+    if not canAttemptAudioOnlyFallback(mp, resolverConfig) then
+        return false
+    end
+
+    local sourceUrl = mp.originalUrl or mp.url
+    local retryOptions = buildAudioFallbackIntent(mp, sourceUrl)
+    retryOptions.localPlaybackRetryCount = (tonumber(mp.localPlaybackRetryCount) or 0) + 1
+    retryOptions.lastSource = tonumber(src) or retryOptions.lastSource
+    retryOptions.offset = getLivePlaybackOffset(mp)
+    retryOptions.startTime = nil
+    retryOptions.pausedAt = nil
+
+    setStartupState(handle, "fallback", "Trying audio-only fallback.", {
+        playbackToken = mp.playbackToken,
+        retryCount = retryOptions.localPlaybackRetryCount,
+        provider = currentResolver and currentResolver.provider or nil,
+        instance = currentResolver and currentResolver.instance or nil,
+        resolverStatus = currentResolver and currentResolver.status or nil,
+        resolverReason = currentResolver and currentResolver.reason or nil,
+        title = mp.title,
+        url = sourceUrl,
+        audioOnlyFallback = true,
+        previousError = failedMessage,
+    })
+
+    PMMSDebug("player", "active audio-only fallback scheduled", {
+        src = src,
+        handle = handle,
+        sourceUrl = redactUrlForDebug(sourceUrl),
+        failedUrl = redactUrlForDebug(failedUrl),
+        previousProvider = currentResolver and currentResolver.provider or nil,
+        previousInstance = currentResolver and currentResolver.instance or nil,
+    })
+
+    startMediaPlayerForClient(handle, src, retryOptions, {
+        forceRefresh = true,
+        avoidResolvedUrl = failedUrl,
+        avoidProvider = currentResolver and currentResolver.provider or nil,
+        avoidInstance = currentResolver and currentResolver.instance or nil,
+        maxInstances = getRetryMaxInstances(resolverConfig or {}, false),
+        notifyOnFailure = false,
+        allowFallback = true,
+        allowAudioFallback = false,
+        allowEmbedFallback = false,
+        replaceActiveOnReady = true,
+    })
+
+    return true
 end
 
 function PauseMediaPlayer(handle)
@@ -3362,6 +3765,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
     local playbackFailureReason = classifyPlaybackError(failedMessage)
     local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, context.options, currentResolver)
+    local sourceQuarantined = IsPmmsSourceQuarantined(context.options)
 
     recordAutoProviderPlayback(currentOptions, currentResolver, "failure", playbackFailureReason, context)
 
@@ -3392,12 +3796,14 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         instance = currentResolver.instance,
         retries = context.retries,
         retryAttempts = retryAttempts,
+        sourceQuarantined = sourceQuarantined,
     })
 
     if resolverConfig.retryOnPlaybackError == false
         or currentResolver.status == "bypass"
         or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
         or not isYoutubeLikeUrl(context.options.originalUrl or context.options.url)
+        or sourceQuarantined
         or (tonumber(context.retries) or 0) >= retryAttempts then
         PMMSDebug("player", "startup retry skipped", {
             src = src,
@@ -3408,7 +3814,12 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
             retryEmbedFallbackFailure = retryEmbedFallbackFailure,
             retries = context.retries,
             retryAttempts = retryAttempts,
+            sourceQuarantined = sourceQuarantined,
         })
+        if not sourceQuarantined
+            and attemptStartupAudioOnlyFallback(handle, src, context, failedUrl, failedMessage, resolverConfig, currentResolver) then
+            return
+        end
         failPlaybackStart(handle, src, failedMessage or "Playback failed.")
         return
     end
@@ -3453,7 +3864,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         maxInstances = getRetryMaxInstances(resolverConfig, retryEmbedFallbackFailure),
         notifyOnFailure = false,
         allowFallback = true,
-        allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
+        allowAudioFallback = false,
         allowEmbedFallback = false,
     }
 
@@ -3466,6 +3877,9 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         end
 
         if not ok then
+            if attemptStartupAudioOnlyFallback(handle, src, activeContext, failedUrl, failedMessage, resolverConfig, currentResolver) then
+                return
+            end
             failPlaybackStart(handle, src, "Playback failed after retries. Please try another source.", warning)
             return
         end
@@ -3541,6 +3955,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     local retryCount = tonumber(mp.localPlaybackRetryCount) or 0
     local playbackFailureReason = classifyPlaybackError(failedMessage)
     local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, mp, currentResolver)
+    local sourceQuarantined = IsPmmsSourceQuarantined(mp)
 
     recordAutoProviderPlayback(mp, currentResolver, "failure", playbackFailureReason, nil)
 
@@ -3554,6 +3969,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         or not isYoutubeLikeUrl(sourceUrl)
         or currentResolver.status == "bypass"
         or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
+        or sourceQuarantined
         or retryCount >= retryAttempts then
         PMMSDebug("player", "local playback retry skipped", {
             src = src,
@@ -3569,7 +3985,12 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
             retryEmbedFallbackFailure = retryEmbedFallbackFailure,
             retryCount = retryCount,
             retryAttempts = retryAttempts,
+            sourceQuarantined = sourceQuarantined,
         })
+        if not sourceQuarantined
+            and attemptActiveAudioOnlyFallback(handle, src, mp, failedUrl, failedMessage, resolverConfig, currentResolver) then
+            return
+        end
         failActiveLocalPlayback(handle, src, failedMessage or "Playback failed.", currentResolver.warning)
         return
     end
@@ -3622,9 +4043,10 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         maxInstances = getRetryMaxInstances(resolverConfig, retryEmbedFallbackFailure),
         notifyOnFailure = false,
         allowFallback = true,
-        allowAudioFallback = resolverConfig.allowAudioFallback ~= false,
+        allowAudioFallback = false,
         allowEmbedFallback = false,
         replaceActiveOnReady = true,
+        finalAudioFallbackOnResolveFailure = true,
     })
 end)
 

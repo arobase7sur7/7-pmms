@@ -21,6 +21,9 @@ var maxTransitionSeconds = 15.0;
 var maxRange = 200;
 var adminMaxRange = 200;
 var searchMinimumBusyMs = 500;
+var searchProxyThumbnails = true;
+var currentServerEndpoint = '';
+var showYoutubeProviderSelector = false;
 var deviceDefaults = {
     volume: 100,
     attenuation: {
@@ -99,12 +102,13 @@ var URL_PATTERN = /^(https?:\/\/|www\.)[^\s]+$/i;
 var YOUTUBE_URL_PATTERN = /(?:youtube\.com\/watch\?[^#\s]*v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)/i;
 var youtubeProviderMode = 'auto';
 var YOUTUBE_PROVIDER_OPTIONS = [
-    { value: 'auto', label: 'Auto', description: 'Try ad-free sources in order.' },
-    { value: 'yt_dlp_local', label: 'yt-dlp', description: 'Use the local server extractor.' },
-    { value: 'extractor_http', label: 'Extractor API', description: 'Use configured resolver endpoints.' },
-    { value: 'cobalt', label: 'Cobalt', description: 'Use configured Cobalt endpoints.' },
-    { value: 'invidious', label: 'Invidious', description: 'Use public/private Invidious streams.' },
-    { value: 'piped', label: 'Piped', description: 'Use public/private Piped streams.' }
+    { value: 'auto', label: 'Browser', description: 'Use the client Chromium YouTube player.' },
+    { value: 'chromium_youtube', label: 'Browser', description: 'Force client Chromium playback.' },
+    { value: 'yt_dlp_local', label: 'yt-dlp', description: 'Developer-only local extractor fallback.' },
+    { value: 'extractor_http', label: 'Extractor API', description: 'Developer-only resolver endpoint fallback.' },
+    { value: 'cobalt', label: 'Cobalt', description: 'Developer-only Cobalt endpoint fallback.' },
+    { value: 'invidious', label: 'Invidious', description: 'Manual best-effort fallback; public instances can be slow.' },
+    { value: 'piped', label: 'Piped', description: 'Manual best-effort fallback; public instances can be slow.' }
 ];
 var LOOP_MODE_ORDER = ['off', 'track', 'queue', 'shuffle_once', 'shuffle_loop'];
 var LOOP_MODE_LABELS = {
@@ -127,6 +131,7 @@ var requestedStartupStates = {};
 var debugConfig = { enabled: false };
 var localBaseVolume = 100;
 var MAX_RENDERED_HISTORY_ITEMS = 30;
+var selectedDeviceTheme = 'none';
 
 function setUiVisible(visible) {
     _uiVisible = visible === true;
@@ -137,6 +142,7 @@ function setUiVisible(visible) {
     document.body.style.display = 'block';
     document.body.classList.toggle('pmms-ui-visible', _uiVisible);
     document.body.classList.toggle('pmms-ui-hidden', !_uiVisible);
+    window.dispatchEvent(new CustomEvent('pmms:motionStateChanged'));
 }
 
 function getStateMapSignature(map, includeOffsets) {
@@ -147,6 +153,7 @@ function getStateMapSignature(map, includeOffsets) {
         parts.push([
             handleKey(key) || key,
             info.stateRevision || value.stateRevision || '',
+            info.queueRevision || value.queueRevision || '',
             info.playbackToken || value.playbackToken || '',
             info.phase || value.phase || '',
             info.message || value.message || '',
@@ -168,7 +175,7 @@ function getUiUpdateSignature(data) {
         Array.isArray(data.usableMediaPlayers)
             ? data.usableMediaPlayers.map(function(device) {
                 return [
-                    handleKey(device && device.handle),
+                    getDeviceRenderKey(device),
                     device && Math.round((Number(device.distance) || 0) * 2) / 2,
                     device && device.active ? 1 : 0,
                     device && device.visibleBecause || ''
@@ -322,6 +329,127 @@ function normalizeRemoteAssetUrl(url) {
     return '';
 }
 
+function encodeBase64Url(value) {
+    try {
+        return btoa(unescape(encodeURIComponent(value)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '');
+    } catch (_) {
+        return '';
+    }
+}
+
+function getResourceHttpBase() {
+    if (!currentServerEndpoint || typeof GetParentResourceName !== 'function') return '';
+    return 'http://' + String(currentServerEndpoint).replace(/\/+$/g, '') + '/' + GetParentResourceName();
+}
+
+function getThumbnailDisplayUrl(url) {
+    var normalized = normalizeRemoteAssetUrl(url);
+    if (!normalized) return '';
+    if (searchProxyThumbnails === false) return normalized;
+
+    var encoded = encodeBase64Url(normalized);
+    var base = encoded ? getResourceHttpBase() : '';
+    return base ? (base + '/thumb/' + encoded) : normalized;
+}
+
+function getSearchThumbnailCandidates(result) {
+    var candidates = [];
+    var seen = {};
+
+    function add(value) {
+        var normalized = normalizeRemoteAssetUrl(value || '');
+        if (!normalized) return;
+        var key = normalized.toLowerCase();
+        if (seen[key]) return;
+        seen[key] = true;
+        candidates.push(normalized);
+    }
+
+    if (Array.isArray(result && result.thumbnailCandidates)) {
+        result.thumbnailCandidates.forEach(add);
+    }
+    add(result && result.thumbnail);
+    return candidates;
+}
+
+function getMediaThumbnailCandidates(info) {
+    var candidates = [];
+    var seen = {};
+
+    function add(value) {
+        var normalized = normalizeRemoteAssetUrl(value || '');
+        if (!normalized) return;
+        var key = normalized.toLowerCase();
+        if (seen[key]) return;
+        seen[key] = true;
+        candidates.push(normalized);
+    }
+
+    if (Array.isArray(info && info.thumbnailCandidates)) {
+        info.thumbnailCandidates.forEach(add);
+    }
+    add(info && info.thumbnail);
+    return candidates;
+}
+
+function getSearchThumbnailFallbackHtml(isRadioResult) {
+    return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+        (isRadioResult
+            ? '<path d="M4.9 19.1A10 10 0 0 1 2 12a10 10 0 0 1 20 0 10 10 0 0 1-2.9 7.1"/><circle cx="12" cy="12" r="2"/><path d="M12 14v8"/>'
+            : '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') +
+        '</svg>';
+}
+
+function bindSearchThumbnailFallback(thumbEl, candidates, isRadioResult) {
+    if (!thumbEl) return;
+    var img = thumbEl.querySelector('img');
+    if (!img) return;
+
+    var index = 0;
+    var showNext = function() {
+        while (index < candidates.length) {
+            var src = getThumbnailDisplayUrl(candidates[index++]);
+            if (src) {
+                img.src = src;
+                return;
+            }
+        }
+
+        thumbEl.classList.add('sr-thumb-empty');
+        thumbEl.removeAttribute('data-thumb');
+        thumbEl.innerHTML = getSearchThumbnailFallbackHtml(isRadioResult);
+    };
+
+    img.onerror = showNext;
+    showNext();
+}
+
+function bindMediaThumbnailFallback(thumbEl, candidates) {
+    if (!thumbEl) return;
+    var img = thumbEl.querySelector('img');
+    if (!img) return;
+
+    var index = 0;
+    var showNext = function() {
+        while (index < candidates.length) {
+            var src = getThumbnailDisplayUrl(candidates[index++]);
+            if (src) {
+                img.src = src;
+                return;
+            }
+        }
+
+        thumbEl.classList.add('np-thumb-empty');
+        thumbEl.innerHTML = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+    };
+
+    img.onerror = showNext;
+    showNext();
+}
+
 function resetDevicesGridState() {
     _lastGridHandles = [];
     _lastActiveHandle = null;
@@ -413,12 +541,110 @@ function setUsableMediaPlayers(devices) {
     usableMediaPlayers.forEach(function(device) {
         if (!device || device.handle == null) return;
         usableMediaPlayerIndex[handleKey(device.handle)] = device;
+        var renderKey = getDeviceRenderKey(device);
+        if (renderKey) usableMediaPlayerIndex[renderKey] = device;
     });
+}
+
+function getDeviceRenderKey(device) {
+    if (!device) return '';
+    return handleKey(device.deviceKey || device.handle);
 }
 
 function getDeviceEntry(handle) {
     var key = handleKey(handle);
     return key ? usableMediaPlayerIndex[key] || null : null;
+}
+
+function getDeviceThemeFromDevice(device, handle) {
+    var type = String((device && (device.type || device.deviceType)) || '').toLowerCase();
+    var key = handleKey(handle || (device && device.handle));
+    var state = key ? mediaPlayerStates[key] : null;
+    var info = state && state.info ? getEffectiveInfo(key, state.info) : (state || null);
+
+    if (type === 'vehicle' || (device && device.isVehicle === true) || (info && info.isVehicle === true)) {
+        return 'vehicle';
+    }
+
+    if (type === 'interaction') {
+        return 'interaction';
+    }
+
+    if (
+        type === 'screen' ||
+        type === 'tv' ||
+        type === 'monitor' ||
+        type === 'cinema' ||
+        type === 'projector' ||
+        type === 'laptop' ||
+        type === 'tablet' ||
+        type === 'computer' ||
+        (device && device.hasVideo === true) ||
+        (info && info.video !== false)
+    ) {
+        return 'screen';
+    }
+
+    return 'speaker';
+}
+
+function getDeviceThemeForHandle(handle) {
+    var key = handleKey(handle);
+    if (!key) return 'none';
+
+    var device = getDeviceEntry(key);
+    if (device) {
+        return getDeviceThemeFromDevice(device, key);
+    }
+
+    return getDeviceThemeFromDevice(null, key);
+}
+
+function applySelectedDeviceTheme(theme) {
+    selectedDeviceTheme = theme || 'none';
+    if (!document.body) return;
+    if (selectedDeviceTheme === 'none') {
+        document.body.removeAttribute('data-pmms-device-theme');
+    } else {
+        document.body.setAttribute('data-pmms-device-theme', selectedDeviceTheme);
+    }
+    window.dispatchEvent(new CustomEvent('pmms:motionStateChanged'));
+}
+
+function refreshSelectedDeviceTheme() {
+    applySelectedDeviceTheme(activePlayerHandle ? getDeviceThemeForHandle(activePlayerHandle) : 'none');
+}
+
+function getQueueRevisionForHandle(handle) {
+    var key = handleKey(handle);
+    if (!key) return 0;
+
+    var session = deviceSessions[key] || null;
+    if (session && Number.isFinite(Number(session.queueRevision))) {
+        return Number(session.queueRevision);
+    }
+
+    var mp = mediaPlayerStates[key] || null;
+    var info = mp && mp.info ? mp.info : mp;
+    if (info && Number.isFinite(Number(info.queueRevision))) {
+        return Number(info.queueRevision);
+    }
+
+    if (session && Number.isFinite(Number(session.stateRevision))) {
+        return Number(session.stateRevision);
+    }
+    if (info && Number.isFinite(Number(info.stateRevision))) {
+        return Number(info.stateRevision);
+    }
+    return 0;
+}
+
+function buildQueueMutationPayload(handle, extra) {
+    var payload = extra || {};
+    payload.handle = handle;
+    payload.queueRevision = getQueueRevisionForHandle(handle);
+    payload.expectedRevision = payload.queueRevision;
+    return payload;
 }
 
 function getStartupState(handle) {
@@ -715,7 +941,7 @@ function getCurrentYoutubeProviderMode() {
 }
 
 function shouldShowYoutubeProviderControl() {
-    return getCurrentSearchSource && getCurrentSearchSource() === 'youtube';
+    return showYoutubeProviderSelector === true && getCurrentSearchSource && getCurrentSearchSource() === 'youtube';
 }
 
 function positionYoutubeProviderMenu(menu, btn) {
@@ -799,6 +1025,9 @@ function ensureYoutubeProviderMenu() {
 
 function applyYoutubeProviderPreference(options) {
     var next = clonePlainObject(options || {});
+    if (showYoutubeProviderSelector !== true) {
+        return next;
+    }
     if (!isYoutubeLikeUrl(next.url || '') || next.youtubeProvider || next.youtubeResolverProvider || next.resolverProvider) {
         return next;
     }
@@ -1165,13 +1394,25 @@ function switchView(viewId) {
     if (viewId === 'view-admin' && !isAdminUser()) {
         viewId = 'view-home';
     }
+    var changed = currentViewId !== viewId;
     currentViewId = viewId;
     document.querySelectorAll('.nav-item').forEach(function(el) {
         el.classList.toggle('active', el.dataset.target === viewId);
     });
     document.querySelectorAll('.view').forEach(function(el) {
-        el.classList.toggle('active', el.id === viewId);
+        var isActive = el.id === viewId;
+        el.classList.toggle('active', isActive);
+        if (isActive && changed) {
+            el.classList.remove('view-motion-in');
+            requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                    el.classList.add('view-motion-in');
+                    setTimeout(function() { el.classList.remove('view-motion-in'); }, 520);
+                });
+            });
+        }
     });
+    window.dispatchEvent(new CustomEvent('pmms:viewChanged', { detail: { viewId: viewId } }));
     if (viewId === 'view-library') {
         requestPlaylists(hasPendingFavoriteMutations());
         requestSharedPlaylists(false);
@@ -1247,6 +1488,15 @@ function updateUi(data) {
         if (Number.isFinite(Number(data.searchMinimumBusyMs))) {
             searchMinimumBusyMs = Number(data.searchMinimumBusyMs);
         }
+        if (typeof data.currentServerEndpoint === 'string') {
+            currentServerEndpoint = data.currentServerEndpoint;
+        }
+        if (data.searchProxyThumbnails !== undefined) {
+            searchProxyThumbnails = data.searchProxyThumbnails !== false;
+        }
+        if (data.showYoutubeProviderSelector !== undefined) {
+            showYoutubeProviderSelector = data.showYoutubeProviderSelector === true;
+        }
         if (data.deviceDefaults) {
             setGlobalDeviceDefaults(data.deviceDefaults);
         }
@@ -1257,6 +1507,7 @@ function updateUi(data) {
             activePlayerHandle = null;
             _lastActiveHandle = null;
         }
+        refreshSelectedDeviceTheme();
         if (data.openView) {
             switchView(data.openView);
         } else if (currentViewId === 'view-admin' && !data.selectedHandle) {
@@ -1280,6 +1531,9 @@ function updateUi(data) {
         _queuedUiData = null;
         _uiFrameScheduled = false;
         pendingControlState = {};
+        activePlayerHandle = null;
+        _lastActiveHandle = null;
+        applySelectedDeviceTheme('none');
         _activeSearchRequestId = null;
         clearTimeout(_searchRetryTimer);
         _searchRetryTimer = null;
@@ -1326,17 +1580,8 @@ function updateUi(data) {
 
         if (data.usableMediaPlayers) {
             setUsableMediaPlayers(data.usableMediaPlayers);
-            var currentHandles = data.usableMediaPlayers.map(function(d) { return d.handle.toString(); });
-            if (activePlayerHandle && currentHandles.indexOf(activePlayerHandle) === -1) {
-                var hasMediaState = !!mediaPlayerStates[activePlayerHandle];
-                var hasStartupState = !!startupStates[activePlayerHandle];
-                var hasSessionState = !!deviceSessions[activePlayerHandle];
-                var hasRequestedState = !!requestedStartupStates[activePlayerHandle];
-                if (!hasMediaState && !hasStartupState && !hasSessionState && !hasRequestedState) {
-                    clearPendingControlForHandle(activePlayerHandle);
-                    activePlayerHandle = null;
-                }
-            }
+            var currentHandles = data.usableMediaPlayers.map(function(d) { return getDeviceRenderKey(d); });
+            refreshSelectedDeviceTheme();
             var handlesChanged  = currentHandles.length !== _lastGridHandles.length ||
                 currentHandles.some(function(h, i) { return h !== _lastGridHandles[i]; });
 
@@ -1512,14 +1757,7 @@ function showNotification(text, title, color, dur) {
 'use strict';
 
 function _getNearbyDeviceRowLimit() {
-    var grid = document.getElementById('devices-grid');
-    var width = grid ? grid.clientWidth : 0;
-    if (!width && typeof window !== 'undefined' && window.innerWidth) {
-        width = Math.max(0, window.innerWidth - 320);
-    }
-    if (!width) return 4;
-    var limit = Math.floor((width + 12) / 192);
-    return Math.max(2, Math.min(4, limit));
+    return 4;
 }
 
 function _splitNearbyDevices(devices) {
@@ -1531,7 +1769,7 @@ function _splitNearbyDevices(devices) {
         return { visible: source, hidden: [] };
     }
 
-    var capacity = Math.max(1, limit - 1);
+    var capacity = limit - 1;
     var visible = source.slice(0, capacity);
     var activeDevice = null;
     if (activePlayerHandle) {
@@ -1618,13 +1856,13 @@ function populateNearbyDevicesModal(devices) {
         if (!card) return;
         card.classList.add('device-modal-card');
         card.onclick = function() {
-            selectDevice(handle);
+            selectDevice(handle, device);
             closeNearbyDevicesModal();
         };
         card.onkeydown = function(e) {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                selectDevice(handle);
+                selectDevice(handle, device);
                 closeNearbyDevicesModal();
             }
         };
@@ -1690,7 +1928,49 @@ function renderDevicesGrid(devices) {
 }
 
 function updateDevicesGridInPlace(devices) {
-    renderDevicesGrid(devices);
+    var grid = document.getElementById('devices-grid');
+    if (!grid) return;
+
+    var split = _splitNearbyDevices(devices || []);
+    var cardsByKey = {};
+    grid.querySelectorAll('.device-card[data-device-key]').forEach(function(card) {
+        cardsByKey[card.dataset.deviceKey] = card;
+    });
+
+    var missingCard = false;
+    split.visible.forEach(function(device) {
+        var key = getDeviceRenderKey(device);
+        var card = key ? cardsByKey[key] : null;
+        if (!card) {
+            missingCard = true;
+            return;
+        }
+        updateDeviceCard(card, device, activePlayerHandle === handleKey(device.handle));
+    });
+
+    if (missingCard) {
+        renderDevicesGrid(devices);
+        return;
+    }
+
+    var moreCard = grid.querySelector('.device-more-card');
+    if (split.hidden.length > 0) {
+        if (!moreCard) {
+            renderDevicesGrid(devices);
+            return;
+        }
+        var hiddenLabel = moreCard.querySelector('.device-dist');
+        var hiddenBadge = moreCard.querySelector('.badge-type');
+        if (hiddenLabel) hiddenLabel.textContent = split.hidden.length + ' hidden';
+        if (hiddenBadge) hiddenBadge.textContent = '+' + split.hidden.length;
+        moreCard.onclick = function() { openNearbyDevicesModal(devices); };
+    } else if (moreCard) {
+        renderDevicesGrid(devices);
+        return;
+    }
+
+    _updateDevicesCount(devices);
+    applyStaticTooltips();
 }
 
 function _isDevicePlaying(handle) {
@@ -1756,21 +2036,32 @@ function _updateDevicesCount(devices) {
         return total + (handle && isStartupPending(getStartupState(handle)) ? 1 : 0);
     }, 0);
 
-    count.textContent = devices.length + ' visible'
+    var split = _splitNearbyDevices(devices);
+    var visibleSlots = split.visible.length + (split.hidden.length > 0 ? 1 : 0);
+    var countLabel = visibleSlots + ' visible';
+    if (split.hidden.length > 0) {
+        countLabel += ' | ' + split.hidden.length + ' hidden';
+    }
+
+    count.textContent = countLabel
         + (playing > 0 ? ' | ' + playing + ' playing' : '')
         + (starting > 0 ? ' | ' + starting + ' starting' : '');
 }
 
 function _buildDeviceCard(device, handle, isActive) {
     var card = document.createElement('div');
-    card.className = 'device-card' + (isActive ? ' active' : '');
+    var theme = getDeviceThemeFromDevice(device, handle);
+    card.className = 'device-card device-theme-' + theme + (isActive ? ' active' : '');
     card.dataset.handle = handle;
+    card.dataset.deviceKey = getDeviceRenderKey(device);
+    card.dataset.deviceType = device.type || '';
+    card.dataset.deviceTheme = theme;
     card.setAttribute('role', 'button');
     card.setAttribute('tabindex', '0');
-    card.onclick = function() { selectDevice(handle); };
-    card.onkeydown = function(e) { if (e.key === 'Enter' || e.key === ' ') selectDevice(handle); };
+    card.onclick = function() { selectDevice(handle, device); };
+    card.onkeydown = function(e) { if (e.key === 'Enter' || e.key === ' ') selectDevice(handle, device); };
 
-    var deviceIcon = device.type === 'vehicle' ? _iconCar() : _iconSpeaker();
+    var deviceIcon = _getDeviceIcon(device, handle);
     card.innerHTML =
         '<div class="device-card-icon">' + deviceIcon + '</div>' +
         '<div class="device-card-body">' +
@@ -1784,14 +2075,49 @@ function _buildDeviceCard(device, handle, isActive) {
     return card;
 }
 
-function selectDevice(handle) {
+function updateDeviceCard(card, device, isActive) {
+    if (!card || !device) return;
+    var handle = handleKey(device.handle);
+    var theme = getDeviceThemeFromDevice(device, handle);
+    card.dataset.handle = handle;
+    card.dataset.deviceKey = getDeviceRenderKey(device);
+    card.classList.toggle('active', !!isActive);
+    ['vehicle', 'screen', 'speaker', 'interaction'].forEach(function(name) {
+        card.classList.toggle('device-theme-' + name, theme === name);
+    });
+    card.onclick = function() { selectDevice(handle, device); };
+    card.onkeydown = function(e) { if (e.key === 'Enter' || e.key === ' ') selectDevice(handle, device); };
+
+    if (card.dataset.deviceType !== (device.type || '') || card.dataset.deviceTheme !== theme) {
+        var icon = card.querySelector('.device-card-icon');
+        if (icon) icon.innerHTML = _getDeviceIcon(device, handle);
+        card.dataset.deviceType = device.type || '';
+        card.dataset.deviceTheme = theme;
+    }
+
+    var label = card.querySelector('.device-label');
+    if (label) label.textContent = _deviceLabel(device);
+    var dist = card.querySelector('.device-dist');
+    if (dist) dist.textContent = _formatDist(device.distance);
+    var badges = card.querySelector('.device-card-badges');
+    if (badges) badges.innerHTML = _buildDeviceCardBadges(device, handle);
+}
+
+function selectDevice(handle, device) {
     activePlayerHandle = handleKey(handle);
     _lastActiveHandle  = activePlayerHandle;
+    var theme = device ? getDeviceThemeFromDevice(device, activePlayerHandle) : getDeviceThemeForHandle(activePlayerHandle);
+    applySelectedDeviceTheme(theme);
     document.querySelectorAll('.device-card').forEach(function(c) {
         c.classList.toggle('active', c.dataset.handle === handleKey(handle));
     });
     updateBottomPlayer();
     updateNowPlayingPanel();
+    dispatchAdminUpdate();
+    sendMessage('selectDevice', { handle: activePlayerHandle, deviceType: theme });
+    window.dispatchEvent(new CustomEvent('pmms:adminSelectHandle', {
+        detail: { handle: activePlayerHandle }
+    }));
 }
 
 function _deviceLabel(device) {
@@ -1802,8 +2128,18 @@ function _formatDist(d) {
     return d >= 0 ? Math.round(d) + 'm away' : 'Nearby';
 }
 
+function _getDeviceIcon(device, handle) {
+    var theme = getDeviceThemeFromDevice(device, handle);
+    if (theme === 'vehicle') return _iconCar();
+    if (theme === 'screen') return _iconScreen();
+    if (theme === 'interaction') return _iconInteraction();
+    return _iconSpeaker();
+}
+
 function _iconSpeaker() { return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/></svg>'; }
 function _iconCar()     { return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 17H3a2 2 0 01-2-2V9a2 2 0 012-2h18a2 2 0 012 2v6a2 2 0 01-2 2h-2M5 17h14M5 17l-1 4m14-4l1 4"/><rect x="5" y="7" width="14" height="6" rx="1"/></svg>'; }
+function _iconScreen()  { return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>'; }
+function _iconInteraction() { return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>'; }
 function _iconMusic()   { return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'; }
 function _iconVideo()   { return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>'; }
 
@@ -1818,6 +2154,120 @@ var _lastSeekSendAt = 0;
 var _lastVolumeSendAt = 0;
 var _seekThrottleMs = 180;
 var _volumeThrottleMs = 120;
+
+function getPlayPauseMotionHtml() {
+    return '<span class="play-pause-motion" aria-hidden="true">' +
+        '<span class="play-pause-ring"></span>' +
+        '<span class="play-pause-spark play-pause-spark-a"></span>' +
+        '<span class="play-pause-spark play-pause-spark-b"></span>' +
+        '<span class="play-pause-spark play-pause-spark-c"></span>' +
+        '<svg class="play-pause-shape play-pause-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 19 12 6 20"/></svg>' +
+        '<svg class="play-pause-shape play-pause-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>' +
+    '</span>';
+}
+
+function animatePlayPauseButton(button, nextState) {
+    if (!button || typeof button.animate !== 'function') return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    var ring = button.querySelector('.play-pause-ring');
+    if (ring && typeof ring.animate === 'function') {
+        ring.animate([
+            { opacity: 0.55, transform: 'scale(0.45)' },
+            { opacity: 0.18, transform: 'scale(1.24)' },
+            { opacity: 0, transform: 'scale(1.48)' }
+        ], {
+            duration: 420,
+            easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
+        });
+    }
+
+    button.animate([
+        { transform: 'scale(0.94)' },
+        { transform: 'scale(1.1)' },
+        { transform: 'scale(1)' }
+    ], {
+        duration: 360,
+        easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+    });
+
+    var entering = button.querySelector(nextState === 'playing' ? '.play-pause-pause' : '.play-pause-play');
+    if (entering && typeof entering.animate === 'function') {
+        entering.animate([
+            { filter: 'blur(2px)', transform: 'scale(0.68) rotate(-14deg)' },
+            { filter: 'blur(0)', transform: 'scale(1.14) rotate(4deg)' },
+            { filter: 'blur(0)', transform: 'scale(1) rotate(0deg)' }
+        ], {
+            duration: 380,
+            easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
+        });
+    }
+
+    button.querySelectorAll('.play-pause-spark').forEach(function(spark, index) {
+        if (typeof spark.animate !== 'function') return;
+        var x = index === 0 ? -12 : (index === 1 ? 2 : 12);
+        var y = index === 1 ? -14 : 10;
+        spark.animate([
+            { opacity: 0.75, transform: 'translate(-50%, -50%) scale(0.35)' },
+            { opacity: 0, transform: 'translate(calc(-50% + ' + x + 'px), calc(-50% + ' + y + 'px)) scale(1)' }
+        ], {
+            duration: 360,
+            easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
+        });
+    });
+}
+
+function setPlayPauseButtonState(button, state) {
+    if (!button) return;
+    if (button.dataset.motionReady !== '1') {
+        button.innerHTML = getPlayPauseMotionHtml();
+        button.dataset.motionReady = '1';
+    }
+    var previous = button.dataset.state;
+    button.dataset.state = state;
+    if (previous && previous !== state) {
+        animatePlayPauseButton(button, state);
+    }
+}
+
+function getVolumeIconHtml(state) {
+    var waves = '';
+    if (state === 'low') {
+        waves = '<path class="volume-wave volume-wave-1" d="M15 10a3 3 0 0 1 0 4"/>';
+    } else if (state === 'medium') {
+        waves = '<path class="volume-wave volume-wave-1" d="M15 9a4 4 0 0 1 0 6"/><path class="volume-wave volume-wave-2" d="M18 7a7 7 0 0 1 0 10"/>';
+    } else if (state === 'high') {
+        waves = '<path class="volume-wave volume-wave-1" d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path class="volume-wave volume-wave-2" d="M19.07 4.93a10 10 0 0 1 0 14.14"/>';
+    } else {
+        waves = '<line class="volume-muted-line" x1="18" y1="9" x2="22" y2="15"/><line class="volume-muted-line" x1="22" y1="9" x2="18" y2="15"/>';
+    }
+
+    return '<span class="volume-motion" aria-hidden="true">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<polygon class="volume-body" points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>' +
+            waves +
+        '</svg>' +
+    '</span>';
+}
+
+function setVolumeButtonState(button, value, muted) {
+    if (!button) return;
+    var volume = clampPercent(value, localBaseVolume);
+    var state = (muted || volume <= 0)
+        ? 'muted'
+        : (volume < 34 ? 'low' : (volume < 67 ? 'medium' : 'high'));
+
+    if (button.dataset.volumeState !== state) {
+        button.innerHTML = getVolumeIconHtml(state);
+        button.dataset.volumeState = state;
+    }
+    button.dataset.state = state === 'muted' ? 'muted' : 'unmuted';
+    button.classList.toggle('active', state === 'muted');
+}
+
+function updateVolumeAffordance(value, muted) {
+    setVolumeButtonState(document.getElementById('np-mute'), value, muted);
+}
 
 function _h() { return activePlayerHandle ? parseInt(activePlayerHandle, 10) : null; }
 
@@ -1940,6 +2390,7 @@ function initPlayerControls() {
         var beginSeek = function() {
             if (progress.disabled) return;
             _isScrubbing = true;
+            progress.classList.add('is-scrubbing');
             _seekDragValue = parseFloat(progress.value) || 0;
         };
 
@@ -1948,6 +2399,7 @@ function initPlayerControls() {
             var value = parseFloat(progress.value) || 0;
             sendSeekUpdate(value, true);
             _isScrubbing = false;
+            progress.classList.remove('is-scrubbing');
             _seekDragValue = null;
         };
 
@@ -1974,6 +2426,7 @@ function initPlayerControls() {
         var beginVolume = function() {
             if (volume.disabled) return;
             _isAdjustingVolume = true;
+            volume.classList.add('is-scrubbing');
             _volumeDragValue = parseInt(volume.value, 10) || 0;
         };
 
@@ -1982,6 +2435,7 @@ function initPlayerControls() {
             var value = parseInt(volume.value, 10) || 0;
             sendVolumeUpdate(value, true);
             _isAdjustingVolume = false;
+            volume.classList.remove('is-scrubbing');
             _volumeDragValue = null;
         };
 
@@ -1995,6 +2449,7 @@ function initPlayerControls() {
             var volumeLabel = document.getElementById('np-volume-val');
             if (volumeLabel) volumeLabel.textContent = v + '%';
             _updateProgressFill(this);
+            updateVolumeAffordance(v, v <= 0);
             sendVolumeUpdate(v, false);
         });
 
@@ -2005,7 +2460,7 @@ function initPlayerControls() {
     }
 }
 
-function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream) {
+function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream, isMuted) {
     if (vol) {
         vol.disabled = false;
         if (_isAdjustingVolume && _volumeDragValue != null) {
@@ -2019,6 +2474,7 @@ function _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInf
     if (volVal) {
         var volForLabel = (_isAdjustingVolume && _volumeDragValue != null) ? _volumeDragValue : currentVol;
         volVal.textContent = volForLabel + '%';
+        updateVolumeAffordance(volForLabel, isMuted || volForLabel <= 0);
     }
 
     if (progress) {
@@ -2139,7 +2595,7 @@ function updateBottomPlayer() {
 
     if (playerKey === _lastBottomPlayerKey) {
         if (hasInfo) {
-            _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream);
+            _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream, isMuted);
         } else {
             if (progress) {
                 progress.disabled = true;
@@ -2153,6 +2609,7 @@ function updateBottomPlayer() {
                 _updateProgressFill(vol);
             }
             if (volVal) volVal.textContent = localBaseVolume + '%';
+            updateVolumeAffordance(localBaseVolume, localBaseVolume <= 0);
             if (timeCur) timeCur.textContent = startupPending ? getStartupPhaseLabel(startupState) : (hasLocalFailure ? 'Error' : '0:00');
             if (timeTot) timeTot.textContent = startupPending ? '...' : (hasLocalFailure ? 'Local' : '0:00');
         }
@@ -2171,10 +2628,7 @@ function updateBottomPlayer() {
         playBtn.setAttribute('aria-label', playLabel);
         var playState = (!hasInfo || isPaused) ? 'paused' : 'playing';
         if (playBtn.dataset.state !== playState) {
-            playBtn.innerHTML = (!hasInfo || isPaused)
-                ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>'
-                : '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
-            playBtn.dataset.state = playState;
+            setPlayPauseButtonState(playBtn, playState);
         }
         playBtn.onclick = function() {
             if (playDisabled) return;
@@ -2204,7 +2658,7 @@ function updateBottomPlayer() {
         prevBtn.setAttribute('aria-label', 'Previous track');
         prevBtn.onclick  = function() {
             if (!canGoPrevious) return;
-            sendMessage('previous', { handle: _h() });
+            sendMessage('previous', buildQueueMutationPayload(_h()));
         };
     }
 
@@ -2212,7 +2666,7 @@ function updateBottomPlayer() {
         nextBtn.disabled = !canControl;
         nextBtn.setAttribute('data-tooltip', 'Next track');
         nextBtn.setAttribute('aria-label', 'Next track');
-        nextBtn.onclick  = function() { sendMessage('next', { handle: _h() }); };
+        nextBtn.onclick  = function() { sendMessage('next', buildQueueMutationPayload(_h())); };
     }
 
     if (loopBtn) {
@@ -2237,13 +2691,7 @@ function updateBottomPlayer() {
         muteBtn.classList.toggle('active', !!isMuted);
         muteBtn.setAttribute('data-tooltip', isMuted ? 'Unmute' : 'Mute');
         muteBtn.setAttribute('aria-label', isMuted ? 'Unmute' : 'Mute');
-        var muteState = isMuted ? 'muted' : 'unmuted';
-        if (muteBtn.dataset.state !== muteState) {
-            muteBtn.innerHTML = isMuted
-                ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
-                : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
-            muteBtn.dataset.state = muteState;
-        }
+        setVolumeButtonState(muteBtn, currentVol, isMuted);
         muteBtn.onclick = function() {
             var nextMuted = !isMuted;
             setPendingControlField(activePlayerHandle, 'muted', nextMuted);
@@ -2270,7 +2718,7 @@ function updateBottomPlayer() {
     }
 
     if (hasInfo) {
-        _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream);
+        _updateBottomPlayerLive(progress, vol, volVal, timeCur, timeTot, hasInfo, hasDuration, canSeek, canControl, duration, offset, currentVol, isLiveStream, isMuted);
         return;
     }
 
@@ -2286,6 +2734,7 @@ function updateBottomPlayer() {
         _updateProgressFill(vol);
     }
     if (volVal) volVal.textContent = localBaseVolume + '%';
+    updateVolumeAffordance(localBaseVolume, localBaseVolume <= 0);
     if (timeCur) timeCur.textContent = startupPending ? getStartupPhaseLabel(startupState) : (hasLocalFailure ? 'Error' : '0:00');
     if (timeTot) timeTot.textContent = startupPending ? '...' : (hasLocalFailure ? 'Local' : '0:00');
 }
@@ -2305,13 +2754,12 @@ function _setPlayerIdle(titleEl, subtitleEl, playBtn, prevBtn, nextBtn, stopBtn,
     if (volVal) volVal.textContent = localBaseVolume + '%';
     if (timeCur)  timeCur.textContent = '0:00';
     if (timeTot)  timeTot.textContent = '0:00';
-    if (playBtn) playBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>';
-    if (playBtn) playBtn.dataset.state = 'paused';
+    setPlayPauseButtonState(playBtn, 'paused');
     if (loopBtn) {
         loopBtn.dataset.mode = 'off';
         loopBtn.innerHTML = getLoopIcon('off');
     }
-    if (muteBtn) muteBtn.dataset.state = 'unmuted';
+    setVolumeButtonState(muteBtn, localBaseVolume, false);
     _lastBottomPlayerKey = '';
 }
 
@@ -2605,7 +3053,7 @@ function bindNowPlayingPanelActions(panel) {
     if (previousBtn) {
         previousBtn.onclick = function() {
             if (!activePlayerHandle) return;
-            sendMessage('previous', { handle: _h() });
+            sendMessage('previous', buildQueueMutationPayload(_h()));
         };
     }
 
@@ -2656,7 +3104,7 @@ function bindNowPlayingPanelActions(panel) {
             if (!index || index < 1) return;
             removeQueueItemLocally(activePlayerHandle, index);
             updateNowPlayingPanel();
-            sendMessage('removeFromQueue', { handle: _h(), index: index });
+            sendMessage('removeFromQueue', buildQueueMutationPayload(_h(), { index: index }));
         };
     });
 
@@ -2900,12 +3348,12 @@ function updateNowPlayingPanel() {
 
     var info = liveMp.info;
     var offset = liveMp.offset || 0;
-    var normalizedThumb = normalizeRemoteAssetUrl(info.thumbnail || '');
+    var thumbnailCandidates = getMediaThumbnailCandidates(info);
     var statusHtml = hasLocalFailure
         ? '<div class="np-panel-actions" style="margin-top:12px;align-items:flex-start;flex-direction:column;gap:8px;color:var(--red);"><span>' + safeText(localFailure.message || 'Playback failed on this client.') + '</span></div>'
         : '';
-    var thumbHtml = normalizedThumb
-        ? '<div class="np-thumb" style="background-image:url(' + encodeURI(normalizedThumb) + ')"></div>'
+    var thumbHtml = thumbnailCandidates.length
+        ? '<div class="np-thumb" data-thumb="1"><img class="np-thumb-img" alt="" loading="lazy"></div>'
         : '<div class="np-thumb np-thumb-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>';
     var canControlNowPlaying = canControlMediaPlayer(liveMp);
     var audioTrackControlHtml = getAudioTrackControlHtml(info, canControlNowPlaying);
@@ -2930,6 +3378,7 @@ function updateNowPlayingPanel() {
         getNowPlayingSecondaryListsHtml(activePlayerHandle, liveMp, getEffectiveDeviceSession(activePlayerHandle));
 
     bindNowPlayingPanelActions(panel);
+    bindMediaThumbnailFallback(panel.querySelector('.np-thumb[data-thumb="1"]'), thumbnailCandidates);
     restorePanelScrollPositions(panel, panelScrollPositions);
     updateNowPlayingPanelTimeOnly(panel, liveMp);
     applyStaticTooltips();
@@ -3355,14 +3804,11 @@ function renderSearchResults(results, requestId) {
             var favoriteKey = isRadioResult ? getRadioFavoriteKey(res) : null;
             var isRadioFavorite = favoriteKey && radioFavorites[favoriteKey];
 
-            var thumbSrc = normalizeRemoteAssetUrl(res.thumbnail || '');
+            var thumbCandidates = getSearchThumbnailCandidates(res);
+            var thumbSrc = thumbCandidates[0] || '';
             var thumbHtml = thumbSrc
-                ? '<div class="sr-thumb" data-thumb="1"></div>'
-                : '<div class="sr-thumb sr-thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-                    (isRadioResult
-                        ? '<path d="M4.9 19.1A10 10 0 0 1 2 12a10 10 0 0 1 20 0 10 10 0 0 1-2.9 7.1"/><circle cx="12" cy="12" r="2"/><path d="M12 14v8"/>'
-                        : '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') +
-                    '</svg></div>';
+                ? '<div class="sr-thumb" data-thumb="1"><img class="sr-thumb-img" alt="" loading="lazy"></div>'
+                : '<div class="sr-thumb sr-thumb-empty">' + getSearchThumbnailFallbackHtml(isRadioResult) + '</div>';
 
             var sourceBadge = res.source ? '<span class="badge badge-source">' + safeText(res.source) + '</span>' : '';
             var liveBadge = (res.live === true || isRadioResult) ? '<span class="badge badge-live">LIVE</span>' : '';
@@ -3393,7 +3839,7 @@ function renderSearchResults(results, requestId) {
 
             var thumbEl = item.querySelector('.sr-thumb[data-thumb="1"]');
             if (thumbEl) {
-                thumbEl.style.backgroundImage = 'url("' + thumbSrc.replace(/"/g, '%22') + '")';
+                bindSearchThumbnailFallback(thumbEl, thumbCandidates, isRadioResult);
             }
 
             function playThis(e) {
@@ -3408,6 +3854,7 @@ function renderSearchResults(results, requestId) {
                     duration: res.duration,
                     author: res.author,
                     thumbnail: thumbSrc || res.thumbnail,
+                    thumbnailCandidates: thumbCandidates,
                     source: resultSource,
                     radio: isRadioResult,
                     live: res.live === true || isRadioResult,
@@ -5642,12 +6089,6 @@ function ensureUiEnhancements() {
     style.id = 'pmms-ui-enhancements';
     style.textContent =
         '[data-tooltip]{position:relative;}' +
-        '[data-tooltip]:hover::after,[data-tooltip]:focus-visible::after{' +
-            'content:attr(data-tooltip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);' +
-            'background:rgba(13,17,16,0.98);color:var(--text-primary);border:1px solid var(--border-hover);' +
-            'border-radius:6px;padding:6px 9px;font-size:11px;white-space:nowrap;pointer-events:none;z-index:1200;' +
-            'box-shadow:var(--shadow-sm);' +
-        '}' +
         '#friend-suggestions{' +
             'position:absolute;left:0;right:0;top:calc(100% + 8px);display:none;flex-direction:column;gap:4px;' +
             'padding:8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;' +
@@ -5871,6 +6312,8 @@ window.addEventListener('message', function(event) {
                 maxRange: d.maxRange,
                 adminMaxRange: d.adminMaxRange,
                 searchMinimumBusyMs: d.searchMinimumBusyMs,
+                searchProxyThumbnails: d.searchProxyThumbnails,
+                currentServerEndpoint: d.currentServerEndpoint,
                 deviceDefaults: d.deviceDefaults,
                 openView: d.openView,
                 baseVolume: d.baseVolume,
@@ -5957,6 +6400,7 @@ window.addEventListener('message', function(event) {
 
         case 'reset':
             activePlayerHandle = null;
+            applySelectedDeviceTheme('none');
             mediaPlayerStates  = {};
             startupStates = {};
             deviceSessions = {};

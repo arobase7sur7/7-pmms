@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7-PMMS YouTube Player</title>
+    <style>
+      html,
+      body,
+      #player,
+      #fallback {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+      }
+
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+        background: #000;
+      }
+
+      #status {
+        position: fixed;
+        inset: auto 16px 16px 16px;
+        z-index: 5;
+        padding: 10px 12px;
+        color: #fff;
+        font:
+          13px/1.35 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: rgba(0, 0, 0, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 6px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="player"></div>
+    <div id="fallback" hidden></div>
+    <div id="status"></div>
+
+    <script>
+      (function () {
+        "use strict";
+
+        var params = new URLSearchParams(window.location.search);
+        var videoId = cleanVideoId(
+          params.get("videoId") || params.get("v") || "",
+        );
+        var startSeconds = Math.max(0, Number(params.get("start")) || 0);
+        var allowFrontendFallback = params.get("allowFrontendFallback") === "1";
+        var frontendTimeoutMs = Math.max(
+          2500,
+          Math.min(12000, Number(params.get("frontendTimeoutMs")) || 6000),
+        );
+        var frontends = parseFrontends(params.get("frontends") || "");
+        var frontendCandidates = buildFrontendCandidates(frontends);
+        var player = null;
+        var method = "youtube-nocookie";
+        var hostIndex = 0;
+        var frontendIndex = 0;
+        var frontendFrame = null;
+        var frontendStartedAt = 0;
+        var frontendBaseTime = startSeconds;
+        var frontendPaused = true;
+        var stateTimer = 0;
+        var hostList = [
+          "https://www.youtube.com",
+          "https://www.youtube-nocookie.com",
+        ];
+
+        function cleanVideoId(value) {
+          value = String(value || "").trim();
+          var match = value.match(/^[a-zA-Z0-9_-]{11}$/);
+          return match ? value : "";
+        }
+
+        function sanitizeFrontendConfig(item) {
+          var instanceUrl =
+            typeof item === "object" && item
+              ? item.url || item.origin || item.baseUrl || ""
+              : item;
+          try {
+            var parsed = new URL(String(instanceUrl).trim());
+            parsed.hash = "";
+            parsed.search = "";
+            if (
+              parsed.protocol !== "https:" &&
+              parsed.hostname !== "localhost" &&
+              parsed.hostname !== "127.0.0.1"
+            ) {
+              return null;
+            }
+            var type =
+              typeof item === "object" && item && item.type
+                ? String(item.type).toLowerCase()
+                : "auto";
+            var templates = [];
+            if (typeof item === "object" && item) {
+              if (typeof item.template === "string" && item.template) {
+                templates.push(item.template);
+              }
+              if (Array.isArray(item.templates)) {
+                item.templates.forEach(function (template) {
+                  if (typeof template === "string" && template) {
+                    templates.push(template);
+                  }
+                });
+              }
+            }
+            return {
+              origin: parsed.origin,
+              type: type,
+              templates: templates,
+            };
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function parseFrontends(value) {
+          if (!value) return [];
+          try {
+            var decoded = JSON.parse(value);
+            if (Array.isArray(decoded)) {
+              return decoded.map(sanitizeFrontendConfig).filter(Boolean);
+            }
+          } catch (_) {}
+          return value
+            .split(",")
+            .map(function (item) {
+              try {
+                var parsed = new URL(item.trim());
+                parsed.hash = "";
+                parsed.search = "";
+                if (
+                  parsed.protocol !== "https:" &&
+                  parsed.hostname !== "localhost" &&
+                  parsed.hostname !== "127.0.0.1"
+                ) {
+                  return null;
+                }
+                return {
+                  origin: parsed.origin,
+                  type: "auto",
+                  templates: [],
+                };
+              } catch (_) {
+                return null;
+              }
+            })
+            .filter(Boolean);
+        }
+
+        function addCandidate(candidates, seen, config, template, type, label) {
+          var key = config.origin + "|" + template;
+          if (seen[key]) {
+            return;
+          }
+          seen[key] = true;
+          candidates.push({
+            origin: config.origin,
+            template: template,
+            type: type || config.type || "auto",
+            label: label || config.origin,
+          });
+        }
+
+        function buildFrontendCandidates(configs) {
+          var candidates = [];
+          var seen = {};
+          configs.forEach(function (config) {
+            if (!config || !config.origin) {
+              return;
+            }
+            if (Array.isArray(config.templates) && config.templates.length) {
+              config.templates.forEach(function (template) {
+                addCandidate(
+                  candidates,
+                  seen,
+                  config,
+                  template,
+                  config.type,
+                  config.origin + " custom",
+                );
+              });
+              return;
+            }
+
+            if (config.type === "invidious" || config.type === "auto") {
+              addCandidate(
+                candidates,
+                seen,
+                config,
+                "{origin}/embed/{videoId}?autoplay=1&local=true&quality=dash&thin_mode=true&start={start}",
+                "invidious",
+                config.origin + " embed",
+              );
+              addCandidate(
+                candidates,
+                seen,
+                config,
+                "{origin}/watch?v={videoId}&autoplay=1&local=true&quality=dash&thin_mode=true&start={start}",
+                "invidious",
+                config.origin + " watch",
+              );
+            }
+            if (config.type === "piped" || config.type === "auto") {
+              addCandidate(
+                candidates,
+                seen,
+                config,
+                "{origin}/watch?v={videoId}&playerAutoPlay=true&autoplay=true&quality=720&start={start}",
+                "piped",
+                config.origin + " watch",
+              );
+            }
+          });
+          return candidates;
+        }
+
+        function showStatus(message) {
+          var status = document.getElementById("status");
+          status.textContent = message || "";
+          status.style.display = message ? "block" : "none";
+        }
+
+        function getState(extra) {
+          var state = {
+            method: method,
+            currentTime: startSeconds,
+            duration: 0,
+            paused: true,
+            live: false,
+          };
+          if (player) {
+            try {
+              state.currentTime =
+                Number(player.getCurrentTime && player.getCurrentTime()) || 0;
+            } catch (_) {}
+            try {
+              state.duration =
+                Number(player.getDuration && player.getDuration()) || 0;
+            } catch (_) {}
+            try {
+              var ytState = Number(
+                player.getPlayerState && player.getPlayerState(),
+              );
+              state.paused = ytState !== 1 && ytState !== 3;
+            } catch (_) {}
+            try {
+              var data = player.getVideoData && player.getVideoData();
+              if (data && data.title) state.title = data.title;
+            } catch (_) {}
+          } else if (frontendFrame) {
+            state.currentTime = frontendPaused
+              ? frontendBaseTime
+              : frontendBaseTime + (Date.now() - frontendStartedAt) / 1000;
+            state.duration = 0;
+            state.paused = frontendPaused;
+          }
+          if (extra) {
+            Object.keys(extra).forEach(function (key) {
+              state[key] = extra[key];
+            });
+          }
+          return state;
+        }
+
+        function send(eventName, payload) {
+          payload = payload || {};
+          payload.state = getState(payload.state || {});
+          window.parent.postMessage(
+            {
+              type: "pmms-youtube-event",
+              event: eventName,
+              payload: payload,
+            },
+            "*",
+          );
+        }
+
+        function describeError(code) {
+          code = Number(code);
+          if (code === 2) return "Invalid YouTube video id.";
+          if (code === 5) return "YouTube HTML5 playback failed in Chromium.";
+          if (code === 100) return "This YouTube video is unavailable.";
+          if (code === 101 || code === 150)
+            return "The video owner has disabled embedded playback.";
+          if (code === 153)
+            return "YouTube rejected the embed because the request did not provide an accepted identity or referrer.";
+          return "YouTube playback failed.";
+        }
+
+        function isPolicyBlocked(code) {
+          code = Number(code);
+          return code === 101 || code === 150;
+        }
+
+        function isFinalOfficialError(code) {
+          code = Number(code);
+          return code === 2 || code === 100 || isPolicyBlocked(code);
+        }
+
+        function loadIframeApi(callback) {
+          if (window.YT && typeof window.YT.Player === "function") {
+            callback();
+            return;
+          }
+          var previous = window.onYouTubeIframeAPIReady;
+          window.onYouTubeIframeAPIReady = function () {
+            if (typeof previous === "function") {
+              try {
+                previous();
+              } catch (_) {}
+            }
+            callback();
+          };
+          var script = document.createElement("script");
+          script.src = "https://www.youtube.com/iframe_api";
+          script.async = true;
+          script.onerror = function () {
+            tryFrontendOrFail(null, "Could not load the YouTube IFrame API.");
+          };
+          document.head.appendChild(script);
+        }
+
+        function createOfficialPlayer() {
+          method = hostList[hostIndex] === "https://www.youtube-nocookie.com" ? "youtube-nocookie" : "youtube";
+          showStatus("");
+          document.getElementById("fallback").hidden = true;
+          document.getElementById("player").hidden = false;
+          document.getElementById("player").innerHTML = "";
+
+          player = new window.YT.Player("player", {
+            host: hostList[hostIndex],
+            videoId: videoId,
+            width: "100%",
+            height: "100%",
+            playerVars: {
+              autoplay: 1,
+              controls: 0,
+              disablekb: 1,
+              enablejsapi: 1,
+              fs: 0,
+              iv_load_policy: 3,
+              playsinline: 1,
+              rel: 0,
+              start: Math.floor(startSeconds),
+              origin: "youtube.com",
+              widget_referrer: "https://www.youtube.com",
+              cc_load_policy: 0,
+              modestbranding: 1,
+              hl: "en",
+              gl: "US",
+            },
+            events: {
+              onReady: function (event) {
+                try {
+                  event.target.mute();
+                  event.target.setVolume(0);
+                  event.target.playVideo();
+                } catch (_) {}
+                send("ready");
+              },
+              onStateChange: function (event) {
+                var state = Number(event && event.data);
+                if (state === 1) {
+                  send("playing");
+                } else if (state === 2) {
+                  send("paused");
+                } else if (state === 0) {
+                  send("ended");
+                } else if (state === 3 || state === 5) {
+                  send("metadata");
+                }
+              },
+              onError: function (event) {
+                var code = Number(event && event.data);
+                tryFrontendOrFail(code, describeError(code));
+              },
+              onAutoplayBlocked: function () {
+                tryFrontendOrFail(null, "Chromium blocked autoplay.");
+              },
+            },
+          });
+        }
+
+        function tryFrontendOrFail(code, message) {
+          if (code === 5 && hostIndex < hostList.length - 1) {
+            hostIndex += 1;
+            try {
+              if (player && typeof player.destroy === "function")
+                player.destroy();
+            } catch (_) {}
+            player = null;
+            createOfficialPlayer();
+            return;
+          }
+          if ((!isFinalOfficialError(code) || isPolicyBlocked(code)) && hostIndex < hostList.length - 1) {
+            hostIndex += 1;
+            try {
+              if (player && typeof player.destroy === "function") {
+                player.destroy();
+              }
+            } catch (_) {}
+            player = null;
+            createOfficialPlayer();
+            return;
+          }
+
+          if (
+            !isPolicyBlocked(code) &&
+            allowFrontendFallback &&
+            frontendCandidates.length
+          ) {
+            tryNextFrontend(message);
+            return;
+          }
+
+          showStatus(message);
+          send("error", {
+            code: code,
+            message: message || describeError(code),
+          });
+        }
+
+        function buildFrontendUrl(candidate) {
+          var start = String(Math.max(0, Math.floor(startSeconds)));
+          var encodedId = encodeURIComponent(videoId);
+          var template =
+            candidate && candidate.template
+              ? candidate.template
+              : "{origin}/watch?v={videoId}&autoplay=1&start={start}";
+          return template
+            .replace(
+              /\{origin\}/g,
+              (candidate.origin || "").replace(/\/+$/, ""),
+            )
+            .replace(/\{videoId\}/g, encodedId)
+            .replace(/\{start\}/g, encodeURIComponent(start));
+        }
+
+        function tryNextFrontend(previousMessage) {
+          if (frontendIndex >= frontendCandidates.length) {
+            showStatus(
+              previousMessage ||
+                "No compatible YouTube front-end was available.",
+            );
+            send("error", {
+              message:
+                previousMessage ||
+                "No compatible YouTube front-end was available.",
+            });
+            return;
+          }
+
+          method = "frontend";
+          frontendPaused = false;
+          frontendBaseTime = startSeconds;
+          frontendStartedAt = Date.now();
+          player = null;
+          var candidate = frontendCandidates[frontendIndex++];
+          method = candidate.type || "frontend";
+          document.getElementById("player").hidden = true;
+          var container = document.getElementById("fallback");
+          container.hidden = false;
+          container.innerHTML = "";
+          frontendFrame = document.createElement("iframe");
+          frontendFrame.allow =
+            "autoplay; encrypted-media; fullscreen; picture-in-picture";
+          frontendFrame.referrerPolicy = "strict-origin-when-cross-origin";
+          frontendFrame.src = buildFrontendUrl(candidate);
+          frontendFrame.dataset.frontendIndex = String(frontendIndex - 1);
+          container.appendChild(frontendFrame);
+
+          var completed = false;
+          var timeout = window.setTimeout(function () {
+            if (completed) return;
+            completed = true;
+            tryNextFrontend("Public YouTube front-end timed out.");
+          }, frontendTimeoutMs);
+
+          frontendFrame.onload = function () {
+            if (completed) return;
+            completed = true;
+            window.clearTimeout(timeout);
+            showStatus("");
+            send("ready", {
+              state: {
+                method: method,
+                frontend: candidate.label || candidate.origin,
+              },
+            });
+            send("playing", {
+              state: {
+                method: method,
+                frontend: candidate.label || candidate.origin,
+              },
+            });
+          };
+        }
+
+        function handleCommand(command) {
+          command = command || {};
+          var name = command.command;
+          if (name === "load" && command.videoId) {
+            videoId = cleanVideoId(command.videoId) || videoId;
+            startSeconds = Math.max(
+              0,
+              Number(command.start) || startSeconds || 0,
+            );
+            if (command.paused === true && player && player.pauseVideo) {
+              try {
+                player.pauseVideo();
+              } catch (_) {}
+            }
+            return;
+          }
+
+          if (name === "play") {
+            frontendPaused = false;
+            frontendStartedAt = Date.now();
+            if (player && player.playVideo) {
+              try {
+                player.playVideo();
+              } catch (_) {}
+            }
+            send("playing");
+            return;
+          }
+
+          if (name === "pause") {
+            if (!frontendPaused) {
+              frontendBaseTime = getState().currentTime;
+            }
+            frontendPaused = true;
+            if (player && player.pauseVideo) {
+              try {
+                player.pauseVideo();
+              } catch (_) {}
+            }
+            send("paused");
+            return;
+          }
+
+          if (name === "seek") {
+            var seconds = Math.max(0, Number(command.seconds) || 0);
+            startSeconds = seconds;
+            frontendBaseTime = seconds;
+            frontendStartedAt = Date.now();
+            if (player && player.seekTo) {
+              try {
+                player.seekTo(seconds, true);
+              } catch (_) {}
+            } else if (frontendFrame) {
+              var candidateIndex = Number(frontendFrame.dataset.frontendIndex);
+              var currentCandidate =
+                frontendCandidates[
+                  Number.isFinite(candidateIndex)
+                    ? candidateIndex
+                    : Math.max(0, frontendIndex - 1)
+                ] || frontendCandidates[0];
+              frontendFrame.src = buildFrontendUrl(currentCandidate);
+            }
+            send("metadata");
+            return;
+          }
+
+          if (name === "volume") {
+            var volume = Math.max(0, Math.min(1, Number(command.volume) || 0));
+            if (player && player.setVolume) {
+              try {
+                player.setVolume(Math.round(volume * 100));
+                if (command.muted === true || volume <= 0) {
+                  player.mute();
+                } else {
+                  player.unMute();
+                }
+              } catch (_) {}
+            }
+            return;
+          }
+
+          if (name === "stop") {
+            if (player && player.stopVideo) {
+              try {
+                player.stopVideo();
+              } catch (_) {}
+            }
+            window.clearInterval(stateTimer);
+          }
+        }
+
+        window.addEventListener("message", function (event) {
+          var data = event.data || {};
+          if (!data || data.type !== "pmms-youtube-control") {
+            return;
+          }
+          handleCommand(data.payload || {});
+        });
+
+        if (!videoId) {
+          showStatus("Missing YouTube video id.");
+          send("error", { message: "Missing YouTube video id." });
+          return;
+        }
+
+        stateTimer = window.setInterval(function () {
+          send("metadata");
+        }, 1000);
+
+        loadIframeApi(createOfficialPlayer);
+      })();
+    </script>
+  </body>
+</html>

@@ -77,6 +77,8 @@ Config.search                          = {
     minimumBusyMs = 500,
     maxInstances = 8,
     instanceFailureCooldownSeconds = 600,
+    proxyThumbnails = true,
+    thumbnailProxyTimeoutMs = 1500,
 }
 
 Config.directLinks                     = {
@@ -236,6 +238,24 @@ Config.dui                             = {
     hlsCanvasMaxHeight   = 1080,
     hlsCanvasMaxFps      = 30,
 
+    youtube              = {
+        -- Optional: host web/youtube-player/player.html on a real HTTPS domain
+        -- and paste the URL here. When set, it becomes the primary YouTube path.
+        externalPlayerUrl = "",
+        preferExternalPlayer = true,
+
+        -- Optional public front-end fallback for non-policy iframe/API failures.
+        -- This is disabled by default because public instances are best-effort,
+        -- may rate-limit, and cannot override YouTube owner-disabled embeds.
+        allowFrontendFallback = false,
+        frontendFallbackTimeoutMs = 6000,
+        frontendInstances = {
+            { type = "invidious", url = "https://yewtu.be" },
+            { type = "invidious", url = "https://inv.nadeko.net" },
+            { type = "piped", url = "https://piped.video" },
+        },
+    },
+
     urls                 = {},
 
     probe                = {
@@ -254,24 +274,40 @@ Config.resolver                        = {
     parallelInstancesPerProvider = 2,
     -- How long a failing resolver instance is skipped before retrying it
     instanceFailureCooldownSeconds = 600,
+    -- How long one failed media source is quarantined from automatic retries/loop recycling
+    sourceFailureCooldownSeconds = 900,
     -- Used when providers expose alternate audio metadata. First match wins
     audioLanguagePriority = { "original", "en", "en-US", "und" },
 
-    extractor = {
+    -- Default public-release YouTube mode: client Chromium/DUI plays YouTube directly.
+    -- Server-side extractors are developer-only fallbacks and are not required for users.
+    browserYoutube = {
         enabled = true,
+        primary = true,
+        hideProviderSelector = true,
+    },
+
+    extractor = {
+        enabled = false,
         providerOrder = { "yt_dlp_local", "extractor_http", "cobalt", "invidious", "piped" },
+        -- Advanced/developer-only fallback. Leave disabled for normal public installs.
+        -- Public Invidious/Piped playback is best-effort and often slow/blocked.
+        allowPublicFallbacks = false,
         httpEndpoints = {
             -- Example:
             -- "https://your-resolver.example.com/api/resolve",
         },
-        -- First available command is used in order.
+        -- Optional dev/private-fork extractor commands. Not required for public users.
         ytDlpCommand = {
             "yt-dlp",
             "python -m yt_dlp",
             "py -m yt_dlp",
         },
-        -- Optional explicit binary/path override. Example: "C:/tools/yt-dlp.exe"
+        -- Optional dev/private-fork binary/path override. Example: "C:/tools/yt-dlp.exe"
         ytDlpPath = nil,
+        -- Optional cookie file or extra args for yt-dlp when YouTube challenges the server IP.
+        ytDlpCookiesPath = nil,
+        ytDlpExtraArgs = {},
         timeoutMs = 9000,
         cooldownSeconds = 300,
         maxAttemptsPerProvider = 2,
@@ -281,7 +317,7 @@ Config.resolver                        = {
         softBanDurationSeconds = 60,
         hardBanDurationSeconds = 300,
         providers = {
-            yt_dlp_local = { maxConcurrent = 3, timeoutSeconds = 20 },
+            yt_dlp_local = { maxConcurrent = 1, timeoutSeconds = 20 },
             extractor_http = { maxConcurrent = 5, timeoutSeconds = 15 },
             cobalt = { maxConcurrent = 4, timeoutSeconds = 12 },
             invidious = { maxConcurrent = 6, timeoutSeconds = 10 },
@@ -289,9 +325,8 @@ Config.resolver                        = {
         },
     },
 
-    -- Optional Cobalt media downloader API endpoints. This is the most reliable
-    -- ad-free fallback when you cannot run yt-dlp inside the FiveM server process
-    -- Self-host Cobalt or use a trusted private instance, then add its API root here
+    -- Optional dev/private-fork Cobalt endpoints. Not used by the default
+    -- browser YouTube provider and not required for public installs.
     cobalt = {
         enabled = true,
         endpoints = {
@@ -344,8 +379,8 @@ Config.resolver                        = {
     },
 
 
-    -- If video resolution fails, try an ad-free audio-only stream before failing
-    allowAudioFallback = true,
+    -- Browser YouTube is the default. Audio/server fallbacks are dev-only opt-ins.
+    allowAudioFallback = false,
 
     -- Embedded YouTube can show ads or hang in DUI. Keep it opt-in so false if you see too many ads
     allowEmbedFallback = false,
@@ -356,7 +391,7 @@ Config.resolver                        = {
 
     -- Retry resolution after an early playback failure
     retryOnPlaybackError = true,
-    retryAttempts = 4,
+    retryAttempts = 1,
 
     adaptiveProviderRanking = {
         enabled = true,

@@ -109,8 +109,19 @@ local function rejectStaleQueueMutation(handle, sourceId, expectedRevision)
     end
 
     local session = getSessionForHandle(handle)
-    local current = tonumber(session and session.stateRevision) or 0
+    local current = tonumber(session and session.queueRevision) or 0
     if expected == current then
+        return false
+    end
+
+    local legacyStateRevision = tonumber(session and session.stateRevision)
+    if legacyStateRevision and expected == legacyStateRevision then
+        PMMSDebug("player", "legacy queue mutation revision accepted", {
+            handle = handle,
+            expectedRevision = expected,
+            queueRevision = current,
+            stateRevision = legacyStateRevision,
+        })
         return false
     end
 
@@ -319,8 +330,11 @@ function BuildPlaybackPreview(handle, mp, providedSession)
     return preview
 end
 
-local function commitQueueState(handle, mp)
+local function commitQueueState(handle, mp, queueRevisionReason)
     local session = getSessionForHandle(handle)
+    if session and queueRevisionReason and type(BumpDeviceQueueRevision) == "function" then
+        BumpDeviceQueueRevision(handle, queueRevisionReason)
+    end
     if session and type(CommitDeviceSessionState) == "function" then
         CommitDeviceSessionState(handle)
     else
@@ -329,6 +343,7 @@ local function commitQueueState(handle, mp)
 
     if mp and session then
         mp.queue = session.queue
+        mp.queueRevision = tonumber(session.queueRevision) or 0
     end
 end
 
@@ -345,6 +360,7 @@ local function captureCurrentTrackOptions(mp)
         duration = mp.duration,
         author = mp.author,
         thumbnail = mp.thumbnail,
+        thumbnailCandidates = cloneTable(mp.thumbnailCandidates),
         live = mp.live == true,
         volume = mp.volume,
         offset = 0,
@@ -626,6 +642,7 @@ local function buildPlaybackOptions(handle, mp, session, queued, context)
     options.live = queued.live == true
     options.author = queued.author
     options.thumbnail = queued.thumbnail
+    options.thumbnailCandidates = cloneTable(queued.thumbnailCandidates)
     options.offset = queued.offset or 0
     options.filter = queued.filter
     options.video = queued.video
@@ -725,7 +742,7 @@ local function addToQueueUnlocked(handle, source, options, expectedRevision)
         SchedulePreparedQueueForHandle(handle)
     end
 
-    commitQueueState(handle, mp)
+    commitQueueState(handle, mp, "queue_add")
     return true
 end
 
@@ -767,7 +784,7 @@ local function removeFromQueueUnlocked(handle, index, expectedRevision, sourceId
         end
     end
 
-    commitQueueState(handle, mp)
+    commitQueueState(handle, mp, "queue_remove")
     return true
 end
 
@@ -798,6 +815,7 @@ local function playNextInQueueUnlocked(handle, context)
     ensureSessionQueueMetadata(session)
     local mode = getLoopMode(mp)
     local queue = session.queue or {}
+    local queueChanged = false
 
     local function startPlaybackForOptions(client, queued, sourceId)
         if not client then
@@ -843,11 +861,20 @@ local function playNextInQueueUnlocked(handle, context)
     if shouldRecycleCurrent then
         local currentTrack = captureCurrentTrackOptions(mp)
         if currentTrack and currentTrack.url then
-            queue[#queue + 1] = {
-                source = mp.lastSource or context.source,
-                name = mp.lastSource and GetPlayerName(mp.lastSource) or nil,
-                options = currentTrack,
-            }
+            local quarantined = type(IsPmmsSourceQuarantined) == "function" and IsPmmsSourceQuarantined(currentTrack)
+            if quarantined then
+                PMMSDebug("player", "queue recycle skipped for quarantined source", {
+                    handle = handle,
+                    url = currentTrack.originalUrl or currentTrack.url,
+                })
+            else
+                queue[#queue + 1] = {
+                    source = mp.lastSource or context.source,
+                    name = mp.lastSource and GetPlayerName(mp.lastSource) or nil,
+                    options = currentTrack,
+                }
+                queueChanged = true
+            end
         end
     end
 
@@ -865,23 +892,43 @@ local function playNextInQueueUnlocked(handle, context)
         end
 
         local nextEntry = table.remove(queue, queueIndex)
+        queueChanged = true
         local client = resolveClientFromQueueEntry(nextEntry)
         local queued = nextEntry and nextEntry.options or nil
         local signature = getQueueEntrySignature(nextEntry)
+        local quarantined = type(IsPmmsSourceQuarantined) == "function"
+            and not context.manual
+            and IsPmmsSourceQuarantined(queued)
 
-        if mp.preparedNextSignature == signature and type(mp.preparedNext) == "table" then
-            mergeResolvedIntoOptions(queued, mp.preparedNext)
-        end
+        if quarantined then
+            PMMSDebug("player", "queue entry skipped for quarantined source", {
+                handle = handle,
+                url = queued and (queued.originalUrl or queued.url) or nil,
+            })
+            syncShufflePreviewState(session, mode)
+        else
 
-        clearPreparedNext(mp)
-        syncShufflePreviewState(session, mode)
+            if mp.preparedNextSignature == signature and type(mp.preparedNext) == "table" then
+                mergeResolvedIntoOptions(queued, mp.preparedNext)
+            end
 
-        RemoveMediaPlayer(handle, true)
-        if startPlaybackForOptions(client, queued, nextEntry and nextEntry.source) then
-            return true
+            clearPreparedNext(mp)
+            syncShufflePreviewState(session, mode)
+
+            if queueChanged then
+                commitQueueState(handle, mp, "queue_next")
+                queueChanged = false
+            end
+            RemoveMediaPlayer(handle, true)
+            if startPlaybackForOptions(client, queued, nextEntry and nextEntry.source) then
+                return true
+            end
         end
     end
 
+    if queueChanged then
+        commitQueueState(handle, mp, "queue_next")
+    end
     RemoveMediaPlayer(handle)
     return true
 end

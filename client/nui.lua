@@ -5,6 +5,7 @@ local tooltipsEnabled = true
 local permissions = {}
 local localEqProfile = nil
 local selectedUiHandle = nil
+local selectedUiDeviceType = nil
 
 local function setBaseVolume(value)
     baseVolume = Clamp(value, 0, 100, 100)
@@ -20,6 +21,12 @@ local function loadBaseVolume()
 end
 
 loadBaseVolume()
+
+local function shouldShowYoutubeProviderSelector()
+    local resolver = type(Config.resolver) == "table" and Config.resolver or {}
+    local browser = type(resolver.browserYoutube) == "table" and resolver.browserYoutube or {}
+    return browser.hideProviderSelector == false
+end
 
 local function redactUrlForDebug(url)
     if type(url) ~= "string" then
@@ -60,17 +67,26 @@ function GetSelectedUiHandle()
     return selectedUiHandle
 end
 
-local function getQueueExpectedRevision(handle)
+function GetSelectedUiDeviceType()
+    return selectedUiDeviceType
+end
+
+local function getQueueExpectedRevision(handle, payload)
+    local explicit = tonumber(payload and (payload.queueRevision or payload.expectedRevision))
+    if explicit then
+        return explicit
+    end
+
     local sessions = type(GetDeviceSessions) == "function" and GetDeviceSessions() or nil
     local session = sessions and (sessions[handle] or sessions[tostring(handle)])
-    local revision = tonumber(session and session.stateRevision)
+    local revision = tonumber(session and session.queueRevision)
     if revision then
         return revision
     end
 
     local mediaPlayers = type(GetMediaPlayerStates) == "function" and GetMediaPlayerStates() or nil
     local state = mediaPlayers and (mediaPlayers[handle] or mediaPlayers[tostring(handle)])
-    return tonumber(state and state.stateRevision)
+    return tonumber(state and state.queueRevision) or tonumber(session and session.stateRevision) or tonumber(state and state.stateRevision)
 end
 
 local function isLocalEqProfileActive()
@@ -318,6 +334,8 @@ RegisterNUICallback("startup", function(_, cb)
         tooltipsEnabled            = tooltipsEnabled,
         searchSources              = Config.searchSources,
         searchMinimumBusyMs        = (Config.search and Config.search.minimumBusyMs) or 500,
+        searchProxyThumbnails      = not (Config.search and Config.search.proxyThumbnails == false),
+        showYoutubeProviderSelector = shouldShowYoutubeProviderSelector(),
         deviceDefaults             = buildGlobalDeviceDefaults(),
         baseVolume                 = GetBaseVolume(),
         debug                      = Config.debug,
@@ -485,17 +503,17 @@ RegisterNUICallback("seekForward", function(data, cb)
 end)
 
 RegisterNUICallback("previous", function(data, cb)
-    TriggerServerEvent("pmms:previous", data.handle, getQueueExpectedRevision(data.handle))
+    TriggerServerEvent("pmms:previous", data.handle, getQueueExpectedRevision(data.handle, data))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("next", function(data, cb)
-    TriggerServerEvent("pmms:next", data.handle, getQueueExpectedRevision(data.handle))
+    TriggerServerEvent("pmms:next", data.handle, getQueueExpectedRevision(data.handle, data))
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("removeFromQueue", function(data, cb)
-    TriggerServerEvent("pmms:removeFromQueue", data.handle, data.index, getQueueExpectedRevision(data.handle))
+    TriggerServerEvent("pmms:removeFromQueue", data.handle, data.index, getQueueExpectedRevision(data.handle, data))
     cb(json.encode({}))
 end)
 
@@ -771,6 +789,15 @@ RegisterNUICallback("toggleTips", function(data, cb)
     cb(json.encode({}))
 end)
 
+RegisterNUICallback("selectDevice", function(data, cb)
+    selectedUiHandle = data and data.handle or nil
+    selectedUiDeviceType = data and data.deviceType or nil
+    if type(InvalidateUiUpdateSignature) == "function" then
+        InvalidateUiUpdateSignature()
+    end
+    cb(json.encode({}))
+end)
+
 RegisterNUICallback("increaseVideoSize", function(data, cb)
     TriggerServerEvent("pmms:setVideoSize", data.handle, (GetMediaPlayerStates()[data.handle] and GetMediaPlayerStates()[data.handle].videoSize or Config.defaultVideoSize) + 10)
     cb(json.encode({}))
@@ -784,6 +811,7 @@ end)
 function ShowUi(selectedHandle, openView)
     uiIsOpen = true
     selectedUiHandle = selectedHandle
+    selectedUiDeviceType = nil
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
     end
@@ -803,7 +831,10 @@ function ShowUi(selectedHandle, openView)
         maxTransitionSeconds = Config.maxTransitionSeconds,
         maxRange = Config.maxRange,
         adminMaxRange = Config.adminMaxRange or Config.maxRange,
+        currentServerEndpoint = GetCurrentServerEndpoint(),
         searchMinimumBusyMs = (Config.search and Config.search.minimumBusyMs) or 500,
+        searchProxyThumbnails = not (Config.search and Config.search.proxyThumbnails == false),
+        showYoutubeProviderSelector = shouldShowYoutubeProviderSelector(),
         deviceDefaults = buildGlobalDeviceDefaults(),
         baseVolume = type(GetBaseVolume) == "function" and GetBaseVolume() or 100,
         debug = Config.debug,
@@ -824,6 +855,7 @@ function HideUi()
     uiIsOpen = false
     adminDiscoveryRange = nil
     selectedUiHandle = nil
+    selectedUiDeviceType = nil
     if type(InvalidateUiUpdateSignature) == "function" then
         InvalidateUiUpdateSignature()
     end

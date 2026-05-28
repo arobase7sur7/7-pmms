@@ -108,7 +108,6 @@ local function buildUiStateSignature(isOpen, activeMediaPlayersUI, usableMediaPl
 
         appendSortedStateSummary(parts, "active", activeMediaPlayersUI, function(handle, row)
             local info = row and row.info or {}
-            local roundedOffset = math.floor((tonumber(row and row.offset) or tonumber(info and info.offset) or 0) * 2) / 2
             return table.concat({
                 tostring(handle),
                 tostring(info and info.playbackToken or ""),
@@ -116,7 +115,6 @@ local function buildUiStateSignature(isOpen, activeMediaPlayersUI, usableMediaPl
                 tostring(info and info.paused and 1 or 0),
                 tostring(info and info.muted and 1 or 0),
                 tostring(info and info.volume or ""),
-                tostring(roundedOffset),
                 tostring(math.floor(tonumber(row and row.distance) or -1)),
                 tostring(row and row.canInteract and 1 or 0),
             }, "|")

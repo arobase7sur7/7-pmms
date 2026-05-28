@@ -43,6 +43,8 @@ local shouldAvoidUrl
 local markInstanceFailure
 local markInstanceHealthy
 local isInstanceSuppressed
+local collectConfiguredExtractorEndpoints
+local collectConfiguredCobaltEndpoints
 
 local function cloneTable(source)
     local copy = {}
@@ -448,6 +450,31 @@ local function getExtractorConfig()
         return {}
     end
     return extractor
+end
+
+local function arePublicFallbacksAllowed()
+    local extractorConfig = getExtractorConfig()
+    if extractorConfig.allowPublicFallbacks ~= nil then
+        return extractorConfig.allowPublicFallbacks == true
+    end
+    return extractorConfig.publicFallbacksEnabled == true
+end
+
+local function isPublicPlaybackProvider(provider)
+    return provider == "invidious" or provider == "piped"
+end
+
+local function getBrowserYoutubeConfig()
+    local cfg = resolverConfig.browserYoutube
+    if type(cfg) ~= "table" then
+        return {}
+    end
+    return cfg
+end
+
+local function isBrowserYoutubeEnabled()
+    local cfg = getBrowserYoutubeConfig()
+    return bool(cfg.enabled, true)
 end
 
 local function getCobaltConfig()
@@ -897,6 +924,75 @@ local function addCommandCandidate(target, seen, candidate)
     target[#target + 1] = normalized
 end
 
+local function isWindowsRuntime()
+    return package and package.config and package.config:sub(1, 1) == "\\"
+end
+
+local function quoteCommandPath(path)
+    local normalized = trimString(path)
+    if not normalized then
+        return nil
+    end
+    if normalized:sub(1, 1) == '"' or normalized:sub(1, 1) == "'" then
+        return normalized
+    end
+    if normalized:find("[/\\]", 1) or normalized:find("%s") then
+        return '"' .. normalized:gsub('"', '\\"') .. '"'
+    end
+    return normalized
+end
+
+local function fileExists(path)
+    if type(path) ~= "string" or path == "" then
+        return false
+    end
+    if type(io) ~= "table" or type(io.open) ~= "function" then
+        return true
+    end
+
+    local handle = io.open(path, "rb")
+    if not handle then
+        return false
+    end
+    handle:close()
+    return true
+end
+
+local function addResourceYtDlpCandidates(commands, seen)
+    if type(GetResourcePath) ~= "function"
+        or type(GetCurrentResourceName) ~= "function" then
+        return
+    end
+
+    local resourcePath = trimString(GetResourcePath(GetCurrentResourceName()))
+    if not resourcePath then
+        return
+    end
+
+    local root = resourcePath:gsub("[/\\]+$", "")
+    local separator = isWindowsRuntime() and "\\" or "/"
+
+    local candidates = {
+        "bin/yt-dlp.exe",
+        "bin/yt-dlp",
+        "yt-dlp.exe",
+        "yt-dlp",
+    }
+
+    for _, relative in ipairs(candidates) do
+        local normalized = relative:gsub("[/\\]", separator)
+        local path = root .. separator .. normalized
+
+        if fileExists(path) then
+            if isWindowsRuntime() then
+                addCommandCandidate(commands, seen, path)
+            else
+                addCommandCandidate(commands, seen, quoteCommandPath(path))
+            end
+        end
+    end
+end
+
 local function getYtDlpCommandCandidates()
     local extractorConfig = getExtractorConfig()
     local commands = {}
@@ -910,10 +1006,12 @@ local function getYtDlpCommandCandidates()
         addCommandCandidate(commands, seen, extractorConfig.ytDlpCommand)
     end
 
-    addCommandCandidate(commands, seen, extractorConfig.ytDlpPath)
-    addCommandCandidate(commands, seen, extractorConfig.ytDlpBinary)
-    addCommandCandidate(commands, seen, resolverConfig.ytDlpPath)
-    addCommandCandidate(commands, seen, resolverConfig.ytDlpBinary)
+    addCommandCandidate(commands, seen, quoteCommandPath(extractorConfig.ytDlpPath))
+    addCommandCandidate(commands, seen, quoteCommandPath(extractorConfig.ytDlpBinary))
+    addCommandCandidate(commands, seen, quoteCommandPath(resolverConfig.ytDlpPath))
+    addCommandCandidate(commands, seen, quoteCommandPath(resolverConfig.ytDlpBinary))
+
+    addResourceYtDlpCandidates(commands, seen)
 
     addCommandCandidate(commands, seen, "yt-dlp")
     addCommandCandidate(commands, seen, "python -m yt_dlp")
@@ -929,10 +1027,6 @@ local function resolveYtDlpCommand()
 
     local commands = getYtDlpCommandCandidates()
     return commands[1] or "yt-dlp"
-end
-
-local function isWindowsRuntime()
-    return package and package.config and package.config:sub(1, 1) == "\\"
 end
 
 local function shellQuote(value)
@@ -1231,6 +1325,7 @@ local function getConfiguredProviderOrder()
     end
 
     local allowed = {
+        chromium_youtube = true,
         yt_dlp_local = true,
         extractor_http = true,
         cobalt = true,
@@ -1262,7 +1357,7 @@ local function getYtDlpProbeCommand(command)
     return wrapCommandWithTimeout(("%s --version 2>&1"):format(command), 5000)
 end
 
-local function ensureYtDlpAvailability(now)
+function ensureYtDlpAvailability(now)
     now = now or os.time()
     local cooldown = getProviderCooldown("yt_dlp_local", now)
     if cooldown then
@@ -1459,8 +1554,109 @@ local function scoreYtDlpFormat(format)
     return score
 end
 
+local function ytDlpFormatHasVideo(format)
+    local vcodec = tostring(format and format.vcodec or "")
+    return vcodec ~= "" and vcodec ~= "none"
+end
+
+local function ytDlpFormatHasAudio(format)
+    local acodec = tostring(format and format.acodec or "")
+    return acodec ~= "" and acodec ~= "none"
+end
+
+local function ytDlpFormatMime(format, kind)
+    local ext = tostring(format and format.ext or ""):lower()
+    local vcodec = tostring(format and format.vcodec or ""):lower()
+    local acodec = tostring(format and format.acodec or ""):lower()
+
+    if kind == "audio" then
+        if ext == "m4a" or ext == "mp4" or acodec:find("mp4a", 1, true) or acodec:find("aac", 1, true) then
+            return "audio/mp4"
+        end
+        if ext == "webm" or acodec:find("opus", 1, true) then
+            return "audio/webm"
+        end
+        return "audio/mp4"
+    end
+
+    if ext == "webm" or vcodec:find("vp9", 1, true) or vcodec:find("vp8", 1, true) then
+        return "video/webm"
+    end
+    return "video/mp4"
+end
+
+local function scoreYtDlpVideoOnlyFormat(format)
+    local score = scoreYtDlpFormat(format)
+    local ext = tostring(format.ext or ""):lower()
+    local vcodec = tostring(format.vcodec or ""):lower()
+    local protocol = tostring(format.protocol or ""):lower()
+    local height = tonumber(format.height) or 0
+
+    if ext == "mp4" then
+        score = score + 400
+    elseif ext == "webm" then
+        score = score - 75
+    end
+
+    if vcodec:find("avc1", 1, true) or vcodec:find("h264", 1, true) then
+        score = score + 650
+    elseif vcodec:find("vp9", 1, true) then
+        score = score + 150
+    elseif vcodec:find("av01", 1, true) then
+        score = score - 350
+    end
+
+    if protocol:find("http", 1, true) then
+        score = score + 100
+    end
+    if height > 1080 then
+        score = score - ((height - 1080) / 2)
+    end
+
+    return score
+end
+
+local function scoreYtDlpAudioOnlyFormat(format)
+    local score = scoreYtDlpFormat(format)
+    local ext = tostring(format.ext or ""):lower()
+    local acodec = tostring(format.acodec or ""):lower()
+    local protocol = tostring(format.protocol or ""):lower()
+
+    if ext == "m4a" or ext == "mp4" then
+        score = score + 450
+    elseif ext == "webm" then
+        score = score - 50
+    end
+
+    if acodec:find("mp4a", 1, true) or acodec:find("aac", 1, true) then
+        score = score + 450
+    elseif acodec:find("opus", 1, true) then
+        score = score + 200
+    end
+
+    if protocol:find("http", 1, true) then
+        score = score + 100
+    end
+
+    return score
+end
+
 local function chooseYtDlpFormat(info, wantVideo, avoidResolvedUrl)
-    if type(info) ~= "table" or type(info.formats) ~= "table" then
+    if type(info) ~= "table" then
+        return nil
+    end
+
+    if type(info.url) == "string" and info.url ~= "" and not shouldAvoidUrl(info.url, avoidResolvedUrl) then
+        local selected = cloneTable(info)
+        selected.url = info.url
+        local hasVideo = ytDlpFormatHasVideo(selected)
+        local hasAudio = ytDlpFormatHasAudio(selected)
+        if (wantVideo and hasVideo and hasAudio) or (not wantVideo and hasAudio) then
+            return selected
+        end
+    end
+
+    if type(info.formats) ~= "table" then
         return nil
     end
 
@@ -1469,10 +1665,8 @@ local function chooseYtDlpFormat(info, wantVideo, avoidResolvedUrl)
 
     for _, format in ipairs(info.formats) do
         if type(format) == "table" and type(format.url) == "string" and not shouldAvoidUrl(format.url, avoidResolvedUrl) then
-            local vcodec = tostring(format.vcodec or "")
-            local acodec = tostring(format.acodec or "")
-            local hasVideo = vcodec ~= "" and vcodec ~= "none"
-            local hasAudio = acodec ~= "" and acodec ~= "none"
+            local hasVideo = ytDlpFormatHasVideo(format)
+            local hasAudio = ytDlpFormatHasAudio(format)
             local formatScore = nil
 
             if wantVideo and hasVideo and hasAudio then
@@ -1494,10 +1688,103 @@ local function chooseYtDlpFormat(info, wantVideo, avoidResolvedUrl)
     return bestFormat
 end
 
-local function buildYtDlpCommand(url)
+local function chooseYtDlpPairedFormats(info, avoidResolvedUrl)
+    if type(info) ~= "table" then
+        return nil, nil
+    end
+
+    local bestVideo = nil
+    local bestVideoScore = -999999
+    local bestAudio = nil
+    local bestAudioScore = -999999
+
+    local function considerFormat(format)
+        if type(format) == "table"
+            and type(format.url) == "string"
+            and format.url ~= ""
+            and not shouldAvoidUrl(format.url, avoidResolvedUrl) then
+            local hasVideo = ytDlpFormatHasVideo(format)
+            local hasAudio = ytDlpFormatHasAudio(format)
+
+            if hasVideo and not hasAudio then
+                local score = scoreYtDlpVideoOnlyFormat(format)
+                if score > bestVideoScore then
+                    bestVideoScore = score
+                    bestVideo = format
+                end
+            elseif hasAudio and not hasVideo then
+                local score = scoreYtDlpAudioOnlyFormat(format)
+                if score > bestAudioScore then
+                    bestAudioScore = score
+                    bestAudio = format
+                end
+            end
+        end
+    end
+
+    if type(info.requested_formats) == "table" then
+        for _, format in ipairs(info.requested_formats) do
+            considerFormat(format)
+        end
+    end
+
+    if type(info.formats) == "table" then
+        for _, format in ipairs(info.formats) do
+            considerFormat(format)
+        end
+    end
+
+    if bestVideo and bestAudio and bestVideo.url ~= bestAudio.url then
+        return bestVideo, bestAudio
+    end
+
+    return nil, nil
+end
+
+local function appendYtDlpExtraArgs(args)
+    local extractorConfig = getExtractorConfig()
+    local cookiesPath = trimString(extractorConfig.ytDlpCookiesPath or resolverConfig.ytDlpCookiesPath)
+    if cookiesPath then
+        args[#args + 1] = "--cookies " .. shellQuote(cookiesPath)
+    end
+
+    local extra = extractorConfig.ytDlpExtraArgs or resolverConfig.ytDlpExtraArgs
+    if type(extra) == "table" then
+        for _, value in ipairs(extra) do
+            local arg = trimString(value)
+            if arg then
+                args[#args + 1] = arg
+            end
+        end
+    else
+        local arg = trimString(extra)
+        if arg then
+            args[#args + 1] = arg
+        end
+    end
+end
+
+local function getYtDlpFormatSelector(wantVideo)
+    if wantVideo then
+        return "best[ext=mp4][vcodec*=avc1][acodec*=mp4a]/best[ext=mp4][protocol*=http]/bestvideo[ext=mp4][vcodec*=avc1]+bestaudio[ext=m4a]/bestvideo[protocol*=http]+bestaudio[protocol*=http]/best[protocol*=http]/best"
+    end
+    return "bestaudio[ext=m4a]/bestaudio[protocol*=http]/bestaudio/best[protocol*=http]/best"
+end
+
+local function buildYtDlpCommand(url, wantVideo)
     local timeoutSeconds = math.max(3, math.floor(getExtractorTimeoutMs() / 1000))
-    local command = ("%s --no-playlist --no-warnings --skip-download --dump-single-json --socket-timeout %d -- %s 2>&1")
-        :format(resolveYtDlpCommand(), timeoutSeconds, shellQuote(url))
+    local args = {
+        "--no-playlist",
+        "--no-warnings",
+        "--skip-download",
+        "--dump-single-json",
+        "--format " .. shellQuote(getYtDlpFormatSelector(wantVideo)),
+        "--socket-timeout " .. tostring(timeoutSeconds),
+    }
+    appendYtDlpExtraArgs(args)
+
+    local command = ("%s %s -- %s 2>&1")
+        :format(resolveYtDlpCommand(), table.concat(args, " "), shellQuote(url))
     return wrapCommandWithTimeout(command, getExtractorTimeoutMs() + 1000)
 end
 
@@ -1513,7 +1800,7 @@ local function resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, callback)
         return
     end
 
-    local ok, output, commandReason = runCommand(buildYtDlpCommand(url))
+    local ok, output, commandReason = runCommand(buildYtDlpCommand(url, wantVideo))
     if not ok then
         markProviderCooldown("yt_dlp_local", commandReason or "command_failed")
         callback(nil, commandReason or "command_failed", makeTraceEntry("yt_dlp_local", "failed", commandReason or "command_failed"))
@@ -1535,14 +1822,26 @@ local function resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, callback)
     end
 
     local chosen = chooseYtDlpFormat(decoded, wantVideo, avoidResolvedUrl)
-    if not chosen or type(chosen.url) ~= "string" or chosen.url == "" then
+    local pairedVideo, pairedAudio = nil, nil
+    if (not chosen or type(chosen.url) ~= "string" or chosen.url == "") and wantVideo then
+        pairedVideo, pairedAudio = chooseYtDlpPairedFormats(decoded, avoidResolvedUrl)
+    end
+
+    if (not chosen or type(chosen.url) ~= "string" or chosen.url == "") and not pairedVideo then
         callback(nil, "no_compatible_stream", makeTraceEntry("yt_dlp_local", "failed", "no_compatible_stream"))
         return
     end
 
+    local playableUrl = pairedVideo and pairedVideo.url or chosen.url
+    local audioUrl = pairedAudio and pairedAudio.url or nil
+
     clearProviderCooldown("yt_dlp_local")
     callback({
-        playableUrl = chosen.url,
+        playableUrl = playableUrl,
+        audioUrl = audioUrl,
+        pairedStreams = pairedVideo ~= nil and pairedAudio ~= nil,
+        videoMime = pairedVideo and ytDlpFormatMime(pairedVideo, "video") or nil,
+        audioMime = pairedAudio and ytDlpFormatMime(pairedAudio, "audio") or nil,
         title = preferMetadataValue(decoded.title),
         author = preferMetadataValue(decoded.uploader) or preferMetadataValue(decoded.channel),
         duration = normalizeDuration(preferMetadataValue(decoded.duration)),
@@ -1552,7 +1851,7 @@ local function resolveFromYtDlp(url, wantVideo, avoidResolvedUrl, callback)
     }, nil, makeTraceEntry("yt_dlp_local", "success", "resolved"))
 end
 
-local function collectConfiguredExtractorEndpoints()
+collectConfiguredExtractorEndpoints = function()
     local extractorConfig = getExtractorConfig()
     local endpoints = {}
     local seen = {}
@@ -1679,7 +1978,7 @@ local function resolveFromHttpExtractor(url, wantVideo, avoidResolvedUrl, callba
     tryEndpoint(1)
 end
 
-local function collectConfiguredCobaltEndpoints()
+collectConfiguredCobaltEndpoints = function()
     local cobaltConfig = getCobaltConfig()
     local endpoints = {}
     local seen = {}
@@ -2481,18 +2780,12 @@ local function filterInstances(provider, instances, avoidInstance)
     local normalizedAvoid = type(avoidInstance) == "string" and trimTrailingSlash(avoidInstance) or nil
     local now = os.time()
     local filtered = {}
-    local fallback = {}
     for _, instance in ipairs(instances) do
         local normalized = trimTrailingSlash(instance)
         if normalized and normalized ~= "" and (not normalizedAvoid or normalized ~= normalizedAvoid) then
             local failure = instanceFailures[provider] and instanceFailures[provider][normalized] or nil
             local rank = failure and tonumber(failure.untilTs) or 0
-            local order = #fallback + 1
-            fallback[#fallback + 1] = {
-                url = normalized,
-                rank = rank,
-                order = order,
-            }
+            local order = #filtered + 1
             if not isInstanceSuppressed(provider, normalized, now) then
                 filtered[#filtered + 1] = {
                     url = normalized,
@@ -2516,10 +2809,6 @@ local function filterInstances(provider, instances, avoidInstance)
             ordered[#ordered + 1] = entry.url
         end
         return ordered
-    end
-
-    if #filtered == 0 then
-        return sortRanked(fallback)
     end
 
     return sortRanked(filtered)
@@ -2771,10 +3060,68 @@ local function hasProvider(order, providerName)
     return false
 end
 
+local function shouldUseBrowserYoutubeProvider(resolverOptions)
+    if not isBrowserYoutubeEnabled() then
+        return false
+    end
+
+    local forced = type(resolverOptions) == "table" and resolverOptions.forceProvider or nil
+    if forced == "chromium_youtube" then
+        return true
+    end
+    if type(forced) == "string" and forced ~= "" and forced ~= "auto" then
+        return false
+    end
+
+    if type(resolverOptions) == "table" and resolverOptions.avoidProvider == "chromium_youtube" then
+        return false
+    end
+
+    local cfg = getBrowserYoutubeConfig()
+    return bool(cfg.primary, true)
+end
+
+local function buildBrowserYoutubeResult(url, videoId)
+    return {
+        ok = true,
+        playableUrl = url,
+        resolvedUrl = url,
+        originalUrl = url,
+        provider = "chromium_youtube",
+        instance = "youtube_iframe_api",
+        status = "browser",
+        reason = "client_chromium_youtube",
+        video = true,
+        trace = {
+            makeTraceEntry("chromium_youtube", "success", "client_browser", {
+                videoId = videoId,
+            }),
+        },
+    }
+end
+
 local function getProviderOrder(avoidProvider, allowEmbedFallback, forceProvider)
     local configured = getConfiguredProviderOrder()
-    if allowEmbedFallback == true and not hasProvider(configured, "embed") then
-        configured[#configured + 1] = "embed"
+
+    if forceProvider == "chromium_youtube" then
+        return isBrowserYoutubeEnabled() and { "chromium_youtube" } or {}
+    end
+
+    if forceProvider == "embed" then
+        if allowEmbedFallback == true then
+            return { "embed" }
+        end
+        return {}
+    end
+
+    if hasProvider(configured, "embed") then
+        local withoutEmbed = {}
+        for _, provider in ipairs(configured) do
+            if provider ~= "embed" then
+                withoutEmbed[#withoutEmbed + 1] = provider
+            end
+        end
+        configured = withoutEmbed
     end
 
     if type(forceProvider) == "string" and forceProvider ~= "" and forceProvider ~= "auto" then
@@ -2783,10 +3130,17 @@ local function getProviderOrder(avoidProvider, allowEmbedFallback, forceProvider
                 return { forceProvider }
             end
         end
-        if forceProvider == "embed" and allowEmbedFallback == true then
-            return { "embed" }
-        end
         return {}
+    end
+
+    if not arePublicFallbacksAllowed() then
+        local reliableOnly = {}
+        for _, provider in ipairs(configured) do
+            if not isPublicPlaybackProvider(provider) then
+                reliableOnly[#reliableOnly + 1] = provider
+            end
+        end
+        configured = reliableOnly
     end
 
     configured = getAdaptiveProviderOrder(configured)
@@ -2861,6 +3215,22 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
     local allowAudioFallback = isAudioFallbackAllowed(resolverOptions)
     local allowEmbedFallback = isEmbedFallbackAllowed(resolverOptions)
     local forceRefresh = resolverOptions.forceRefresh == true
+
+    if shouldUseBrowserYoutubeProvider(resolverOptions) then
+        PMMSDebug("resolver", "using client Chromium YouTube provider", {
+            url = url,
+            videoId = videoId,
+            forceProvider = resolverOptions.forceProvider,
+        })
+        emitResolverProgress(resolverOptions, {
+            status = "browser",
+            provider = "chromium_youtube",
+            instance = "youtube_iframe_api",
+        })
+        callback(buildBrowserYoutubeResult(url, videoId))
+        return
+    end
+
     local cacheKey = ("v5:%s:%s"):format(videoId, wantVideo and "video" or "audio")
     local now = os.time()
     local cached = resolveCache[cacheKey]
@@ -2939,10 +3309,12 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
         end
     end
 
-    discoverInstances(forceRefresh, function(invidiousInstances, pipedInstances)
+    local order = getProviderOrder(resolverOptions.avoidProvider, allowEmbedFallback, resolverOptions.forceProvider)
+    local needsPublicInstances = hasProvider(order, "invidious") or hasProvider(order, "piped")
+
+    local function startProviderChain(invidiousInstances, pipedInstances)
         local maxInstances = math.max(1, tonumber(resolverOptions.maxInstances) or getMaxInstances())
         local avoidResolvedUrl = resolverOptions.avoidResolvedUrl
-        local order = getProviderOrder(resolverOptions.avoidProvider, allowEmbedFallback, resolverOptions.forceProvider)
         local filteredInvidious = filterInstances("invidious", invidiousInstances, resolverOptions.avoidInstance)
         local filteredPiped = filterInstances("piped", pipedInstances, resolverOptions.avoidInstance)
         local cobaltEndpoints = collectConfiguredCobaltEndpoints()
@@ -3262,7 +3634,13 @@ local function resolveYoutubeStream(url, options, resolverOptions, callback)
         end
 
         launchNextProvider("initial")
-    end)
+    end
+
+    if needsPublicInstances then
+        discoverInstances(forceRefresh, startProviderChain)
+    else
+        startProviderChain({}, {})
+    end
 end
 
 function ResolvePlaybackOptions(options, resolverOptions, callback)
@@ -3485,22 +3863,39 @@ Citizen.CreateThread(function()
         return
     end
 
+    local browserConfig = getBrowserYoutubeConfig()
+    if isBrowserYoutubeEnabled() and bool(browserConfig.primary, true) then
+        PMMSDebug("resolver", "resolver preflight using client Chromium YouTube provider", {
+            extractorEnabled = isExtractorEnabled(),
+            allowEmbedFallback = isEmbedFallbackAllowed({}),
+        })
+        return
+    end
+
     local cobaltEndpoints = collectConfiguredCobaltEndpoints()
+    local extractorEndpoints = collectConfiguredExtractorEndpoints()
     local ytDlpAvailable, ytDlpReason = ensureYtDlpAvailability(os.time())
     local configuredInvidious, configuredPiped = collectConfiguredInstances()
+    local publicFallbacksAllowed = arePublicFallbacksAllowed()
 
     PMMSDebug("resolver", "resolver preflight", {
         ytDlpAvailable = ytDlpAvailable,
         ytDlpReason = ytDlpReason,
         cobaltEndpoints = #cobaltEndpoints,
+        extractorEndpoints = #extractorEndpoints,
         invidiousConfigured = #configuredInvidious,
         pipedConfigured = #configuredPiped,
+        publicFallbacksAllowed = publicFallbacksAllowed,
         allowAudioFallback = isAudioFallbackAllowed({}),
         allowEmbedFallback = isEmbedFallbackAllowed({}),
     })
 
-    if not ytDlpAvailable and #cobaltEndpoints == 0 and not isEmbedFallbackAllowed({}) then
-        print(("[7-pmms] Resolver preflight: %s No Cobalt endpoint is configured, so YouTube playback will depend on public Invidious/Piped instances and may fail. Install yt-dlp for the FXServer process, set Config.resolver.extractor.ytDlpPath/ytDlpCommand, or configure a trusted Cobalt/extractor endpoint."):format(summarizeYtDlpPreflightReason(ytDlpReason)))
+    if not ytDlpAvailable and #cobaltEndpoints == 0 and #extractorEndpoints == 0 and not isEmbedFallbackAllowed({}) then
+        if publicFallbacksAllowed then
+            print(("[7-pmms] Resolver preflight: %s No private extractor/Cobalt endpoint is configured, so YouTube playback will depend on public Invidious/Piped instances and may fail. Drop yt-dlp into this resource's bin/ folder, set Config.resolver.extractor.ytDlpPath/ytDlpCommand, or configure a trusted extractor endpoint."):format(summarizeYtDlpPreflightReason(ytDlpReason)))
+        else
+            print(("[7-pmms] Resolver preflight: %s No reliable YouTube extractor is available. YouTube search will still work, but playback will fail fast instead of timing out. Drop yt-dlp into this resource's bin/ folder, set Config.resolver.extractor.ytDlpPath/ytDlpCommand, or configure a trusted extractor/Cobalt endpoint."):format(summarizeYtDlpPreflightReason(ytDlpReason)))
+        end
     end
 end)
 

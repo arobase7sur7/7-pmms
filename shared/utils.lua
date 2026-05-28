@@ -245,3 +245,43 @@ function Base64Encode(data)
         return b:sub(c+1,c+1)
     end)..({ '', '==', '=' })[#data%3+1])
 end
+
+function Base64Decode(data)
+    if type(data) ~= "string" then
+        return nil
+    end
+
+    data = data:gsub("%-", "+"):gsub("_", "/")
+    local padding = #data % 4
+    if padding > 0 then
+        data = data .. string.rep("=", 4 - padding)
+    end
+
+    local lookup = {}
+    for index = 1, #b do
+        lookup[b:sub(index, index)] = index - 1
+    end
+
+    local output = {}
+    local buffer = 0
+    local bits = 0
+    for index = 1, #data do
+        local char = data:sub(index, index)
+        if char == "=" then
+            break
+        end
+
+        local value = lookup[char]
+        if value ~= nil then
+            buffer = (buffer * 64) + value
+            bits = bits + 6
+            if bits >= 8 then
+                bits = bits - 8
+                output[#output + 1] = string.char(math.floor(buffer / (2 ^ bits)) % 256)
+                buffer = buffer % (2 ^ bits)
+            end
+        end
+    end
+
+    return table.concat(output)
+end

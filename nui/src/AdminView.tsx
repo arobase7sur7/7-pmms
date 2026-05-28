@@ -324,6 +324,7 @@ export function AdminView() {
   const [adminData, setAdminData] = useState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedHandle, setSelectedHandle] = useState<string | null>(null);
+  const [selectedDeviceSnapshot, setSelectedDeviceSnapshot] = useState<any | null>(null);
   const [showAddInteractionModal, setShowAddInteractionModal] = useState(false);
   const [showAddPropModal, setShowAddPropModal] = useState(false);
   const [viewRange, setViewRange] = useState(50);
@@ -343,7 +344,12 @@ export function AdminView() {
     const handler = (event: any) => {
       if (Object.prototype.hasOwnProperty.call(event.detail ?? {}, 'handle')) {
         const nextHandle = event.detail?.handle;
-        setSelectedHandle(nextHandle != null ? String(nextHandle) : null);
+        if (nextHandle == null) {
+          setSelectedDeviceSnapshot(null);
+          setSelectedHandle(null);
+        } else {
+          setSelectedHandle(String(nextHandle));
+        }
       }
     };
     window.addEventListener('pmms:adminSelectHandle', handler);
@@ -388,17 +394,23 @@ export function AdminView() {
     });
   }, [unifiedDevices, searchQuery, viewRange]);
 
-  const selectedDevice = useMemo(
+  const liveSelectedDevice = useMemo(
     () => selectedHandle ? unifiedDevices.find(device => String(device.handle) === selectedHandle) ?? null : null,
     [unifiedDevices, selectedHandle]
   );
 
   useEffect(() => {
-    if (!selectedHandle) return;
-    if (!unifiedDevices.some(device => String(device.handle) === selectedHandle)) {
-      setSelectedHandle(null);
+    if (liveSelectedDevice) {
+      setSelectedDeviceSnapshot(liveSelectedDevice);
+    } else if (!selectedHandle) {
+      setSelectedDeviceSnapshot(null);
     }
-  }, [selectedHandle, unifiedDevices]);
+  }, [liveSelectedDevice, selectedHandle]);
+
+  const selectedDevice = liveSelectedDevice
+    ?? (selectedHandle && selectedDeviceSnapshot && String(selectedDeviceSnapshot.handle) === selectedHandle
+      ? selectedDeviceSnapshot
+      : null);
 
   const propModels: PropModel[] = adminData?.propModels ?? [];
   const speakerModels: PropModel[] = adminData?.speakerModels?.length ? adminData.speakerModels : propModels;

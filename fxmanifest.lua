@@ -60,6 +60,7 @@ files {
     "http/dui_runtime/twitch.min.js",
     "http/dui_runtime/vimeo.min.js",
     "http/dui_runtime/wave.js",
+    "web/youtube-player/player.html",
 }
 
 ui_page "ui/index.html"

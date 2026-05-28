@@ -5,10 +5,15 @@ local instanceCacheTtl = 1800
 local instanceDiscoveryInFlight = false
 local searchCooldowns = {}
 local maxQueryLength = 200
-local searchCacheTtl = 20
+local searchCacheTtl = 120
+local failedSearchCacheTtl = 12
 local searchResultCache = {}
 local searchInflight = {}
 local searchInstanceFailures = {
+    invidious = {},
+    piped = {},
+}
+local searchInstanceSuccesses = {
     invidious = {},
     piped = {},
 }
@@ -86,9 +91,9 @@ local function collectConfiguredInstances()
     return combinedInvidious, combinedPiped
 end
 
-local function performDiscoveryGet(url, callback)
+local function performDiscoveryGet(url, callback, timeoutOverrideMs)
     local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
-    local timeoutMs = math.max(2000, tonumber(resolverConfig.timeoutMs) or 6000)
+    local timeoutMs = math.max(800, tonumber(timeoutOverrideMs) or tonumber(resolverConfig.timeoutMs) or 6000)
     PerformHttpRequest(url, function(status, body)
         callback(status, body)
     end, "GET", "", {
@@ -163,6 +168,30 @@ local function youtubeThumbnailUrl(videoId)
     return ("https://i.ytimg.com/vi/%s/hqdefault.jpg"):format(videoId)
 end
 
+local function normalizeTwitchChannel(query)
+    local value = trimText(query)
+    if not value then
+        return nil
+    end
+
+    value = value:gsub("^@", "")
+
+    local parsed = value:match("[?&]channel=([%w_]+)")
+        or value:match("twitch%.tv/([%w_]+)")
+        or value:match("^([%w_]+)$")
+
+    if not parsed then
+        return nil
+    end
+
+    parsed = parsed:gsub("^@", ""):lower()
+    if not parsed:match("^[%w_]+$") or #parsed < 2 or #parsed > 32 then
+        return nil
+    end
+
+    return parsed
+end
+
 local function normalizeSearchThumbnailUrl(instance, rawUrl, videoId)
     local normalized = normalizeRemoteAssetUrl(rawUrl)
     if normalized then
@@ -182,24 +211,61 @@ local function normalizeSearchThumbnailUrl(instance, rawUrl, videoId)
     return youtubeThumbnailUrl(videoId)
 end
 
-local function pickSearchThumbnail(instance, thumbnails, videoId)
-    if type(thumbnails) ~= "table" then
-        return normalizeSearchThumbnailUrl(instance, nil, videoId)
+local buildSearchThumbnailCandidates
+
+local function appendSearchThumbnailCandidate(target, seen, instance, rawUrl, videoId)
+    local normalized = normalizeSearchThumbnailUrl(instance, rawUrl, videoId)
+    if type(normalized) ~= "string" or normalized == "" then
+        return
     end
 
-    local bestUrl = nil
-    local bestArea = -1
-    for _, thumb in ipairs(thumbnails) do
-        if type(thumb) == "table" and type(thumb.url) == "string" then
-            local area = (tonumber(thumb.width) or 0) * (tonumber(thumb.height) or 0)
-            if area > bestArea then
-                bestUrl = thumb.url
-                bestArea = area
+    local key = normalized:lower()
+    if seen[key] then
+        return
+    end
+
+    seen[key] = true
+    target[#target + 1] = normalized
+end
+
+buildSearchThumbnailCandidates = function(instance, thumbnails, videoId)
+    local candidates = {}
+    local seen = {}
+
+    if type(thumbnails) == "table" then
+        local ranked = {}
+        for index, thumb in ipairs(thumbnails) do
+            if type(thumb) == "table" and type(thumb.url) == "string" then
+                ranked[#ranked + 1] = {
+                    url = thumb.url,
+                    area = (tonumber(thumb.width) or 0) * (tonumber(thumb.height) or 0),
+                    index = index,
+                }
+            elseif type(thumb) == "string" then
+                ranked[#ranked + 1] = {
+                    url = thumb,
+                    area = 0,
+                    index = index,
+                }
             end
         end
+
+        table.sort(ranked, function(a, b)
+            if a.area == b.area then
+                return a.index < b.index
+            end
+            return a.area > b.area
+        end)
+
+        for _, thumb in ipairs(ranked) do
+            appendSearchThumbnailCandidate(candidates, seen, instance, thumb.url, videoId)
+        end
+    elseif type(thumbnails) == "string" then
+        appendSearchThumbnailCandidate(candidates, seen, instance, thumbnails, videoId)
     end
 
-    return normalizeSearchThumbnailUrl(instance, bestUrl, videoId)
+    appendSearchThumbnailCandidate(candidates, seen, nil, youtubeThumbnailUrl(videoId), videoId)
+    return candidates
 end
 
 local function shuffleTable(values)
@@ -215,6 +281,28 @@ local function getSearchMaxInstances()
     local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
     local configured = tonumber(searchConfig.maxInstances) or tonumber(resolverConfig.maxInstances) or 8
     return math.max(1, math.min(16, math.floor(configured)))
+end
+
+local function getSearchRequestTimeoutMs()
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
+    local configured = tonumber(searchConfig.requestTimeoutMs) or tonumber(resolverConfig.searchTimeoutMs) or 2500
+    return math.max(800, math.min(3500, math.floor(configured)))
+end
+
+local function getSearchBudgetMs()
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    local configured = tonumber(searchConfig.absoluteBudgetMs) or tonumber(searchConfig.timeoutMs) or 4500
+    return math.max(1500, math.min(8000, math.floor(configured)))
+end
+
+local function getSearchParallelInstances()
+    local searchConfig = type(Config.search) == "table" and Config.search or {}
+    local resolverConfig = type(Config.resolver) == "table" and Config.resolver or {}
+    local configured = tonumber(searchConfig.parallelInstancesPerProvider)
+        or tonumber(resolverConfig.parallelInstancesPerProvider)
+        or 2
+    return math.max(1, math.min(4, math.floor(configured)))
 end
 
 local function getSearchFailureCooldownSeconds()
@@ -258,6 +346,55 @@ local function markSearchInstanceSuccess(provider, instance)
     if searchInstanceFailures[provider] then
         searchInstanceFailures[provider][instance] = nil
     end
+
+    if type(instance) == "string" and instance ~= "" then
+        searchInstanceSuccesses[provider] = searchInstanceSuccesses[provider] or {}
+        local row = searchInstanceSuccesses[provider][instance] or { count = 0 }
+        row.count = (tonumber(row.count) or 0) + 1
+        row.lastSuccess = os.time()
+        searchInstanceSuccesses[provider][instance] = row
+    end
+end
+
+local function rankSearchInstances(provider, instances)
+    local ranked = {}
+    local seen = {}
+
+    for _, instance in ipairs(instances or {}) do
+        if type(instance) == "string" and instance ~= "" then
+            local normalized = instance:gsub("/$", "")
+            if not seen[normalized] and not isSearchInstanceCoolingDown(provider, normalized) then
+                seen[normalized] = true
+                local success = searchInstanceSuccesses[provider] and searchInstanceSuccesses[provider][normalized] or nil
+                ranked[#ranked + 1] = {
+                    url = normalized,
+                    lastSuccess = tonumber(success and success.lastSuccess) or 0,
+                    count = tonumber(success and success.count) or 0,
+                    order = #ranked + 1,
+                }
+            end
+        end
+    end
+
+    table.sort(ranked, function(a, b)
+        if a.lastSuccess ~= b.lastSuccess then
+            return a.lastSuccess > b.lastSuccess
+        end
+        if a.count ~= b.count then
+            return a.count > b.count
+        end
+        return a.order < b.order
+    end)
+
+    local maxInstances = getSearchMaxInstances()
+    local ordered = {}
+    for index, entry in ipairs(ranked) do
+        if index > maxInstances then
+            break
+        end
+        ordered[#ordered + 1] = entry.url
+    end
+    return ordered
 end
 
 local function discoverInstances(callback)
@@ -353,118 +490,173 @@ local function discoverInstances(callback)
     end)
 end
 
-local function searchInvidious(query, maxResults, instances, index, callback, attempts)
-    index = index or 1
-    attempts = tonumber(attempts) or 0
-    if index > #instances or attempts >= getSearchMaxInstances() then
-        callback(false, nil)
-        return
+local function mapInvidiousSearchResults(instance, response, maxResults)
+    local ok, data = pcall(json.decode, response or "")
+    if not ok or type(data) ~= "table" or #data <= 0 then
+        return nil
     end
 
-    local instance = instances[index]
-    if isSearchInstanceCoolingDown("invidious", instance) then
-        searchInvidious(query, maxResults, instances, index + 1, callback, attempts)
-        return
+    local results = {}
+    for _, item in ipairs(data) do
+        if item.type == "video" and item.videoId and #results < maxResults then
+            local videoId = item.videoId
+            local thumbnailCandidates = buildSearchThumbnailCandidates(instance, item.videoThumbnails, videoId)
+            results[#results + 1] = {
+                title = item.title,
+                videoId = videoId,
+                url = "https://www.youtube.com/watch?v=" .. videoId,
+                duration = item.lengthSeconds,
+                author = item.author,
+                thumbnail = thumbnailCandidates[1] or "",
+                thumbnailCandidates = thumbnailCandidates,
+                source = "youtube",
+            }
+        end
     end
 
-    local apiUrl = instance .. "/api/v1/search?q=" .. EncodeUrlString(query) .. "&type=video"
-    performDiscoveryGet(apiUrl, function(statusCode, response)
-        local providerFailed = statusCode ~= 200 or not response
-        if statusCode == 200 and response then
-            local ok, data = pcall(json.decode, response)
-            providerFailed = not ok or type(data) ~= "table"
-            if ok and type(data) == "table" and #data > 0 then
-                local results = {}
-                for _, item in ipairs(data) do
-                    if item.type == "video" and item.videoId and #results < maxResults then
-                        local videoId = item.videoId
-                        results[#results + 1] = {
-                            title = item.title,
-                            videoId = videoId,
-                            url = "https://www.youtube.com/watch?v=" .. videoId,
-                            duration = item.lengthSeconds,
-                            author = item.author,
-                            thumbnail = pickSearchThumbnail(instance, item.videoThumbnails, videoId),
-                            source = "youtube",
-                        }
-                    end
-                end
-
-                if #results > 0 then
-                    markSearchInstanceSuccess("invidious", instance)
-                    callback(true, results)
-                    return
-                end
-            end
-        end
-
-        if providerFailed then
-            markSearchInstanceFailure("invidious", instance)
-        end
-        searchInvidious(query, maxResults, instances, index + 1, callback, attempts + 1)
-    end)
+    return #results > 0 and results or nil
 end
 
-local function searchPiped(query, maxResults, instances, index, callback, attempts)
-    index = index or 1
-    attempts = tonumber(attempts) or 0
-    if index > #instances or attempts >= getSearchMaxInstances() then
-        callback(false, nil)
+local function mapPipedSearchResults(instance, response, maxResults)
+    local ok, data = pcall(json.decode, response or "")
+    if not ok or type(data) ~= "table" then
+        return nil
+    end
+
+    local items = data.items or data
+    if type(items) ~= "table" or #items <= 0 then
+        return nil
+    end
+
+    local results = {}
+    for _, item in ipairs(items) do
+        if #results >= maxResults then
+            break
+        end
+
+        local videoUrl = item.url or ""
+        if videoUrl:sub(1, 1) == "/" then
+            videoUrl = "https://www.youtube.com" .. videoUrl
+        end
+        local videoId = item.videoId or extractYoutubeVideoId(videoUrl)
+        local thumbnailCandidates = buildSearchThumbnailCandidates(instance, item.thumbnail, videoId)
+
+        results[#results + 1] = {
+            title = item.title or "Untitled",
+            videoId = videoId,
+            url = videoUrl,
+            duration = item.duration or 0,
+            author = item.uploaderName or item.uploader or "Unknown",
+            thumbnail = thumbnailCandidates[1] or "",
+            thumbnailCandidates = thumbnailCandidates,
+            source = "youtube",
+        }
+    end
+
+    return #results > 0 and results or nil
+end
+
+local function searchProviderBatched(provider, query, maxResults, instances, makeUrl, mapResults, callback)
+    local candidates = rankSearchInstances(provider, instances)
+    if #candidates <= 0 then
+        callback(false, "No healthy " .. provider .. " search instances available.")
         return
     end
 
-    local instance = instances[index]
-    if isSearchInstanceCoolingDown("piped", instance) then
-        searchPiped(query, maxResults, instances, index + 1, callback, attempts)
-        return
+    local parallelLimit = math.min(getSearchParallelInstances(), #candidates)
+    local nextIndex = 1
+    local active = 0
+    local finished = false
+    local attempts = 0
+    local maxAttempts = math.min(#candidates, getSearchMaxInstances())
+    local lastMessage = "No results found. Try a different query."
+
+    local function finish(success, payload)
+        if finished then
+            return
+        end
+        finished = true
+        callback(success, payload)
     end
 
-    local apiUrl = instance .. "/search?q=" .. EncodeUrlString(query) .. "&filter=videos"
-    performDiscoveryGet(apiUrl, function(statusCode, response)
-        local providerFailed = statusCode ~= 200 or not response
-        if statusCode == 200 and response then
-            local ok, data = pcall(json.decode, response)
-            providerFailed = not ok or type(data) ~= "table"
-            if ok and data then
-                local items = data.items or data
-                if type(items) == "table" and #items > 0 then
-                    local results = {}
-                    for _, item in ipairs(items) do
-                        if #results >= maxResults then
-                            break
-                        end
-
-                        local videoUrl = item.url or ""
-                        if videoUrl:sub(1, 1) == "/" then
-                            videoUrl = "https://www.youtube.com" .. videoUrl
-                        end
-                        local videoId = item.videoId or extractYoutubeVideoId(videoUrl)
-
-                        results[#results + 1] = {
-                            title = item.title or "Untitled",
-                            videoId = videoId,
-                            url = videoUrl,
-                            duration = item.duration or 0,
-                            author = item.uploaderName or item.uploader or "Unknown",
-                            thumbnail = normalizeSearchThumbnailUrl(instance, item.thumbnail, videoId),
-                            source = "youtube",
-                        }
-                    end
-
-                    if #results > 0 then
-                        markSearchInstanceSuccess("piped", instance)
-                        callback(true, results)
-                        return
-                    end
-                end
-            end
-        end
-
-        if providerFailed then
-            markSearchInstanceFailure("piped", instance)
-        end
-        searchPiped(query, maxResults, instances, index + 1, callback, attempts + 1)
+    SetTimeout(getSearchBudgetMs(), function()
+        finish(false, "Search timed out before a healthy " .. provider .. " instance responded.")
     end)
+
+    local function maybeFinish()
+        if finished or active > 0 or (nextIndex <= #candidates and attempts < maxAttempts) then
+            return
+        end
+        finish(false, lastMessage)
+    end
+
+    local function launchNext()
+        if finished then
+            return
+        end
+
+        while active < parallelLimit and nextIndex <= #candidates and attempts < maxAttempts do
+            local instance = candidates[nextIndex]
+            nextIndex = nextIndex + 1
+            attempts = attempts + 1
+            active = active + 1
+
+            performDiscoveryGet(makeUrl(instance, query), function(statusCode, response)
+                active = active - 1
+                if finished then
+                    return
+                end
+
+                local results = nil
+                if statusCode == 200 and response then
+                    results = mapResults(instance, response, maxResults)
+                end
+
+                if type(results) == "table" and #results > 0 then
+                    markSearchInstanceSuccess(provider, instance)
+                    finish(true, results)
+                    return
+                end
+
+                markSearchInstanceFailure(provider, instance)
+                lastMessage = "No results found. Try a different query."
+                launchNext()
+                maybeFinish()
+            end, getSearchRequestTimeoutMs())
+        end
+
+        maybeFinish()
+    end
+
+    launchNext()
+end
+
+local function searchInvidious(query, maxResults, instances, callback)
+    searchProviderBatched(
+        "invidious",
+        query,
+        maxResults,
+        instances,
+        function(instance, value)
+            return instance .. "/api/v1/search?q=" .. EncodeUrlString(value) .. "&type=video"
+        end,
+        mapInvidiousSearchResults,
+        callback
+    )
+end
+
+local function searchPiped(query, maxResults, instances, callback)
+    searchProviderBatched(
+        "piped",
+        query,
+        maxResults,
+        instances,
+        function(instance, value)
+            return instance .. "/search?q=" .. EncodeUrlString(value) .. "&filter=videos"
+        end,
+        mapPipedSearchResults,
+        callback
+    )
 end
 
 local function searchYoutube(query, maxResults, callback)
@@ -498,12 +690,12 @@ local function searchYoutube(query, maxResults, callback)
 
         if #invidiousInstances > 0 then
             pending = pending + 1
-            searchInvidious(query, maxResults, invidiousInstances, 1, complete)
+            searchInvidious(query, maxResults, invidiousInstances, complete)
         end
 
         if #pipedInstances > 0 then
             pending = pending + 1
-            searchPiped(query, maxResults, pipedInstances, 1, complete)
+            searchPiped(query, maxResults, pipedInstances, complete)
         end
     end)
 end
@@ -646,14 +838,24 @@ function SearchMedia(query, searchSource, maxResults, callback)
     end
 
     if searchSource == "twitch" then
+        local channel = normalizeTwitchChannel(query)
+        if not channel then
+            callback(false, "Enter a Twitch channel name.")
+            return
+        end
+
+        local thumb = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" .. channel .. "-320x180.jpg"
+        local fallbackThumb = "https://static-cdn.jtvnw.net/ttv-boxart/Twitch-285x380.jpg"
         callback(true, {
             {
-                title = query .. " (Twitch Stream)",
-                url = "https://www.twitch.tv/" .. query:gsub(" ", ""),
+                title = channel .. " (Twitch Stream)",
+                url = "https://www.twitch.tv/" .. channel,
                 duration = 0,
-                author = query,
-                thumbnail = "https://static-cdn.jtvnw.net/ttv-boxart/Twitch.jpg",
+                author = channel,
+                thumbnail = thumb,
+                thumbnailCandidates = { thumb, fallbackThumb },
                 source = "twitch",
+                live = true,
             },
         })
         return
@@ -767,10 +969,13 @@ RegisterNetEvent("pmms:clientSearch", function(data)
         listeners = {
             { src = src, requestId = requestId },
         },
+        startedAt = os.clock(),
     }
 
     SearchMedia(query, searchSource, maxResults, function(success, results)
-        local listeners = searchInflight[cacheKey] and searchInflight[cacheKey].listeners or {}
+        local inflight = searchInflight[cacheKey]
+        local listeners = inflight and inflight.listeners or {}
+        local durationMs = inflight and math.floor(math.max(0, (os.clock() - (inflight.startedAt or os.clock())) * 1000)) or nil
         searchInflight[cacheKey] = nil
 
         if success then
@@ -786,16 +991,35 @@ RegisterNetEvent("pmms:clientSearch", function(data)
                     emitSearchResults(listener.src, listener.requestId, payload)
                 end
             end
+            PMMSDebug("search", "search completed", {
+                source = searchSource,
+                queryLength = #query,
+                results = #payload,
+                durationMs = durationMs,
+                listeners = #listeners,
+            })
             return
         end
 
         local message = type(results) == "string" and results or "No results found. Try a different query."
+        searchResultCache[cacheKey] = {
+            success = false,
+            message = message,
+            expiresAt = os.time() + failedSearchCacheTtl,
+        }
 
         for _, listener in ipairs(listeners) do
             if listener and listener.src then
                 emitSearchError(listener.src, listener.requestId, message)
             end
         end
+        PMMSDebug("search", "search failed", {
+            source = searchSource,
+            queryLength = #query,
+            message = message,
+            durationMs = durationMs,
+            listeners = #listeners,
+        })
     end)
 end)
 

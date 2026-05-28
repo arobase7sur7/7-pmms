@@ -36,6 +36,11 @@ mediaelementwrapper > video,
 .pmms-youtube-embed,
 .pmms-youtube-target,
 .pmms-youtube-embed iframe,
+.pmms-youtube-external,
+.pmms-youtube-external-frame,
+.pmms-twitch-embed,
+.pmms-twitch-target,
+.pmms-twitch-embed iframe,
 .pmms-hls-canvas,
 .mejs__container,
 .mejs__mediaelement {
@@ -63,7 +68,9 @@ mediaelementwrapper > video,
 	pointer-events: none;
 }
 
-.pmms-youtube-embed iframe {
+.pmms-youtube-embed iframe,
+.pmms-youtube-external-frame,
+.pmms-twitch-embed iframe {
 	display: block;
 	border: 0;
 }
