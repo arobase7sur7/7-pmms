@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { sendNuiMessage } from './nuiBridge';
+import { useStableState } from './useStableState';
 
 interface PropModel {
   model: string;
@@ -321,14 +322,21 @@ function AddInteractionModal({ onClose }: { onClose: () => void }) {
 }
 
 export function AdminView() {
-  const [adminData, setAdminData] = useState<any>(null);
+  const [adminData, setAdminData] = useStableState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedHandle, setSelectedHandle] = useState<string | null>(null);
-  const [selectedDeviceSnapshot, setSelectedDeviceSnapshot] = useState<any | null>(null);
+  const [selectedDeviceSnapshot, setSelectedDeviceSnapshot] = useStableState<any | null>(null);
   const [showAddInteractionModal, setShowAddInteractionModal] = useState(false);
   const [showAddPropModal, setShowAddPropModal] = useState(false);
   const [viewRange, setViewRange] = useState(50);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const handleSearchChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(event.target.value), []);
+  const handleViewRangeChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => setViewRange(Number(event.target.value)), []);
+  const handleAddInteractionClick = useCallback(() => setShowAddInteractionModal(true), []);
+  const handleAddPropClick = useCallback(() => setShowAddPropModal(true), []);
+  const handleAddInteractionClose = useCallback(() => setShowAddInteractionModal(false), []);
+  const handleAddPropClose = useCallback(() => setShowAddPropModal(false), []);
+  const handleConfirmClose = useCallback(() => setConfirmState(null), []);
 
   useEffect(() => {
     const handler = (event: any) => {
@@ -412,22 +420,23 @@ export function AdminView() {
       ? selectedDeviceSnapshot
       : null);
 
-  const propModels: PropModel[] = adminData?.propModels ?? [];
-  const speakerModels: PropModel[] = adminData?.speakerModels?.length ? adminData.speakerModels : propModels;
-  const profiles: any[] = adminData?.deviceProfiles ?? adminData?.adminState?.profiles ?? [];
-  const jobs: JobOption[] = adminData?.adminState?.jobs ?? adminData?.jobs ?? [];
+  const propModels: PropModel[] = useMemo(() => adminData?.propModels ?? [], [adminData]);
+  const speakerModels: PropModel[] = useMemo(() => adminData?.speakerModels?.length ? adminData.speakerModels : propModels, [adminData, propModels]);
+  const profiles: any[] = useMemo(() => adminData?.deviceProfiles ?? adminData?.adminState?.profiles ?? [], [adminData]);
+  const jobs: JobOption[] = useMemo(() => adminData?.adminState?.jobs ?? adminData?.jobs ?? [], [adminData]);
 
-  const askConfirm = (title: string, message: string, action: () => void) => setConfirmState({ title, message, action });
+  const askConfirm = useCallback((title: string, message: string, action: () => void) => setConfirmState({ title, message, action }), []);
+  const selectDevice = useCallback((handle: string) => setSelectedHandle(handle), []);
 
   return (
     <div id="view-admin" className="view staff-only">
       <div className="view-header">
         <h2>Admin Panel</h2>
         <div className="view-header-actions">
-          <button className="btn-outline" onClick={() => setShowAddInteractionModal(true)}>
+          <button className="btn-outline" onClick={handleAddInteractionClick}>
             Add Interaction Point
           </button>
-          <button className="btn-accent" onClick={() => setShowAddPropModal(true)}>Add Prop Device</button>
+          <button className="btn-accent" onClick={handleAddPropClick}>Add Prop Device</button>
         </div>
       </div>
       <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -440,7 +449,7 @@ export function AdminView() {
           max={adminMaxRange}
           step={5}
           value={viewRange}
-          onChange={event => setViewRange(Number(event.target.value))}
+          onChange={handleViewRangeChange}
           style={{ flex: 1, accentColor: 'var(--accent)' }}
         />
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>max {adminMaxRange}m</span>
@@ -456,7 +465,7 @@ export function AdminView() {
               type="text"
               placeholder="Search..."
               value={searchQuery}
-              onChange={event => setSearchQuery(event.target.value)}
+              onChange={handleSearchChange}
               style={{ width: '100%', fontSize: 13, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', padding: '6px 10px', fontFamily: 'inherit', outline: 'none' }}
             />
           </div>
@@ -465,7 +474,7 @@ export function AdminView() {
               const handle = String(device.handle);
               const isActive = selectedHandle === handle;
               return (
-                <div key={handle} className={`admin-device-row ${isActive ? 'active' : ''}`} onClick={() => setSelectedHandle(handle)}>
+                <div key={handle} className={`admin-device-row ${isActive ? 'active' : ''}`} onClick={() => selectDevice(handle)}>
                   <div className="admin-device-row-title">{device.label || 'Unknown Device'}</div>
                   <div className="admin-device-row-meta">#{device.handle}{device.distance != null ? ` - ${Math.round(device.distance)}m` : ''}</div>
                   {device.active && <div className="admin-device-row-badge">LIVE</div>}
@@ -490,9 +499,9 @@ export function AdminView() {
           }
         </section>
       </div>
-      {showAddInteractionModal && <AddInteractionModal onClose={() => setShowAddInteractionModal(false)} />}
-      {showAddPropModal && <AddPropModal onClose={() => setShowAddPropModal(false)} propModels={propModels} />}
-      <ConfirmDialog state={confirmState} onClose={() => setConfirmState(null)} />
+      {showAddInteractionModal && <AddInteractionModal onClose={handleAddInteractionClose} />}
+      {showAddPropModal && <AddPropModal onClose={handleAddPropClose} propModels={propModels} />}
+      <ConfirmDialog state={confirmState} onClose={handleConfirmClose} />
     </div>
   );
 }

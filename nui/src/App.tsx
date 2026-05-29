@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { legacyActions } from "./legacy/controller";
 import { sendNuiMessage } from "./nuiBridge";
@@ -11,6 +11,7 @@ import {
 } from "./animate-ui/components/animate/tabs";
 import { MotionProvider, usePmmsMotion } from "./motion/MotionProvider";
 import { LegacyTooltipHost } from "./motion/LegacyTooltipHost";
+import { useStableState } from "./useStableState";
 
 function closeModal(id: string) {
   const modal = document.getElementById(id);
@@ -377,7 +378,7 @@ function VolumeIcon() {
 
 function Sidebar() {
   const motionConfig = usePmmsMotion();
-  const [activeView, setActiveView] = useState("view-home");
+  const [activeView, setActiveView] = useStableState("view-home");
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -388,7 +389,7 @@ function Sidebar() {
     return () => window.removeEventListener("pmms:viewChanged", handler);
   }, []);
 
-  const navItems = [
+  const navItems = useMemo(() => [
     { viewId: "view-home", label: "Home", icon: <HomeIcon />, className: "" },
     {
       viewId: "view-library",
@@ -414,7 +415,9 @@ function Sidebar() {
       icon: <AdminIcon />,
       className: "staff-only",
     },
-  ];
+  ], []);
+  const handleViewChange = useCallback((viewId: string) => legacyActions.switchView(viewId), []);
+  const handleCloseMenu = useCallback(() => void sendNuiMessage("closeUi"), []);
 
   return (
     <aside id="sidebar">
@@ -434,7 +437,7 @@ function Sidebar() {
       <nav>
         <Tabs
           value={activeView}
-          onValueChange={(viewId) => legacyActions.switchView(viewId)}
+          onValueChange={handleViewChange}
           className="pmms-nav-tabs"
           transition={motionConfig.spring}
         >
@@ -481,7 +484,7 @@ function Sidebar() {
       <div className="sidebar-footer">
         <button
           className="sidebar-footer-btn"
-          onClick={() => void sendNuiMessage("closeUi")}
+          onClick={handleCloseMenu}
         >
           <CloseMenuIcon />
           Close Menu
@@ -654,6 +657,11 @@ function MainContent({
 }
 
 function NowPlayingBar() {
+  const openLoopHelp = useCallback(() => {
+    const modal = document.getElementById("loop-help-modal");
+    if (modal) modal.style.display = "flex";
+  }, []);
+
   return (
     <footer id="now-playing-bar">
       <div className="player-left">
@@ -676,10 +684,7 @@ function NowPlayingBar() {
             className="btn-icon"
             title="Loop mode help"
             aria-label="Loop mode help"
-            onClick={() => {
-              const modal = document.getElementById("loop-help-modal");
-              if (modal) modal.style.display = "flex";
-            }}
+            onClick={openLoopHelp}
           >
             <InfoIcon />
           </button>
@@ -962,8 +967,8 @@ function Modals() {
 }
 
 function AppShell() {
-  const [eqConfig, setEqConfig] = useState<any>(null);
-  const [analyserData, setAnalyserData] = useState<Float32Array | null>(null);
+  const [eqConfig, setEqConfig] = useStableState<any>(null);
+  const [analyserData, setAnalyserData] = useStableState<Float32Array | null>(null);
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
