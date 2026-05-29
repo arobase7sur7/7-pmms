@@ -10,7 +10,7 @@ local lastBroadcast = 0
 local lastFullBroadcast = 0
 local syncStateByTarget = {}
 
-local SYNC_THROTTLE_MS = 500
+local SYNC_THROTTLE_MS = 1000
 local PERIODIC_FULL_SYNC_MS = 10000
 local LARGE_SYNC_THRESHOLD_BYTES = 800
 local NORMAL_SYNC_BPS = 131072

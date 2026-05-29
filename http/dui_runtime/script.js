@@ -2922,12 +2922,31 @@ function notifyPlaybackMetadata(handle, playbackToken, metadata) {
     });
 }
 
+function isPlaybackEndCredible(metadata, state) {
+    var durationSource = metadata && metadata.duration !== undefined && metadata.duration !== null
+        ? metadata.duration
+        : state && state.duration;
+    var duration = Number(durationSource);
+    if (Number.isNaN(duration)) {
+        return true;
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+        return false;
+    }
+
+    var currentTime = Number(metadata && metadata.currentTime !== undefined ? metadata.currentTime : state && state.currentTime);
+    if (!Number.isFinite(currentTime)) {
+        return false;
+    }
+
+    return (duration - currentTime) < 3;
+}
+
 function notifyPlaybackEnded(media, options, reason) {
     if (!media || !media.pmms || media.pmms.endedSent === true) {
         return false;
     }
 
-    media.pmms.endedSent = true;
     var metadata = buildResolvedMetadata(media, options || {});
     var state = getPlaybackNodeState(media);
     metadata.currentTime = state.currentTime;
@@ -2935,7 +2954,16 @@ function notifyPlaybackEnded(media, options, reason) {
         metadata.duration = state.duration;
     }
     metadata.endedReason = reason || 'ended';
+    if (!isPlaybackEndCredible(metadata, state)) {
+        debugLog('dui_browser', 'playback ended ignored before server callback', {
+            currentTime: metadata.currentTime,
+            duration: metadata.duration,
+            reason: metadata.endedReason
+        });
+        return false;
+    }
 
+    media.pmms.endedSent = true;
     var handle = options && options.handle !== undefined ? options.handle : media.dataset && media.dataset.handle;
     var playbackToken = media.pmms.playbackToken || media.pmms.startupPlaybackToken || (options && options.playbackToken) || null;
     debugLog('dui_browser', 'playback ended sent', {

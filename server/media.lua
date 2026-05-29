@@ -11,6 +11,8 @@ local maxDeviceHistoryEntries = 50
 local sessionLocks = {}
 local sessionLockIdleSeconds = 10 * 60
 local sourceFailureQuarantine = {}
+local eventCooldowns = {}
+local eventCooldownLastCleanupAt = 0
 local commitDeviceSession
 local isYoutubeLikeUrl
 local pushImmediateSync
@@ -114,6 +116,36 @@ local function applyPlaybackToken(target, playbackToken)
 
     target.playbackToken = playbackToken or target.playbackToken or nil
     return target
+end
+
+local function getTimerMs()
+    if type(GetGameTimer) == "function" then
+        return GetGameTimer()
+    end
+    return math.floor(os.clock() * 1000)
+end
+
+local function canTriggerEvent(src, eventName, handle, cooldownMs)
+    local now = getTimerMs()
+    local cooldown = math.max(0, tonumber(cooldownMs) or 500)
+    local cleanupIntervalMs = 30000
+    if now - eventCooldownLastCleanupAt > cleanupIntervalMs then
+        for key, timestamp in pairs(eventCooldowns) do
+            if now - timestamp > cleanupIntervalMs then
+                eventCooldowns[key] = nil
+            end
+        end
+        eventCooldownLastCleanupAt = now
+    end
+
+    local key = ("%s:%s:%s"):format(tostring(src or "server"), tostring(eventName or "event"), tostring(handle or "global"))
+    local previous = eventCooldowns[key]
+    if previous and now - previous < cooldown then
+        return false
+    end
+
+    eventCooldowns[key] = now
+    return true
 end
 
 local function createResolverCancelKey(handle, attemptId, playbackToken)
@@ -3232,6 +3264,9 @@ exports("getAllMediaPlayers", GetMediaPlayers)
 RegisterNetEvent("pmms:start", function(handle, options)
     local src = source
     handle = tonumber(handle) or handle
+    if not canTriggerEvent(src, "pmms:start", handle) then
+        return
+    end
 
     PMMSDebug("player", "start event received", {
         src = src,
@@ -3347,6 +3382,9 @@ end)
 RegisterNetEvent("pmms:playPlaylistTracks", function(handle, playlistId, tracks)
     local src = source
     handle = tonumber(handle) or handle
+    if not canTriggerEvent(src, "pmms:playPlaylistTracks", handle) then
+        return
+    end
 
     if type(handle) ~= "number" then
         TriggerClientEvent("pmms:error", src, "Invalid media player handle.")
@@ -3461,6 +3499,9 @@ end)
 RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, playbackToken)
     local src = source
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:startupReady", handle) then
+        return
+    end
 
     if not handle then
         return
@@ -3540,6 +3581,9 @@ end)
 RegisterNetEvent("pmms:updatePlaybackMetadata", function(handle, metadata, playbackToken)
     local src = source
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:updatePlaybackMetadata", handle) then
+        return
+    end
 
     if not handle or type(metadata) ~= "table" then
         return
@@ -3615,6 +3659,9 @@ end)
 RegisterNetEvent("pmms:ended", function(handle, metadata, playbackToken)
     local src = source
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:ended", handle) then
+        return
+    end
 
     if not handle then
         return
@@ -3661,7 +3708,7 @@ RegisterNetEvent("pmms:ended", function(handle, metadata, playbackToken)
 
     local clientTime = parseOffset(metadata.currentTime or metadata.offset)
     local liveOffset = getLivePlaybackOffset(mp)
-    local nearDuration = math.max(0, duration - 2)
+    local nearDuration = math.max(0, duration - 3)
     if clientTime < nearDuration and liveOffset < nearDuration then
         PMMSDebug("player", "playback ended ignored: not near duration", {
             src = src,
@@ -3731,6 +3778,9 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     local src = source
     local resolverConfig = Config.resolver or {}
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:startupError", handle) then
+        return
+    end
 
     if not handle then
         return
@@ -3892,6 +3942,9 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     local src = source
     local resolverConfig = Config.resolver or {}
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:localPlaybackError", handle) then
+        return
+    end
 
     if not handle then
         return
@@ -4048,6 +4101,9 @@ end)
 
 RegisterNetEvent("pmms:pause", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:pause", handle) then
+        return
+    end
     local mp = GetMediaPlayer(handle)
     if not mp then
         return
@@ -4064,6 +4120,9 @@ end)
 
 RegisterNetEvent("pmms:play", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:play", handle) then
+        return
+    end
     local mp = GetMediaPlayer(handle)
     if not mp then
         return
@@ -4079,6 +4138,9 @@ end)
 RegisterNetEvent("pmms:stop", function(handle)
     local src = source
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:stop", handle) then
+        return
+    end
     if not handle then
         PMMSDebug("player", "stop ignored: invalid handle", {
             src = src,
@@ -4124,19 +4186,31 @@ RegisterNetEvent("pmms:stop", function(handle)
 end)
 
 RegisterNetEvent("pmms:cancelStartup", function(handle, attemptId, playbackToken)
+    if not canTriggerEvent(source, "pmms:cancelStartup", handle) then
+        return
+    end
     cancelStartupForSource(source, handle, attemptId, playbackToken)
 end)
 
 RegisterNetEvent("pmms:showControls", function()
+    if not canTriggerEvent(source, "pmms:showControls") then
+        return
+    end
     TriggerClientEvent("pmms:showControls", source)
 end)
 
 RegisterNetEvent("pmms:toggleStatus", function()
+    if not canTriggerEvent(source, "pmms:toggleStatus") then
+        return
+    end
     TriggerClientEvent("pmms:toggleStatus", source)
 end)
 
 RegisterNetEvent("pmms:setVolume", function(handle, volume)
     local src = source
+    if not canTriggerEvent(src, "pmms:setVolume", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4160,6 +4234,9 @@ end)
 RegisterNetEvent("pmms:setAudioTrack", function(handle, audioTrack)
     local src = source
     handle = tonumber(handle)
+    if not canTriggerEvent(src, "pmms:setAudioTrack", handle) then
+        return
+    end
     if not handle or (not IsMediaPlayerActive(handle) and not deviceSessions[handle]) then
         return
     end
@@ -4199,6 +4276,9 @@ end)
 
 RegisterNetEvent("pmms:setAttenuation", function(handle, sameRoom, diffRoom)
     local src = source
+    if not canTriggerEvent(src, "pmms:setAttenuation", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4218,6 +4298,9 @@ end)
 
 RegisterNetEvent("pmms:setDiffRoomVolume", function(handle, diffRoomVolume)
     local src = source
+    if not canTriggerEvent(src, "pmms:setDiffRoomVolume", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4234,6 +4317,9 @@ end)
 
 RegisterNetEvent("pmms:setRange", function(handle, range)
     local src = source
+    if not canTriggerEvent(src, "pmms:setRange", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4253,6 +4339,9 @@ end)
 
 RegisterNetEvent("pmms:forceResetDevice", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:forceResetDevice", handle) then
+        return
+    end
     if not requireStaffDevicePermission(src) then
         return
     end
@@ -4300,6 +4389,9 @@ end)
 
 RegisterNetEvent("pmms:setTransition", function(handle, transitionSeconds)
     local src = source
+    if not canTriggerEvent(src, "pmms:setTransition", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4317,6 +4409,9 @@ end)
 
 RegisterNetEvent("pmms:setIsVehicle", function(handle, isVehicle)
     local src = source
+    if not canTriggerEvent(src, "pmms:setIsVehicle", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4333,6 +4428,9 @@ end)
 
 RegisterNetEvent("pmms:setScaleform", function(handle, scaleform)
     local src = source
+    if not canTriggerEvent(src, "pmms:setScaleform", handle) then
+        return
+    end
     local mp = GetMediaPlayer(handle)
     if not mp then
         return
@@ -4356,6 +4454,9 @@ end)
 
 RegisterNetEvent("pmms:setStartTime", function(handle, time)
     local src = source
+    if not canTriggerEvent(src, "pmms:setStartTime", handle) then
+        return
+    end
     local mp = GetMediaPlayer(handle)
     if not mp then
         return
@@ -4398,6 +4499,9 @@ end)
 
 RegisterNetEvent("pmms:seekToTime", function(handle, offset)
     local src = source
+    if not canTriggerEvent(src, "pmms:seekToTime", handle) then
+        return
+    end
     local mp = GetMediaPlayer(handle)
     if not mp then
         return
@@ -4436,6 +4540,9 @@ end)
 
 RegisterNetEvent("pmms:lockSession", function(handle, pin)
     local src = source
+    if not canTriggerEvent(src, "pmms:lockSession", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         TriggerClientEvent("pmms:error", src, "No active or remembered media session on this device.")
         return
@@ -4508,6 +4615,9 @@ end)
 
 RegisterNetEvent("pmms:unlockSession", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:unlockSession", handle) then
+        return
+    end
     local ok, err = unlockSessionLock(handle, src)
     if not ok then
         TriggerClientEvent("pmms:error", src, err or "Unable to unlock this session.")
@@ -4522,6 +4632,9 @@ end)
 
 RegisterNetEvent("pmms:setSessionPin", function(handle, pin)
     local src = source
+    if not canTriggerEvent(src, "pmms:setSessionPin", handle) then
+        return
+    end
     if pin ~= nil and normalizePin(pin) == nil then
         TriggerClientEvent("pmms:error", src, "PIN must be 4 to 12 characters.")
         return
@@ -4541,6 +4654,9 @@ end)
 
 RegisterNetEvent("pmms:authorizeSessionPin", function(handle, pin)
     local src = source
+    if not canTriggerEvent(src, "pmms:authorizeSessionPin", handle) then
+        return
+    end
     local ok, err = authorizeSessionLockPin(handle, src, pin)
     if not ok then
         TriggerClientEvent("pmms:error", src, err or "Unable to authorize PIN.")
@@ -4555,6 +4671,9 @@ end)
 
 RegisterNetEvent("pmms:lock", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:lock", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4568,6 +4687,9 @@ end)
 
 RegisterNetEvent("pmms:unlock", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:unlock", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4581,6 +4703,9 @@ end)
 
 RegisterNetEvent("pmms:enableVideo", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:enableVideo", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4593,6 +4718,9 @@ end)
 
 RegisterNetEvent("pmms:disableVideo", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:disableVideo", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4605,6 +4733,9 @@ end)
 
 RegisterNetEvent("pmms:setVideoSize", function(handle, size)
     local src = source
+    if not canTriggerEvent(src, "pmms:setVideoSize", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4620,6 +4751,9 @@ end)
 
 RegisterNetEvent("pmms:mute", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:mute", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4632,6 +4766,9 @@ end)
 
 RegisterNetEvent("pmms:unmute", function(handle)
     local src = source
+    if not canTriggerEvent(src, "pmms:unmute", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4644,6 +4781,9 @@ end)
 
 RegisterNetEvent("pmms:copy", function(oldHandle, newHandle, newCoords)
     local src = source
+    if not canTriggerEvent(src, "pmms:copy", oldHandle) then
+        return
+    end
     if not IsMediaPlayerActive(oldHandle) then
         return
     end
@@ -4655,6 +4795,9 @@ end)
 
 RegisterNetEvent("pmms:setLoop", function(handle, loop)
     local src = source
+    if not canTriggerEvent(src, "pmms:setLoop", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4671,6 +4814,9 @@ end)
 
 RegisterNetEvent("pmms:setLoopMode", function(handle, loopMode)
     local src = source
+    if not canTriggerEvent(src, "pmms:setLoopMode", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4690,6 +4836,9 @@ end)
 
 RegisterNetEvent("pmms:next", function(handle, expectedRevision)
     local src = source
+    if not canTriggerEvent(src, "pmms:next", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) then
         return
     end
@@ -4701,6 +4850,9 @@ end)
 
 RegisterNetEvent("pmms:previous", function(handle, expectedRevision)
     local src = source
+    if not canTriggerEvent(src, "pmms:previous", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
@@ -4712,6 +4864,9 @@ end)
 
 RegisterNetEvent("pmms:removeFromQueue", function(handle, id, expectedRevision)
     local src = source
+    if not canTriggerEvent(src, "pmms:removeFromQueue", handle) then
+        return
+    end
     if not IsMediaPlayerActive(handle) and not deviceSessions[handle] then
         return
     end
