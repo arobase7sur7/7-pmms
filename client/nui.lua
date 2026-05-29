@@ -1022,7 +1022,8 @@ RegisterNUICallback("getSharedPlaylists", function(data, cb)
 end)
 
 RegisterNUICallback("createPlaylist", function(data, cb)
-    TriggerServerEvent("pmms:createPlaylist", data.name)
+    data = type(data) == "table" and data or {}
+    TriggerServerEvent("pmms:createPlaylist", data.name, data.requestId)
     cb(json.encode({}))
 end)
 
@@ -1163,6 +1164,10 @@ end)
 
 RegisterNetEvent("pmms:refreshLibrary", function()
     SendNUIMessage({ type = "refreshLibrary" })
+end)
+
+RegisterNetEvent("pmms:playlistCreateResult", function(payload)
+    SendNUIMessage({ type = "playlistCreateResult", payload = payload })
 end)
 
 RegisterNetEvent("pmms:refreshSocial", function()

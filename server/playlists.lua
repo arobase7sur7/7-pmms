@@ -283,6 +283,32 @@ local function emitSharedPlaylists(src, identifier, requestId)
     end)
 end
 
+local function emitPlaylistCreateResult(src, identifier, requestId, success, message, playlistId, name)
+    local payload = {
+        success = success == true,
+        requestId = requestId,
+        playlistId = playlistId and tonumber(playlistId) or nil,
+        name = name,
+        message = message,
+    }
+
+    if payload.success and identifier then
+        fetchLibrarySnapshot(identifier, function(snapshot)
+            payload.libraryRevision = snapshot.libraryRevision
+            payload.playlists = snapshot.playlists
+            payload.summary = snapshot.summary
+            local row = findPlaylistById(snapshot.playlists, playlistId)
+            if row then
+                payload.playlist = row
+            end
+            TriggerClientEvent('pmms:playlistCreateResult', src, payload)
+        end, { force = true })
+        return
+    end
+
+    TriggerClientEvent('pmms:playlistCreateResult', src, payload)
+end
+
 local function payloadDebugField(payload, key)
     if payload == nil then
         return nil
@@ -586,39 +612,47 @@ AddEventHandler('pmms:getSharedPlaylists', function(requestId)
 end)
 
 RegisterNetEvent('pmms:createPlaylist')
-AddEventHandler('pmms:createPlaylist', function(name)
+AddEventHandler('pmms:createPlaylist', function(name, requestId)
     local src = source
     local identifier = GetUserIdentifier(src)
-    if not identifier or type(name) ~= "string" or name:match("^%s*$") or #name > 50 then
+    if not identifier then
+        emitPlaylistCreateResult(src, nil, requestId, false, "Could not identify you for this playlist.", nil, name)
         return
     end
 
-    name = name:match("^%s*(.-)%s*$")
+    if type(name) ~= "string" then
+        emitPlaylistCreateResult(src, identifier, requestId, false, "Playlist name is required.", nil, nil)
+        return
+    end
+
+    name = name:match("^%s*(.-)%s*$") or ""
+    if name == "" then
+        emitPlaylistCreateResult(src, identifier, requestId, false, "Playlist name is required.", nil, name)
+        return
+    end
+
+    if #name > 50 then
+        emitPlaylistCreateResult(src, identifier, requestId, false, "Playlist name too long (max 50 characters).", nil, name)
+        return
+    end
 
     MySQL.scalar('SELECT COUNT(*) FROM pmms_playlists WHERE owner_license = ?', { identifier }, function(count)
         local playlistCount = tonumber(count) or 0
         local maxPlaylists = getMaxPlaylists()
         if playlistCount >= maxPlaylists then
-            TriggerClientEvent('pmms:notify', src, {
-                title = "Library",
-                text = ("You have reached the maximum of %d playlists."):format(maxPlaylists),
-            })
+            emitPlaylistCreateResult(src, identifier, requestId, false, ("You have reached the maximum of %d playlists."):format(maxPlaylists), nil, name)
             return
         end
 
         MySQL.insert('INSERT INTO pmms_playlists (owner_license, name) VALUES (?, ?)', { identifier, name }, function(id)
             if not id then
+                emitPlaylistCreateResult(src, identifier, requestId, false, "Playlist could not be created.", nil, name)
                 return
             end
 
             bumpLibraryRevision(identifier)
             invalidateLibrarySnapshot(identifier)
-
-            TriggerClientEvent('pmms:notify', src, {
-                title = "Library",
-                text = "Playlist '" .. name .. "' created!",
-            })
-            TriggerClientEvent('pmms:refreshLibrary', src)
+            emitPlaylistCreateResult(src, identifier, requestId, true, "Playlist '" .. name .. "' created!", id, name)
         end)
     end)
 end)

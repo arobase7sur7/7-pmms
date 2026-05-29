@@ -3957,12 +3957,13 @@ function openCreatePlaylist() {
     showPrompt('New Playlist', 'Enter playlist name... (max 50 chars)', function(name) {
         var trimmed = name && name.trim();
         if (trimmed && trimmed.length > 0 && trimmed.length <= 50) {
-            if (!addPendingPlaylistCreate(trimmed)) {
+            var pending = addPendingPlaylistCreate(trimmed);
+            if (!pending) {
                 showNotification('Playlist creation is already pending.', 'Library');
                 return;
             }
             showNotification('Creating playlist...', 'Library');
-            sendMessage('createPlaylist', { name: trimmed });
+            sendMessage('createPlaylist', { name: trimmed, requestId: pending.requestId });
         } else if (trimmed && trimmed.length > 50) {
             showNotification('Playlist name too long (max 50 characters).', 'Library', '#ff4444');
         }
@@ -4096,12 +4097,13 @@ function clearPendingPlaylistCreateByName(name) {
 function addPendingPlaylistCreate(name) {
     var key = normalizePlaylistNameKey(name);
     if (!key || pendingPlaylistCreates[key]) {
-        return false;
+        return null;
     }
 
     pendingPlaylistCreateSeq += 1;
     pendingPlaylistCreates[key] = {
         id: 'pending-playlist-' + pendingPlaylistCreateSeq,
+        requestId: pendingPlaylistCreateSeq,
         name: String(name || '').trim(),
         pendingCreate: true,
         createdAt: Date.now(),
@@ -4114,7 +4116,30 @@ function addPendingPlaylistCreate(name) {
         }, 8000)
     };
     refreshPlaylistsDisplay({ quiet: true });
-    return true;
+    return pendingPlaylistCreates[key];
+}
+
+function handlePlaylistCreateResult(payload) {
+    payload = payload && typeof payload === 'object' ? payload : {};
+    if (payload.name) {
+        clearPendingPlaylistCreateByName(payload.name);
+    }
+
+    if (payload.success === true) {
+        if (Array.isArray(payload.playlists)) {
+            applyServerPlaylists(payload.playlists, payload.requestId, payload.summary, payload.libraryRevision);
+        } else {
+            requestPlaylists(true);
+        }
+        if (payload.message) {
+            showNotification(payload.message, 'Library');
+        }
+        return;
+    }
+
+    refreshPlaylistsDisplay({ quiet: false });
+    showNotification(payload.message || 'Playlist could not be created.', 'Library', '#ff4444');
+    requestPlaylists(true);
 }
 
 function normalizeFavoritePayloadValue(payload) {
@@ -6388,6 +6413,10 @@ window.addEventListener('message', function(event) {
 
         case 'playlistFavoriteUpdated':
             handlePlaylistFavoriteUpdate(d.payload || d);
+            break;
+
+        case 'playlistCreateResult':
+            handlePlaylistCreateResult(d.payload || d);
             break;
 
         case 'setSharedPlaylists':
