@@ -104,11 +104,10 @@ var youtubeProviderMode = 'auto';
 var YOUTUBE_PROVIDER_OPTIONS = [
     { value: 'auto', label: 'Browser', description: 'Use the client Chromium YouTube player.' },
     { value: 'chromium_youtube', label: 'Browser', description: 'Force client Chromium playback.' },
-    { value: 'yt_dlp_local', label: 'yt-dlp', description: 'Developer-only local extractor fallback.' },
-    { value: 'extractor_http', label: 'Extractor API', description: 'Developer-only resolver endpoint fallback.' },
     { value: 'cobalt', label: 'Cobalt', description: 'Developer-only Cobalt endpoint fallback.' },
     { value: 'invidious', label: 'Invidious', description: 'Manual best-effort fallback; public instances can be slow.' },
-    { value: 'piped', label: 'Piped', description: 'Manual best-effort fallback; public instances can be slow.' }
+    { value: 'piped', label: 'Piped', description: 'Manual best-effort fallback; public instances can be slow.' },
+    { value: 'page_scrape', label: 'Page scrape', description: 'Last-resort YouTube page parser.' }
 ];
 var LOOP_MODE_ORDER = ['off', 'track', 'queue', 'shuffle_once', 'shuffle_loop'];
 var LOOP_MODE_LABELS = {

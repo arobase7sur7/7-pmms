@@ -286,35 +286,22 @@ Config.resolver                        = {
     -- Used when providers expose alternate audio metadata. First match wins
     audioLanguagePriority = { "original", "en", "en-US", "und" },
 
-    -- Default public-release YouTube mode: client Chromium/DUI plays YouTube directly.
-    -- Server-side extractors are developer-only fallbacks and are not required for users.
+    providerOrder = { "invidious", "piped", "page_scrape", "cobalt" },
+
+    -- Default public-release mode: hosted player handles playback first.
+    -- Server-side providers are fallback-only and are not required for users.
     browserYoutube = {
         enabled = true,
-        primary = true,
+        primary = false,
         hideProviderSelector = true,
     },
 
     extractor = {
-        enabled = false,
-        providerOrder = { "yt_dlp_local", "extractor_http", "cobalt", "invidious", "piped" },
-        -- Advanced/developer-only fallback. Leave disabled for normal public installs.
+        enabled = true,
+        providerOrder = { "invidious", "piped", "page_scrape", "cobalt" },
+        -- Advanced/developer-only fallback. Leave public installs on the hosted player path.
         -- Public Invidious/Piped playback is best-effort and often slow/blocked.
         allowPublicFallbacks = false,
-        httpEndpoints = {
-            -- Example:
-            -- "https://your-resolver.example.com/api/resolve",
-        },
-        -- Optional dev/private-fork extractor commands. Not required for public users.
-        ytDlpCommand = {
-            "yt-dlp",
-            "python -m yt_dlp",
-            "py -m yt_dlp",
-        },
-        -- Optional dev/private-fork binary/path override. Example: "C:/tools/yt-dlp.exe"
-        ytDlpPath = nil,
-        -- Optional cookie file or extra args for yt-dlp when YouTube challenges the server IP.
-        ytDlpCookiesPath = nil,
-        ytDlpExtraArgs = {},
         timeoutMs = 9000,
         cooldownSeconds = 300,
         maxAttemptsPerProvider = 2,
@@ -324,11 +311,10 @@ Config.resolver                        = {
         softBanDurationSeconds = 60,
         hardBanDurationSeconds = 300,
         providers = {
-            yt_dlp_local = { maxConcurrent = 1, timeoutSeconds = 20 },
-            extractor_http = { maxConcurrent = 5, timeoutSeconds = 15 },
             cobalt = { maxConcurrent = 4, timeoutSeconds = 12 },
             invidious = { maxConcurrent = 6, timeoutSeconds = 10 },
             piped = { maxConcurrent = 6, timeoutSeconds = 10 },
+            page_scrape = { maxConcurrent = 4, timeoutSeconds = 10 },
         },
     },
 

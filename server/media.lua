@@ -218,7 +218,6 @@ local function getResolverProgressMessage(progress)
     progress = type(progress) == "table" and progress or {}
     local provider = type(progress.provider) == "string" and progress.provider or "resolver"
     local label = ({
-        yt_dlp_local = "local resolver",
         extractor_http = "HTTP resolver",
         cobalt = "Cobalt resolver",
         invidious = "Invidious",
@@ -1310,13 +1309,10 @@ local function normalizeYoutubeResolverProvider(value)
     if provider == "youtube_embed" or provider == "embed" then
         return "embed"
     end
-    if provider == "yt_dlp" or provider == "ytdlp" or provider == "yt_dlp_local" then
-        return "yt_dlp_local"
+    if provider == "hosted" or provider == "hosted_player" then
+        return "hosted_player"
     end
-    if provider == "extractor" or provider == "extractor_http" then
-        return "extractor_http"
-    end
-    if provider == "cobalt" or provider == "invidious" or provider == "piped" then
+    if provider == "cobalt" or provider == "invidious" or provider == "piped" or provider == "page_scrape" then
         return provider
     end
 
