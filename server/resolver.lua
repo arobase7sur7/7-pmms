@@ -108,6 +108,145 @@ local function getCacheTtlSeconds()
 	return math.max(30, tonumber(resolverConfig.cacheTtlSeconds) or 3300)
 end
 
+local function makeHourlySlots()
+	local slots = {}
+	for hour = 1, 24 do
+		slots[hour] = {
+			successes = 0,
+			failures = 0,
+			fakeSuccesses = 0,
+			totalMs = 0,
+		}
+	end
+	return slots
+end
+
+local function currentHourSlot()
+	return tonumber(os.date("!%H")) + 1
+end
+
+local function getProviderStatsConfig()
+	local adaptive = type(resolverConfig.adaptiveProviderRanking) == "table" and resolverConfig.adaptiveProviderRanking or {}
+	return {
+		enabled = adaptive.enabled ~= false,
+		dataFile = type(adaptive.dataFile) == "string" and adaptive.dataFile ~= "" and adaptive.dataFile or "data/provider_stats.json",
+		saveDebounceMs = math.max(500, tonumber(adaptive.saveDebounceMs) or 5000),
+	}
+end
+
+local function decodeJson(body)
+	if type(body) ~= "string" or body == "" then
+		return nil
+	end
+	local ok, decoded = pcall(json.decode, body)
+	if ok and type(decoded) == "table" then
+		return decoded
+	end
+	return nil
+end
+
+local function loadProviderStats()
+	if providerStats then
+		return providerStats
+	end
+	providerStats = {
+		version = 2,
+		totalAttempts = 0,
+		totalCompletedAutoPlays = 0,
+		providers = {},
+	}
+	local cfg = getProviderStatsConfig()
+	local raw = LoadResourceFile(GetCurrentResourceName(), cfg.dataFile)
+	local decoded = decodeJson(raw)
+	if decoded then
+		providerStats.totalAttempts = tonumber(decoded.totalAttempts) or 0
+		providerStats.totalCompletedAutoPlays = tonumber(decoded.totalCompletedAutoPlays) or 0
+		providerStats.providers = type(decoded.providers) == "table" and decoded.providers or {}
+	end
+	return providerStats
+end
+
+local function saveProviderStatsSoon()
+	local cfg = getProviderStatsConfig()
+	if cfg.enabled ~= true or providerStatsSavePending then
+		return
+	end
+	providerStatsSavePending = true
+	CreateThread(function()
+		Wait(cfg.saveDebounceMs)
+		providerStatsSavePending = false
+		local ok, encoded = pcall(json.encode, loadProviderStats())
+		if ok and type(encoded) == "string" then
+			SaveResourceFile(GetCurrentResourceName(), cfg.dataFile, encoded, -1)
+		end
+	end)
+end
+
+local function getProviderStat(provider)
+	local stats = loadProviderStats()
+	local item = stats.providers[provider]
+	if type(item) ~= "table" then
+		item = {
+			provider = provider,
+			successes = 0,
+			failures = 0,
+			fakeSuccesses = 0,
+			totalMs = 0,
+			consecutiveFailures = 0,
+			hours = makeHourlySlots(),
+		}
+		stats.providers[provider] = item
+	end
+	if type(item.hours) ~= "table" or #item.hours < 24 then
+		item.hours = makeHourlySlots()
+	end
+	for hour = 1, 24 do
+		if type(item.hours[hour]) ~= "table" then
+			item.hours[hour] = {
+				successes = 0,
+				failures = 0,
+				fakeSuccesses = 0,
+				totalMs = 0,
+			}
+		end
+	end
+	return item
+end
+
+local function scoreProvider(provider)
+	local item = getProviderStat(provider)
+	local hour = currentHourSlot()
+	local weights = {
+		{ hour, 3 },
+		{ ((hour + 22) % 24) + 1, 2 },
+		{ (hour % 24) + 1, 2 },
+		{ ((hour + 21) % 24) + 1, 1 },
+		{ ((hour + 1) % 24) + 1, 1 },
+	}
+	local weightedSamples = 0
+	local successWeight = 0
+	local latencyWeight = 0
+	for _, pair in ipairs(weights) do
+		local slot = item.hours[pair[1]]
+		local weight = pair[2]
+		local successes = tonumber(slot.successes) or 0
+		local failures = (tonumber(slot.failures) or 0) + (tonumber(slot.fakeSuccesses) or 0)
+		local total = successes + failures
+		if total > 0 then
+			weightedSamples = weightedSamples + weight
+			successWeight = successWeight + ((successes / total) * weight)
+			local avgMs = successes > 0 and ((tonumber(slot.totalMs) or 0) / successes) or 15000
+			latencyWeight = latencyWeight + (avgMs * weight)
+		end
+	end
+	if weightedSamples == 0 then
+		return 0.5
+	end
+	local successScore = successWeight / weightedSamples
+	local latencyScore = math.max(0, 1 - ((latencyWeight / weightedSamples) / 12000))
+	return (successScore * 0.7) + (latencyScore * 0.3)
+end
+
 local function getProviderTimeoutMs(provider)
 	local extractor = type(resolverConfig.extractor) == "table" and resolverConfig.extractor or {}
 	local providers = type(extractor.providers) == "table" and extractor.providers or {}
@@ -245,17 +384,6 @@ local function performRequest(url, method, body, headers, timeoutMs, callback)
 	end, method or "GET", body or "", headers or {})
 end
 
-local function decodeJson(body)
-	if type(body) ~= "string" or body == "" then
-		return nil
-	end
-	local ok, decoded = pcall(json.decode, body)
-	if ok and type(decoded) == "table" then
-		return decoded
-	end
-	return nil
-end
-
 local function contentTypeIsPlayable(headers)
 	local contentType = ""
 	for key, value in pairs(headers or {}) do
@@ -387,6 +515,36 @@ local function setProviderCooldown(provider, instance, reason)
 		untilMs = nowMs() + cooldownMs,
 		reason = reason or "failed",
 	}
+end
+
+local function recordProviderAttempt(provider, ok, elapsedMs, reason, fakeSuccess)
+	if type(provider) ~= "string" or provider == "" then
+		return
+	end
+	local stats = loadProviderStats()
+	local item = getProviderStat(provider)
+	local slot = item.hours[currentHourSlot()]
+	stats.totalAttempts = (tonumber(stats.totalAttempts) or 0) + 1
+	item.lastReason = reason
+	item.totalMs = (tonumber(item.totalMs) or 0) + math.max(0, tonumber(elapsedMs) or 0)
+	if ok then
+		item.successes = (tonumber(item.successes) or 0) + 1
+		item.consecutiveFailures = 0
+		slot.successes = (tonumber(slot.successes) or 0) + 1
+		slot.totalMs = (tonumber(slot.totalMs) or 0) + math.max(0, tonumber(elapsedMs) or 0)
+	else
+		item.failures = (tonumber(item.failures) or 0) + 1
+		item.consecutiveFailures = (tonumber(item.consecutiveFailures) or 0) + 1
+		slot.failures = (tonumber(slot.failures) or 0) + 1
+		if fakeSuccess then
+			item.fakeSuccesses = (tonumber(item.fakeSuccesses) or 0) + 1
+			slot.fakeSuccesses = (tonumber(slot.fakeSuccesses) or 0) + 1
+		end
+		if item.consecutiveFailures >= 3 then
+			setProviderCooldown(provider, "provider", reason or "circuit_breaker")
+		end
+	end
+	saveProviderStatsSoon()
 end
 
 function SuppressResolverInstance(provider, baseUrl, reason)
@@ -735,13 +893,16 @@ local function providerOrder(resolverOptions, url)
 	end
 	local order = {}
 	for _, provider in ipairs(configured) do
-		if providerFunctions[provider] and provider ~= resolverOptions.avoidProvider then
+		if providerFunctions[provider] and provider ~= resolverOptions.avoidProvider and not isProviderCoolingDown(provider, "provider") then
 			order[#order + 1] = provider
 		end
 	end
 	if not isYoutubeUrl(url) and resolverOptions.avoidProvider ~= "direct" then
 		table.insert(order, 1, "direct")
 	end
+	table.sort(order, function(left, right)
+		return scoreProvider(left) > scoreProvider(right)
+	end)
 	return order
 end
 
@@ -834,11 +995,12 @@ local function resolveWithProviders(options, resolverOptions, callback)
 		end
 		while active < maxParallel and index < #order do
 			index = index + 1
-			local provider = order[index]
-			local resolver = providerFunctions[provider]
-			if resolver then
-				active = active + 1
-				emitResolverProgress(resolverOptions, {
+				local provider = order[index]
+				local resolver = providerFunctions[provider]
+				if resolver then
+					active = active + 1
+					local providerStartedAt = nowMs()
+					emitResolverProgress(resolverOptions, {
 					status = "trying",
 					provider = provider,
 					index = index,
@@ -850,12 +1012,14 @@ local function resolveWithProviders(options, resolverOptions, callback)
 						return
 					end
 					if payload then
+						recordProviderAttempt(provider, true, nowMs() - providerStartedAt, "resolved", false)
 						payload.trace = cloneValue(trace)
 						payload.trace[#payload.trace + 1] = makeTraceEntry(provider, "success", "resolved", { instance = payload.instance })
 						finish(true, payload)
 						return
 					end
 					lastReason = reason or lastReason
+					recordProviderAttempt(provider, false, nowMs() - providerStartedAt, lastReason, tostring(lastReason):find("probe", 1, true) ~= nil)
 					trace[#trace + 1] = makeTraceEntry(provider, "failed", lastReason)
 					launchNext()
 					if active == 0 and index >= #order and not finished then
@@ -1003,89 +1167,27 @@ function ResolvePlaybackOptions(options, resolverOptions, callback)
 	end)
 end
 
-local function getProviderStatsConfig()
-	local adaptive = type(resolverConfig.adaptiveProviderRanking) == "table" and resolverConfig.adaptiveProviderRanking or {}
-	return {
-		enabled = adaptive.enabled ~= false,
-		dataFile = type(adaptive.dataFile) == "string" and adaptive.dataFile ~= "" and adaptive.dataFile or "data/provider_stats.json",
-		saveDebounceMs = math.max(500, tonumber(adaptive.saveDebounceMs) or 5000),
-	}
-end
-
-local function loadProviderStats()
-	if providerStats then
-		return providerStats
-	end
-	providerStats = {
-		version = 1,
-		totalAttempts = 0,
-		totalCompletedAutoPlays = 0,
-		providers = {},
-	}
-	local cfg = getProviderStatsConfig()
-	local raw = LoadResourceFile(GetCurrentResourceName(), cfg.dataFile)
-	local decoded = decodeJson(raw)
-	if decoded then
-		providerStats.totalAttempts = tonumber(decoded.totalAttempts) or 0
-		providerStats.totalCompletedAutoPlays = tonumber(decoded.totalCompletedAutoPlays) or 0
-		providerStats.providers = type(decoded.providers) == "table" and decoded.providers or {}
-	end
-	return providerStats
-end
-
-local function saveProviderStatsSoon()
-	local cfg = getProviderStatsConfig()
-	if cfg.enabled ~= true or providerStatsSavePending then
-		return
-	end
-	providerStatsSavePending = true
-	CreateThread(function()
-		Wait(cfg.saveDebounceMs)
-		providerStatsSavePending = false
-		local ok, encoded = pcall(json.encode, loadProviderStats())
-		if ok and type(encoded) == "string" then
-			SaveResourceFile(GetCurrentResourceName(), cfg.dataFile, encoded, -1)
-		end
-	end)
-end
-
 function RecordResolverProviderPlayback(provider, instance, outcome, startupMs, reason)
 	if type(provider) ~= "string" or provider == "" then
 		return
 	end
 	local stats = loadProviderStats()
-	stats.totalAttempts = (tonumber(stats.totalAttempts) or 0) + 1
-	local key = provider .. ":" .. tostring(instance or "default")
-	local item = stats.providers[key] or {
-		provider = provider,
-		instance = instance or "default",
-		successes = 0,
-		failures = 0,
-		totalMs = 0,
-		lastReason = nil,
-	}
 	if outcome == "success" then
-		item.successes = (tonumber(item.successes) or 0) + 1
 		stats.totalCompletedAutoPlays = (tonumber(stats.totalCompletedAutoPlays) or 0) + 1
-	else
-		item.failures = (tonumber(item.failures) or 0) + 1
-		item.lastReason = reason
 	end
-	item.totalMs = (tonumber(item.totalMs) or 0) + math.max(0, tonumber(startupMs) or 0)
-	stats.providers[key] = item
-	saveProviderStatsSoon()
+	recordProviderAttempt(provider, outcome == "success", startupMs, reason, reason == "fake_success")
 end
 
 function GetResolverProviderStatsSummary(limit)
 	local stats = loadProviderStats()
 	local rows = {}
 	for _, item in pairs(stats.providers or {}) do
-		rows[#rows + 1] = cloneValue(item)
+		local copy = cloneValue(item)
+		copy.score = scoreProvider(copy.provider)
+		rows[#rows + 1] = copy
 	end
 	table.sort(rows, function(left, right)
-		local leftTotal = (tonumber(left.successes) or 0) + (tonumber(left.failures) or 0)
-		local rightTotal = (tonumber(right.successes) or 0) + (tonumber(right.failures) or 0)
-		return leftTotal > rightTotal
+		return (tonumber(left.score) or 0) > (tonumber(right.score) or 0)
 	end)
 	local capped = {}
 	for index = 1, math.min(#rows, tonumber(limit) or #rows) do
