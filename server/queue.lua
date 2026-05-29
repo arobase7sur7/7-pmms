@@ -836,9 +836,6 @@ local function playNextInQueueUnlocked(handle, context)
         EnqueueSync(function()
             StartMediaPlayerForClient(handle, client, options, {
                 forceRefresh = not canPlayQueuedOptionsImmediately(queued),
-                avoidProvider = mp.resolver and mp.resolver.provider or nil,
-                avoidInstance = mp.resolver and mp.resolver.instance or nil,
-                avoidResolvedUrl = mp.resolvedUrl,
             })
         end)
 
@@ -994,9 +991,6 @@ local function playPreviousFromHistoryUnlocked(handle, context)
     EnqueueSync(function()
         StartMediaPlayerForClient(handle, client, options, {
             forceRefresh = not canPlayQueuedOptionsImmediately(previousTrack),
-            avoidProvider = mp and mp.resolver and mp.resolver.provider or nil,
-            avoidInstance = mp and mp.resolver and mp.resolver.instance or nil,
-            avoidResolvedUrl = mp and mp.resolvedUrl or nil,
         })
     end)
     return true

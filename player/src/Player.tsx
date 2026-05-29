@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactPlayer from 'react-player';
 
 type Command =
-  | { source: 'pmms-nui'; type: 'PLAY'; url: string; volume?: number; startAt?: number }
+  | { source: 'pmms-nui'; type: 'PLAY'; url: string; volume?: number; muted?: boolean; startAt?: number }
   | { source: 'pmms-nui'; type: 'PAUSE' }
   | { source: 'pmms-nui'; type: 'RESUME' }
   | { source: 'pmms-nui'; type: 'STOP' }
   | { source: 'pmms-nui'; type: 'SEEK'; position: number }
-  | { source: 'pmms-nui'; type: 'VOLUME'; volume: number };
+  | { source: 'pmms-nui'; type: 'VOLUME'; volume: number; muted?: boolean };
 
 type PlayerEvent =
   | { type: 'READY'; duration: number }
@@ -37,6 +37,7 @@ export default function Player() {
   const [url, setUrl] = useState<string | undefined>(undefined);
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(0.5);
+  const [muted, setMuted] = useState(false);
   const playerRef = useRef<ReactPlayer>(null);
   const pendingSeek = useRef<number | null>(null);
 
@@ -53,7 +54,11 @@ export default function Player() {
         case 'PLAY':
           pendingSeek.current = Number.isFinite(Number(command.startAt)) ? Math.max(0, Number(command.startAt)) : null;
           setUrl(command.url);
-          setVolume(clampVolume(command.volume));
+          {
+            const nextVolume = clampVolume(command.volume);
+            setVolume(nextVolume);
+            setMuted(command.muted === true || nextVolume <= 0);
+          }
           setPlaying(true);
           break;
         case 'PAUSE':
@@ -65,13 +70,18 @@ export default function Player() {
         case 'STOP':
           setUrl(undefined);
           setPlaying(false);
+          setMuted(false);
           pendingSeek.current = null;
           break;
         case 'SEEK':
           playerRef.current?.seekTo(Math.max(0, Number(command.position) || 0), 'seconds');
           break;
         case 'VOLUME':
-          setVolume(clampVolume(command.volume));
+          {
+            const nextVolume = clampVolume(command.volume);
+            setVolume(nextVolume);
+            setMuted(command.muted === true || nextVolume <= 0);
+          }
           break;
       }
     }
@@ -86,6 +96,7 @@ export default function Player() {
       url={url}
       playing={playing}
       volume={volume}
+      muted={muted}
       width="100%"
       height="100%"
       playsinline

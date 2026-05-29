@@ -102,8 +102,9 @@ var URL_PATTERN = /^(https?:\/\/|www\.)[^\s]+$/i;
 var YOUTUBE_URL_PATTERN = /(?:youtube\.com\/watch\?[^#\s]*v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)/i;
 var youtubeProviderMode = 'auto';
 var YOUTUBE_PROVIDER_OPTIONS = [
-    { value: 'auto', label: 'Browser', description: 'Use the client Chromium YouTube player.' },
+    { value: 'auto', label: 'Auto', description: 'Use the fastest healthy resolver path.' },
     { value: 'chromium_youtube', label: 'Browser', description: 'Force client Chromium playback.' },
+    { value: 'hosted_player', label: 'Hosted', description: 'Force the hosted browser player.' },
     { value: 'cobalt', label: 'Cobalt', description: 'Developer-only Cobalt endpoint fallback.' },
     { value: 'invidious', label: 'Invidious', description: 'Manual best-effort fallback; public instances can be slow.' },
     { value: 'piped', label: 'Piped', description: 'Manual best-effort fallback; public instances can be slow.' },
@@ -344,6 +345,14 @@ function getResourceHttpBase() {
     return 'http://' + String(currentServerEndpoint).replace(/\/+$/g, '') + '/' + GetParentResourceName();
 }
 
+function wouldCreateMixedContent(url) {
+    try {
+        return window.location.protocol === 'https:' && new URL(url, window.location.href).protocol === 'http:';
+    } catch (_) {
+        return true;
+    }
+}
+
 function getThumbnailDisplayUrl(url) {
     var normalized = normalizeRemoteAssetUrl(url);
     if (!normalized) return '';
@@ -351,7 +360,8 @@ function getThumbnailDisplayUrl(url) {
 
     var encoded = encodeBase64Url(normalized);
     var base = encoded ? getResourceHttpBase() : '';
-    return base ? (base + '/thumb/' + encoded) : normalized;
+    var proxyUrl = base ? (base + '/thumb/' + encoded) : '';
+    return proxyUrl && !wouldCreateMixedContent(proxyUrl) ? proxyUrl : normalized;
 }
 
 function getSearchThumbnailCandidates(result) {
@@ -1000,7 +1010,9 @@ function updateYoutubeProviderControl() {
     btn.classList.toggle('visible', visible);
     btn.classList.remove('embed-selected');
     btn.textContent = option && option.label ? option.label : 'Auto';
-    btn.title = 'Choose the YouTube resolver provider.';
+    btn.setAttribute('data-tooltip', 'Choose the YouTube resolver provider.');
+    btn.setAttribute('aria-label', 'Choose the YouTube resolver provider.');
+    btn.removeAttribute('title');
 
     if (!visible) {
         closeYoutubeProviderMenu();
@@ -2202,14 +2214,14 @@ function _getDeviceStartupBadge(handle) {
     if (!state) return '';
 
     var label = getStartupPhaseLabel(state).toUpperCase();
-    var style = 'background:var(--accent-dim);color:var(--text-accent);border:1px solid var(--accent);';
+    var style = 'background:var(--accent-dim);color:var(--text-accent);';
 
     if (state.phase === 'failed' || state.phase === 'timed_out') {
-        style = 'background:var(--red-dim);color:var(--red);border:1px solid var(--red);';
+        style = 'background:var(--red-dim);color:var(--red);';
     } else if (state.phase === 'fallback') {
-        style = 'background:rgba(245, 158, 11, 0.14);color:var(--yellow);border:1px solid var(--yellow);';
+        style = 'background:rgba(245, 158, 11, 0.14);color:var(--yellow);';
     } else if (state.phase === 'stopped' || state.phase === 'superseded') {
-        style = 'background:rgba(148, 163, 184, 0.14);color:var(--muted);border:1px solid rgba(148, 163, 184, 0.35);';
+        style = 'background:rgba(148, 163, 184, 0.14);color:var(--muted);';
     }
 
     return '<span class="badge" style="' + style + '">' + safeText(label) + '</span>';
@@ -2391,9 +2403,9 @@ function animatePlayPauseButton(button, nextState) {
     var ring = button.querySelector('.play-pause-ring');
     if (ring && typeof ring.animate === 'function') {
         ring.animate([
-            { opacity: 0.55, transform: 'scale(0.45)' },
-            { opacity: 0.18, transform: 'scale(1.24)' },
-            { opacity: 0, transform: 'scale(1.48)' }
+            { opacity: 0.55, transform: 'translate(-50%, -50%) scale(0.45)' },
+            { opacity: 0.18, transform: 'translate(-50%, -50%) scale(1.24)' },
+            { opacity: 0, transform: 'translate(-50%, -50%) scale(1.48)' }
         ], {
             duration: 420,
             easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
@@ -2412,9 +2424,9 @@ function animatePlayPauseButton(button, nextState) {
     var entering = button.querySelector(nextState === 'playing' ? '.play-pause-pause' : '.play-pause-play');
     if (entering && typeof entering.animate === 'function') {
         entering.animate([
-            { filter: 'blur(2px)', transform: 'scale(0.68) rotate(-14deg)' },
-            { filter: 'blur(0)', transform: 'scale(1.14) rotate(4deg)' },
-            { filter: 'blur(0)', transform: 'scale(1) rotate(0deg)' }
+            { filter: 'blur(2px)', transform: 'translate(-50%, -50%) scale(0.68) rotate(-14deg)' },
+            { filter: 'blur(0)', transform: 'translate(-50%, -50%) scale(1.14) rotate(4deg)' },
+            { filter: 'blur(0)', transform: 'translate(-50%, -50%) scale(1) rotate(0deg)' }
         ], {
             duration: 380,
             easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
@@ -2890,9 +2902,10 @@ function updateBottomPlayer() {
     if (loopBtn) {
         loopBtn.disabled = !canControl;
         loopBtn.classList.toggle('active', loopMode !== 'off');
-        loopBtn.title = loopLabel + ' (next: ' + (LOOP_MODE_LABELS[nextMode] || nextMode) + ')';
-        loopBtn.setAttribute('data-tooltip', loopBtn.title);
-        loopBtn.setAttribute('aria-label', loopBtn.title);
+        var loopTooltip = loopLabel + ' (next: ' + (LOOP_MODE_LABELS[nextMode] || nextMode) + ')';
+        loopBtn.removeAttribute('title');
+        loopBtn.setAttribute('data-tooltip', loopTooltip);
+        loopBtn.setAttribute('aria-label', loopTooltip);
         if (loopBtn.dataset.mode !== loopMode) {
             loopBtn.innerHTML = getLoopIcon(loopMode);
             loopBtn.dataset.mode = loopMode;
@@ -3066,7 +3079,7 @@ function getInlineQueueHtml(mp) {
             '</div>';
 
     if (nextUpTitle) {
-        html += '<div class="np-queue-next" title="' + safeText(nextUpTitle) + '">First queued: ' + safeText(nextUpTitle) + '</div>';
+        html += '<div class="np-queue-next" data-tooltip="' + safeText(nextUpTitle) + '">First queued: ' + safeText(nextUpTitle) + '</div>';
     }
 
     if (queue.length === 0) {
@@ -3257,7 +3270,7 @@ function getStartupMetaHtml(state) {
         chips.push('<span class="badge badge-type">Retry ' + safeText(String(state.retryCount)) + '</span>');
     }
     if (state.fallbackUsed) {
-        chips.push('<span class="badge" style="background:rgba(245, 158, 11, 0.14);color:var(--yellow);border:1px solid var(--yellow);">Fallback</span>');
+        chips.push('<span class="badge" style="background:rgba(245, 158, 11, 0.14);color:var(--yellow);">Fallback</span>');
     }
 
     return '<div class="np-panel-actions" style="margin-top:12px;flex-wrap:wrap;">' + chips.join('') + '</div>';
@@ -3580,10 +3593,10 @@ function updateNowPlayingPanel() {
         '<div class="np-panel-inner">' +
             thumbHtml +
             '<div class="np-meta">' +
-                '<div class="np-meta-title" title="' + safeText(info.title) + '">' + safeText(info.title || 'Untitled') + '</div>' +
+                '<div class="np-meta-title" data-tooltip="' + safeText(info.title) + '">' + safeText(info.title || 'Untitled') + '</div>' +
                 '<div class="np-meta-author">' + safeText(info.author || '') + '</div>' +
                 '<div class="np-meta-time" id="np-meta-time">' + getPlaybackTimeLabel(offset, info) + '</div>' +
-                (info.url ? '<div class="np-meta-url" title="' + safeText(info.url) + '">' + safeText(_truncateUrl(info.url)) + '</div>' : '') +
+                (info.url ? '<div class="np-meta-url" data-tooltip="' + safeText(info.url) + '">' + safeText(_truncateUrl(info.url)) + '</div>' : '') +
                 audioTrackControlHtml +
                 statusHtml +
                 '<div class="np-panel-actions">' +
@@ -3663,7 +3676,7 @@ function getAudioTrackControlHtml(info, canControl) {
     if (tracks.length === 1) {
         var onlyTrack = tracks[0] || {};
         if (!onlyTrack.language && !onlyTrack.label && !onlyTrack.name) return '';
-        return '<span class="np-audio-track-badge" title="Current audio track">' +
+        return '<span class="np-audio-track-badge" data-tooltip="Current audio track" aria-label="Current audio track">' +
             '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm13.5-1.5-1.4 1.4A4.2 4.2 0 0 1 17.3 12c0 1.2-.4 2.3-1.2 3.1l1.4 1.4A6.1 6.1 0 0 0 19.3 12c0-1.8-.7-3.4-1.8-4.5Z"/></svg>' +
             safeText(getAudioTrackDisplayName(onlyTrack, 0)) +
         '</span>';
@@ -4475,7 +4488,9 @@ function updatePlaylistGridFavoriteState(lists, targetId) {
         if (pinBtn) {
             pinBtn.classList.toggle('active', isFavorite);
             pinBtn.classList.toggle('favorite-pending', isFavoritePending);
-            pinBtn.title = isFavorite ? 'Unpin Favorite' : 'Pin Favorite';
+            pinBtn.setAttribute('data-tooltip', isFavorite ? 'Unpin Favorite' : 'Pin Favorite');
+            pinBtn.setAttribute('aria-label', isFavorite ? 'Unpin Favorite' : 'Pin Favorite');
+            pinBtn.removeAttribute('title');
             pinBtn.disabled = isFavoritePending;
         }
     }
@@ -4828,7 +4843,8 @@ function renderSidebarFavorites() {
 
         var openBtn = document.createElement('button');
         openBtn.className = 'sidebar-favorite-item';
-        openBtn.title = pl.name || 'Playlist';
+        openBtn.setAttribute('data-tooltip', pl.name || 'Playlist');
+        openBtn.setAttribute('aria-label', pl.name || 'Playlist');
         openBtn.textContent = pl.name || 'Untitled Playlist';
         openBtn.onclick = function() {
             openPlaylist(pl.id, pl.name);
@@ -4836,7 +4852,8 @@ function renderSidebarFavorites() {
 
         var unpinBtn = document.createElement('button');
         unpinBtn.className = 'sidebar-favorite-unpin' + (pending ? ' favorite-pending' : '');
-        unpinBtn.title = 'Unpin favorite';
+        unpinBtn.setAttribute('data-tooltip', 'Unpin favorite');
+        unpinBtn.setAttribute('aria-label', 'Unpin favorite');
         unpinBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.1L22 9.3l-5 4.8L18.2 22 12 18.7 5.8 22 7 14.1 2 9.3l7.1-1.2z"/></svg>';
         unpinBtn.disabled = pending;
         unpinBtn.onclick = function() {
@@ -4884,11 +4901,11 @@ function populatePlaylists(lists, targetId, options) {
             '</div>' +
             '<div class="playlist-card-actions">' +
                 (allowFavorite && !isPendingCreate
-                    ? '<button class="btn-icon btn-sm playlist-pin-btn' + (isFavorite ? ' active' : '') + (isFavoritePending ? ' favorite-pending' : '') + '" title="' + (isFavorite ? 'Unpin Favorite' : 'Pin Favorite') + '"' + (isFavoritePending ? ' disabled' : '') + '>' +
+                    ? '<button class="btn-icon btn-sm playlist-pin-btn' + (isFavorite ? ' active' : '') + (isFavoritePending ? ' favorite-pending' : '') + '" data-tooltip="' + (isFavorite ? 'Unpin Favorite' : 'Pin Favorite') + '" aria-label="' + (isFavorite ? 'Unpin Favorite' : 'Pin Favorite') + '"' + (isFavoritePending ? ' disabled' : '') + '>' +
                         '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.1L22 9.3l-5 4.8L18.2 22 12 18.7 5.8 22 7 14.1 2 9.3l7.1-1.2z"/></svg>' +
                     '</button>'
                     : '') +
-                (!isPendingCreate ? '<button class="btn-icon btn-sm playlist-share-btn" title="Share">' +
+                (!isPendingCreate ? '<button class="btn-icon btn-sm playlist-share-btn" data-tooltip="Share" aria-label="Share">' +
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' +
                 '</button>' : '<span class="search-status-spinner" aria-hidden="true"></span>') +
             '</div>';
@@ -4943,10 +4960,10 @@ function populatePlaylistTracks(pid, tracks) {
                 '</div>' +
             '</div>' +
             '<div class="list-item-right">' +
-                '<button class="btn-icon btn-sm track-play-btn" title="Play">' +
+                '<button class="btn-icon btn-sm track-play-btn" data-tooltip="Play" aria-label="Play">' +
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>' +
                 '</button>' +
-                '<button class="btn-icon btn-sm track-remove-btn" title="Remove">' +
+                '<button class="btn-icon btn-sm track-remove-btn" data-tooltip="Remove" aria-label="Remove">' +
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M9 6V4h6v2"/></svg>' +
                 '</button>' +
             '</div>';
@@ -5123,7 +5140,7 @@ function populateFriends(friends) {
                 '<div class="avatar">' + _initials(f.friend_name || f.friend_license) + '</div>' +
                 '<div class="list-item-title">' + safeText(f.friend_name || f.friend_license) + '</div>' +
             '</div>' +
-            '<button class="btn-icon btn-sm btn-danger-sm" title="Remove friend">' +
+            '<button class="btn-icon btn-sm btn-danger-sm" data-tooltip="Remove friend" aria-label="Remove friend">' +
                 '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M9 6V4h6v2"/></svg>' +
             '</button>';
 
@@ -5157,8 +5174,8 @@ function populateRequests(requests) {
                 '<div class="list-item-title">' + safeText(r.requester_name || 'Unknown') + '</div>' +
             '</div>' +
             '<div style="display:flex; gap:8px;">' +
-                '<button class="btn-outline btn-sm" title="Decline">Decline</button>' +
-                '<button class="btn-accent btn-sm" title="Accept">Accept</button>' +
+                '<button class="btn-outline btn-sm" data-tooltip="Decline" aria-label="Decline">Decline</button>' +
+                '<button class="btn-accent btn-sm" data-tooltip="Accept" aria-label="Accept">Accept</button>' +
             '</div>';
 
         item.querySelector('.btn-accent').onclick = function() {
@@ -5436,7 +5453,7 @@ function renderLinkedSpeakersHtml(device) {
                 '<span>' + safeText(formatAdminCoords(speaker.coords || speaker.position)) + '</span>' +
                 (speaker.persistent ? '<span class="badge badge-source">Persistent</span>' : '<span class="badge badge-type">Session</span>') +
             '</div>' +
-            '<button class="btn-icon btn-sm btn-danger-sm" data-admin-remove-speaker="' + safeText(String(speaker.id || '')) + '" title="Remove speaker">' +
+            '<button class="btn-icon btn-sm btn-danger-sm" data-admin-remove-speaker="' + safeText(String(speaker.id || '')) + '" data-tooltip="Remove speaker" aria-label="Remove speaker">' +
                 '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M9 6V4h6v2"/></svg>' +
             '</button>' +
         '</div>';
@@ -5889,17 +5906,17 @@ function openAdminModal(forcedHandle) {
                 '<div class="admin-section staff-pills">' +
                 '<label class="admin-label">Staff Actions</label>' +
                 '<div class="admin-pill-bar">' +
-                    (isAdminUser() ? '<button class="pill-btn" id="staff-open-admin-panel" title="Open Admin Panel">Admin Panel</button>' : '') +
-                    '<button class="pill-btn" id="staff-clear-session-lock" title="Remove session lock/PIN">Clear Lock</button>' +
+                    (isAdminUser() ? '<button class="pill-btn" id="staff-open-admin-panel" data-tooltip="Open Admin Panel" aria-label="Open Admin Panel">Admin Panel</button>' : '') +
+                    '<button class="pill-btn" id="staff-clear-session-lock" data-tooltip="Remove session lock/PIN" aria-label="Remove session lock/PIN">Clear Lock</button>' +
                     (adminQuickActions && adminQuickActions.applyProfiles
                         ? '<select id="staff-profile-select" class="pill-select">' + getProfileOptionsHtml(info.profile || '') + '</select>' +
                           '<button class="pill-btn" id="staff-apply-profile">Apply Profile</button>'
                         : '') +
-                    '<button class="pill-btn" id="staff-link-persistent-speaker" title="Place a persistent speaker (stays after restart)">Persistent Speaker</button>' +
+                    '<button class="pill-btn" id="staff-link-persistent-speaker" data-tooltip="Place a persistent speaker (stays after restart)" aria-label="Place a persistent speaker">Persistent Speaker</button>' +
                     (adminQuickActions && adminQuickActions.extendedRangeToggle
-                        ? '<button class="pill-btn" id="staff-extended-range" title="Enable extended range slider">Ext. Range</button>'
+                        ? '<button class="pill-btn" id="staff-extended-range" data-tooltip="Enable extended range slider" aria-label="Enable extended range slider">Ext. Range</button>'
                         : '') +
-                    (showForceReset ? '<button class="pill-btn pill-btn-danger" id="staff-force-reset" title="Force reset the live device session">Force Reset</button>' : '') +
+                    (showForceReset ? '<button class="pill-btn pill-btn-danger" id="staff-force-reset" data-tooltip="Force reset the live device session" aria-label="Force reset the live device session">Force Reset</button>' : '') +
                 '</div>' +
                 '</div>';
         }
@@ -6331,10 +6348,9 @@ function ensureUiEnhancements() {
     var style = document.createElement('style');
     style.id = 'pmms-ui-enhancements';
     style.textContent =
-        '[data-tooltip]{position:relative;}' +
         '#friend-suggestions{' +
             'position:absolute;left:0;right:0;top:calc(100% + 8px);display:none;flex-direction:column;gap:4px;' +
-            'padding:8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;' +
+            'padding:8px;background:var(--bg-elevated);border-radius:10px;' +
             'box-shadow:var(--shadow);z-index:1000;max-height:260px;overflow-y:auto;' +
         '}' +
         '.add-friend-bar{position:relative;}' +
@@ -6346,7 +6362,7 @@ function ensureUiEnhancements() {
         '.friend-suggestion-meta{display:flex;flex-direction:column;min-width:0;}' +
         '.friend-suggestion-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
         '.friend-suggestion-sub{font-size:11px;color:var(--text-muted);}' +
-        '.friend-suggestion-badge{font-size:10px;font-weight:700;padding:3px 7px;border-radius:999px;border:1px solid rgba(255,255,255,0.08);}' +
+        '.friend-suggestion-badge{font-size:10px;font-weight:700;padding:3px 7px;border-radius:999px;}' +
         '.friend-suggestion-badge.online{color:#4ade80;background:rgba(74,222,128,0.12);}' +
         '.friend-suggestion-badge.offline{color:#fbbf24;background:rgba(251,191,36,0.12);}' +
         '#library-summary{font-size:12px;color:var(--text-muted);}' +
@@ -6366,6 +6382,7 @@ function applyStaticTooltips() {
         if (!element.getAttribute('aria-label')) {
             element.setAttribute('aria-label', title);
         }
+        element.removeAttribute('title');
     });
 }
 

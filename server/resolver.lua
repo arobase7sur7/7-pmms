@@ -628,6 +628,108 @@ local function resolveDirect(url, options, resolverOptions, callback)
 	end)
 end
 
+local function canUseHostedProvider(options)
+	local playerConfig = type(Config.player) == "table" and Config.player or {}
+	local duiConfig = type(Config.dui) == "table" and Config.dui or {}
+	local urls = type(duiConfig.urls) == "table" and duiConfig.urls or {}
+	local hostedUrl = urls.https
+	if type(hostedUrl) ~= "string" or hostedUrl == "" then
+		hostedUrl = playerConfig.hostedPlayerUrl
+	end
+	local url = options and options.url
+	return type(url) == "string"
+		and url:match("^https?://") ~= nil
+		and playerConfig.useHostedPlayer ~= false
+		and type(hostedUrl) == "string"
+		and hostedUrl:match("^https://") ~= nil
+end
+
+local function getHostedDuiUrl()
+	local playerConfig = type(Config.player) == "table" and Config.player or {}
+	local duiConfig = type(Config.dui) == "table" and Config.dui or {}
+	local urls = type(duiConfig.urls) == "table" and duiConfig.urls or {}
+	local hostedUrl = urls.https
+	if type(hostedUrl) ~= "string" or hostedUrl == "" then
+		hostedUrl = playerConfig.hostedPlayerUrl
+	end
+	return hostedUrl
+end
+
+local function buildHostedResult(options)
+	local resolved = cloneValue(options)
+	local hostedUrl = getHostedDuiUrl()
+	resolved.originalUrl = resolved.originalUrl or options.url
+	resolved.resolvedUrl = options.url
+	resolved.hostedPlayer = true
+	resolved.resolver = {
+		status = "browser",
+		reason = "hosted_player",
+		provider = "hosted_player",
+		instance = hostedUrl or "hosted",
+		resolvedAt = os.time(),
+		trace = { makeTraceEntry("hosted_player", "success", "browser") },
+	}
+	return resolved
+end
+
+local function buildBrowserYoutubeResult(options, provider)
+	local resolved = cloneValue(options)
+	resolved.originalUrl = resolved.originalUrl or options.url
+	resolved.resolvedUrl = options.url
+	resolved.resolver = {
+		status = "browser",
+		reason = provider,
+		provider = provider,
+		instance = "client_browser",
+		resolvedAt = os.time(),
+		trace = { makeTraceEntry(provider, "success", "browser") },
+	}
+	return resolved
+end
+
+local function resolveHosted(url, options, resolverOptions, callback)
+	if resolverOptions.avoidProvider == "hosted_player" or not canUseHostedProvider(options) then
+		callback(nil, "hosted_unavailable")
+		return
+	end
+	callback(makePayload("hosted_player", getHostedDuiUrl() or "hosted", url, options, {
+		status = "browser",
+		reason = "hosted_player",
+		hostedPlayer = true,
+	}))
+end
+
+local function resolveBrowserPage(url, options, resolverOptions, callback)
+	if resolverOptions.avoidProvider == "browser" then
+		callback(nil, "browser_avoided")
+		return
+	end
+	if type(url) ~= "string" or url:match("^https?://") == nil then
+		callback(nil, "browser_invalid_url")
+		return
+	end
+	if isYoutubeUrl(url) then
+		callback(nil, "use_youtube_browser")
+		return
+	end
+	callback(makePayload("browser", "client_browser", url, options, {
+		status = "browser",
+		reason = "client_browser",
+	}))
+end
+
+local function resolveBrowserYoutube(url, options, resolverOptions, callback)
+	if not isYoutubeUrl(url) then
+		callback(nil, "not_youtube")
+		return
+	end
+	local provider = resolverOptions.forceProvider or "chromium_youtube"
+	callback(makePayload(provider, "client_browser", url, options, {
+		status = "browser",
+		reason = provider,
+	}))
+end
+
 local function resolveInvidious(url, options, resolverOptions, callback)
 	local videoId = extractYoutubeId(url)
 	if not videoId then
@@ -870,6 +972,10 @@ end
 
 local providerFunctions = {
 	direct = resolveDirect,
+	hosted_player = resolveHosted,
+	browser = resolveBrowserPage,
+	chromium_youtube = resolveBrowserYoutube,
+	embed = resolveBrowserYoutube,
 	cobalt = resolveCobalt,
 	invidious = resolveInvidious,
 	piped = resolvePiped,
@@ -888,52 +994,34 @@ local function providerOrder(resolverOptions, url)
 	end
 	if type(configured) ~= "table" then
 		configured = isYoutubeUrl(url)
-			and { "invidious", "piped", "page_scrape", "cobalt" }
-			or { "direct" }
+			and { "hosted_player", "chromium_youtube", "browser", "invidious", "piped", "page_scrape", "cobalt" }
+			or { "hosted_player", "browser", "direct" }
 	end
 	local order = {}
+	local orderRank = {}
 	for _, provider in ipairs(configured) do
 		if providerFunctions[provider] and provider ~= resolverOptions.avoidProvider and not isProviderCoolingDown(provider, "provider") then
 			order[#order + 1] = provider
+			orderRank[provider] = #order
 		end
 	end
 	if not isYoutubeUrl(url) and resolverOptions.avoidProvider ~= "direct" then
 		table.insert(order, 1, "direct")
+		orderRank.direct = 0
 	end
 	table.sort(order, function(left, right)
-		return scoreProvider(left) > scoreProvider(right)
+		local leftScore = scoreProvider(left)
+		local rightScore = scoreProvider(right)
+		if math.abs(leftScore - rightScore) < 0.0001 then
+			return (orderRank[left] or 9999) < (orderRank[right] or 9999)
+		end
+		return leftScore > rightScore
 	end)
 	return order
 end
 
 local function shouldUseHosted(options, resolverOptions)
-	local playerConfig = type(Config.player) == "table" and Config.player or {}
-	local url = options and options.url
-	if type(url) ~= "string" or not url:match("^https?://") then
-		return false
-	end
-	if playerConfig.useHostedPlayer == false or type(playerConfig.hostedPlayerUrl) ~= "string" or playerConfig.hostedPlayerUrl == "" then
-		return false
-	end
-	if resolverOptions.forceProvider or resolverOptions.forceRefresh == true then
-		return false
-	end
-	return resolverOptions.avoidProvider ~= "hosted_player"
-end
-
-local function buildHostedResult(options)
-	local resolved = cloneValue(options)
-	resolved.originalUrl = resolved.originalUrl or options.url
-	resolved.resolvedUrl = options.url
-	resolved.resolver = {
-		status = "browser",
-		reason = "hosted_player",
-		provider = "hosted_player",
-		instance = Config.player and Config.player.hostedPlayerUrl or "hosted",
-		resolvedAt = os.time(),
-		trace = { makeTraceEntry("hosted_player", "success", "browser") },
-	}
-	return resolved
+	return resolverOptions.forceProvider == "hosted_player" and canUseHostedProvider(options)
 end
 
 local function buildResolvedOptions(options, payload)
@@ -956,6 +1044,9 @@ local function buildResolvedOptions(options, payload)
 	resolved.duration = resolved.duration or payload.duration
 	if payload.video == false then
 		resolved.video = false
+	end
+	if payload.hostedPlayer == true then
+		resolved.hostedPlayer = true
 	end
 	return resolved
 end

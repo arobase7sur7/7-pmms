@@ -15,6 +15,42 @@ local function getLocalDuiUrl()
     return normalizeUrl(("http://%s/%s/dui/"):format(GetCurrentServerEndpoint(), GetCurrentResourceName()))
 end
 
+local function isHttpsUrl(url)
+    return type(url) == "string" and url:match("^https://") ~= nil
+end
+
+local function getHostedDuiUrl()
+    local dui = type(Config.dui) == "table" and Config.dui or {}
+    local urls = type(dui.urls) == "table" and dui.urls or {}
+    local url = urls.https
+    if not isHttpsUrl(url) then
+        local player = type(Config.player) == "table" and Config.player or {}
+        url = player.hostedPlayerUrl
+    end
+    if not isHttpsUrl(url) then
+        return nil
+    end
+    return normalizeUrl(url)
+end
+
+local function isHostedResolver(options)
+    if type(options) ~= "table" then
+        return false
+    end
+    if options.hostedPlayer == true then
+        return true
+    end
+    local resolver = type(options.resolver) == "table" and options.resolver or {}
+    return resolver.provider == "hosted_player"
+end
+
+local function getDuiUrl(options)
+    if isHostedResolver(options) then
+        return getHostedDuiUrl() or getLocalDuiUrl()
+    end
+    return getLocalDuiUrl()
+end
+
 local function resolvePlayerDimensions(model)
     local width = Config.dui.screenWidth
     local height = Config.dui.screenHeight
@@ -68,7 +104,7 @@ local function createBrowser(handle, options, model)
         model,
         renderTarget,
         options.scaleform,
-        getLocalDuiUrl(),
+        getDuiUrl(options),
         options,
         width,
         height,

@@ -101,16 +101,25 @@ Config.permissions
 Config.searchSources
 ```
 
-# YouTube and Resolver Setup
+# Hosted DUI and Resolver Setup
 
-The default config works with the hosted player and public fallback providers. For better reliability at scale, use the hosted player plus a private or community Cobalt endpoint when available.
+The default config works with the hosted DUI runtime and public fallback providers. The hosted URL must serve `http/dui_runtime/`, not the old React player build. For better reliability at scale, use the hosted DUI runtime plus a private or community Cobalt endpoint when available.
 
 No local downloader or paid API key is required.
+
+Hosted DUI deployment guide:
+
+```text
+player/DEPLOY_GUIDE.md
+```
 
 Default provider order:
 
 ```lua
 Config.resolver.providerOrder = {
+    "hosted_player",
+    "chromium_youtube",
+    "browser",
     "invidious",
     "piped",
     "page_scrape",

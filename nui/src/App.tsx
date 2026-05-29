@@ -558,7 +558,8 @@ function HomeView() {
           <button
             id="youtube-provider-btn"
             type="button"
-            title="YouTube source provider"
+            data-tooltip="YouTube source provider"
+            aria-label="YouTube source provider"
           >
             Auto
           </button>
@@ -640,7 +641,8 @@ function PlaylistView() {
         <button
           className="btn-icon btn-sm"
           onClick={() => legacyActions.switchView("view-library")}
-          title="Back to Library"
+          data-tooltip="Back to Library"
+          aria-label="Back to Library"
           style={{ marginRight: 4 }}
         >
           <BackIcon />
@@ -750,28 +752,28 @@ function NowPlayingBar() {
 
       <div className="player-center">
         <div className="player-controls">
-          <button id="np-loop" className="btn-icon" disabled title="Loop">
+          <button id="np-loop" className="btn-icon" disabled data-tooltip="Loop" aria-label="Loop">
             <LoopIcon />
           </button>
           <button
             id="np-loop-info"
             className="btn-icon"
-            title="Loop mode help"
+            data-tooltip="Loop mode help"
             aria-label="Loop mode help"
             onClick={openLoopHelp}
           >
             <InfoIcon />
           </button>
-          <button id="np-prev" className="btn-icon" disabled title="Previous">
+          <button id="np-prev" className="btn-icon" disabled data-tooltip="Previous" aria-label="Previous">
             <PreviousIcon />
           </button>
-          <button id="np-play" disabled title="Play / Pause">
+          <button id="np-play" disabled data-tooltip="Play / Pause" aria-label="Play / Pause">
             <PlayIcon />
           </button>
-          <button id="np-next" className="btn-icon" disabled title="Next">
+          <button id="np-next" className="btn-icon" disabled data-tooltip="Next" aria-label="Next">
             <NextIcon />
           </button>
-          <button id="np-stop" className="btn-icon" disabled title="Stop">
+          <button id="np-stop" className="btn-icon" disabled data-tooltip="Stop" aria-label="Stop">
             <StopIcon />
           </button>
         </div>
@@ -798,12 +800,13 @@ function NowPlayingBar() {
           id="np-video"
           className="btn-icon"
           disabled
-          title="Toggle Video"
+          data-tooltip="Toggle Video"
+          aria-label="Toggle Video"
         >
           <VideoIcon />
         </button>
         <div className="volume-group">
-          <button id="np-mute" className="btn-icon" disabled title="Mute">
+          <button id="np-mute" className="btn-icon" disabled data-tooltip="Mute" aria-label="Mute">
             <VolumeIcon />
           </button>
           <input

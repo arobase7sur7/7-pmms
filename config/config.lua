@@ -48,9 +48,9 @@ Config.autoDisableVehicleRadio         = true
 
 -- Hosted player settings; use a table.
 Config.player                          = {
-    -- Public HTTPS URL for the hosted player page; use a full URL.
-    hostedPlayerUrl = "https://pmms-player.pages.dev",
-    -- Prefers the hosted player for HTTP media; true or false.
+    -- Backward-compatible alias for Config.dui.urls.https; use the hosted DUI runtime URL.
+    hostedPlayerUrl = "https://arobase7sur7.github.io/7-pmms-dui/",
+    -- Enables hosted DUI playback when selected by the resolver; true or false.
     useHostedPlayer = true,
 }
 
@@ -412,7 +412,10 @@ Config.dui                             = {
     },
 
     -- Additional runtime URLs; use strings.
-    urls                 = {},
+    urls                 = {
+        -- Public HTTPS URL for the hosted DUI runtime; deploy http/dui_runtime here.
+        https = "https://arobase7sur7.github.io/7-pmms-dui/",
+    },
 
     -- DUI runtime probe settings; use a table.
     probe                = {
@@ -447,7 +450,7 @@ Config.resolver                        = {
     audioLanguagePriority = { "original", "en", "en-US", "und" },
 
     -- Fallback provider order; use provider keys from this config.
-    providerOrder = { "invidious", "piped", "page_scrape", "cobalt" },
+    providerOrder = { "hosted_player", "chromium_youtube", "browser", "invidious", "piped", "page_scrape", "cobalt" },
 
     -- Browser YouTube behavior settings; use a table.
     browserYoutube = {
@@ -456,7 +459,7 @@ Config.resolver                        = {
         -- Makes browser YouTube the primary YouTube path; true or false.
         primary = false,
         -- Hides manual provider selection in the UI; true or false.
-        hideProviderSelector = true,
+        hideProviderSelector = false,
     },
 
     -- Resolver extractor settings; use a table.
@@ -464,7 +467,7 @@ Config.resolver                        = {
         -- Sets enabled for this section. Use true or false.
         enabled = true,
         -- Fallback provider order; use provider keys from this config.
-        providerOrder = { "invidious", "piped", "page_scrape", "cobalt" },
+        providerOrder = { "hosted_player", "chromium_youtube", "browser", "invidious", "piped", "page_scrape", "cobalt" },
         -- Allows public resolver fallbacks; true or false.
         allowPublicFallbacks = false,
         -- Timeout for this section; use milliseconds.

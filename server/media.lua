@@ -1335,8 +1335,11 @@ local function normalizeYoutubeResolverProvider(value)
     if provider == "youtube" then
         return "auto"
     end
-    if provider == "chromium" or provider == "chromium_youtube" or provider == "youtube_browser" or provider == "browser" or provider == "nui" then
+    if provider == "chromium" or provider == "chromium_youtube" or provider == "youtube_browser" or provider == "nui" then
         return "chromium_youtube"
+    end
+    if provider == "browser" or provider == "client_browser" or provider == "dui" then
+        return "browser"
     end
     if provider == "youtube_embed" or provider == "embed" then
         return "embed"
@@ -2885,6 +2888,19 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             return
         end
 
+        if type(finalIntent.directLink) == "table" and finalIntent.directLink.validated == true then
+            local directReady = cloneDeepTable(finalIntent)
+            directReady.resolvedUrl = directReady.resolvedUrl or directReady.url
+            directReady.resolver = directReady.resolver or {
+                status = "bypass",
+                reason = "validated_direct_link",
+                provider = "direct",
+                instance = finalIntent.directLink.contentType or finalIntent.directLink.extension or "direct",
+            }
+            triggerStartOnClient(handle, src, directReady, finalIntent, 0, "starting", "Starting playback.")
+            return
+        end
+
         resolvePlaybackAndNotify(handle, src, finalIntent, resolverOptions or {}, function(ok, resolvedOptions, warning)
             local activeContext = startContexts[handle]
             if not activeContext or activeContext.source ~= src or tostring(activeContext.currentAttemptId) ~= tostring(attemptId) then
@@ -3818,6 +3834,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     local retryAttempts = math.max(0, tonumber(resolverConfig.retryAttempts) or 1)
     local playbackFailureReason = classifyPlaybackError(failedMessage)
     local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, context.options, currentResolver)
+    local retryHostedBrowserFailure = currentResolver.provider == "hosted_player"
     local sourceQuarantined = IsPmmsSourceQuarantined(context.options)
 
     recordAutoProviderPlayback(currentOptions, currentResolver, "failure", playbackFailureReason, context)
@@ -3855,7 +3872,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
     if resolverConfig.retryOnPlaybackError == false
         or currentResolver.status == "bypass"
         or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
-        or not isYoutubeLikeUrl(context.options.originalUrl or context.options.url)
+        or (not isYoutubeLikeUrl(context.options.originalUrl or context.options.url) and not retryHostedBrowserFailure)
         or sourceQuarantined
         or (tonumber(context.retries) or 0) >= retryAttempts then
         PMMSDebug("player", "startup retry skipped", {
@@ -3864,6 +3881,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
             retryOnPlaybackError = resolverConfig.retryOnPlaybackError ~= false,
             resolverStatus = currentResolver.status,
             isYoutubeLike = isYoutubeLikeUrl(context.options.originalUrl or context.options.url),
+            retryHostedBrowserFailure = retryHostedBrowserFailure,
             retryEmbedFallbackFailure = retryEmbedFallbackFailure,
             retries = context.retries,
             retryAttempts = retryAttempts,
@@ -4011,6 +4029,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     local retryCount = tonumber(mp.localPlaybackRetryCount) or 0
     local playbackFailureReason = classifyPlaybackError(failedMessage)
     local retryEmbedFallbackFailure = isRetryableEmbedFallbackFailure(playbackFailureReason, mp, currentResolver)
+    local retryHostedBrowserFailure = currentResolver.provider == "hosted_player"
     local sourceQuarantined = IsPmmsSourceQuarantined(mp)
 
     recordAutoProviderPlayback(mp, currentResolver, "failure", playbackFailureReason, nil)
@@ -4022,7 +4041,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     end
 
     if resolverConfig.retryOnPlaybackError == false
-        or not isYoutubeLikeUrl(sourceUrl)
+        or (not isYoutubeLikeUrl(sourceUrl) and not retryHostedBrowserFailure)
         or currentResolver.status == "bypass"
         or (currentResolver.status == "fallback" and not retryEmbedFallbackFailure)
         or sourceQuarantined
@@ -4035,6 +4054,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
             message = failedMessage,
             retryOnPlaybackError = resolverConfig.retryOnPlaybackError ~= false,
             isYoutubeLike = isYoutubeLikeUrl(sourceUrl),
+            retryHostedBrowserFailure = retryHostedBrowserFailure,
             resolverStatus = currentResolver.status,
             provider = currentResolver.provider,
             instance = currentResolver.instance,

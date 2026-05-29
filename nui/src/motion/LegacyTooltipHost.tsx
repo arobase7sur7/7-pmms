@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { usePmmsMotion } from './MotionProvider';
 
@@ -9,16 +10,37 @@ type TooltipState = {
   key: number;
 };
 
+function getTooltipElement(target: EventTarget | null) {
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>('[data-tooltip], [title]');
+}
+
 function getTooltipText(target: EventTarget | null) {
-  if (!(target instanceof Element)) return '';
-  const element = target.closest<HTMLElement>('[data-tooltip]');
-  return element?.getAttribute('data-tooltip') || '';
+  const element = getTooltipElement(target);
+  if (!element) return '';
+  const title = element.getAttribute('title') || '';
+  if (title) {
+    element.setAttribute('data-tooltip', title);
+    if (!element.getAttribute('aria-label')) element.setAttribute('aria-label', title);
+    element.removeAttribute('title');
+  }
+  return element.getAttribute('data-tooltip') || title;
 }
 
 function getAnchorRect(target: EventTarget | null) {
-  if (!(target instanceof Element)) return null;
-  const element = target.closest<HTMLElement>('[data-tooltip]');
+  const element = getTooltipElement(target);
   return element?.getBoundingClientRect() || null;
+}
+
+function getTooltipPoint(event: Event, rect: DOMRect) {
+  const padding = 12;
+  const isPointer = event instanceof MouseEvent;
+  const x = isPointer ? event.clientX : rect.left + rect.width / 2;
+  const y = isPointer ? event.clientY - 14 : rect.top - 10;
+  return {
+    x: Math.min(Math.max(x, padding), window.innerWidth - padding),
+    y: Math.min(Math.max(y, 42), window.innerHeight - padding),
+  };
 }
 
 export function LegacyTooltipHost() {
@@ -33,20 +55,30 @@ export function LegacyTooltipHost() {
       const text = getTooltipText(event.target);
       const rect = getAnchorRect(event.target);
       if (!text || !rect) return;
+      const point = getTooltipPoint(event, rect);
 
       setTooltip({
         text,
-        x: rect.left + rect.width / 2,
-        y: rect.top - 10,
+        x: point.x,
+        y: point.y,
         key: ++seq,
       });
     };
 
-    const hide = () => setTooltip(null);
+    const hide = (event?: Event) => {
+      if (event instanceof MouseEvent) {
+        const element = getTooltipElement(event.target);
+        if (element && event.relatedTarget instanceof Node && element.contains(event.relatedTarget)) return;
+      }
+      setTooltip(null);
+    };
     const move = (event: MouseEvent) => {
       const text = getTooltipText(event.target);
       if (!text) return;
-      setTooltip(previous => previous ? { ...previous, x: event.clientX, y: event.clientY - 16 } : previous);
+      const rect = getAnchorRect(event.target);
+      if (!rect) return;
+      const point = getTooltipPoint(event, rect);
+      setTooltip(previous => previous ? { ...previous, x: point.x, y: point.y } : previous);
     };
 
     document.addEventListener('mouseover', show, true);
@@ -68,7 +100,7 @@ export function LegacyTooltipHost() {
     };
   }, [motionConfig.reducedMotion]);
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {tooltip && motionConfig.uiVisible && (
         <motion.div
@@ -83,6 +115,7 @@ export function LegacyTooltipHost() {
           {tooltip.text}
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }
