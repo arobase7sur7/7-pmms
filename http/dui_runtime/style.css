@@ -38,6 +38,8 @@ mediaelementwrapper > video,
 .pmms-youtube-embed iframe,
 .pmms-youtube-external,
 .pmms-youtube-external-frame,
+.pmms-hosted-player,
+.pmms-hosted-player-frame,
 .pmms-twitch-embed,
 .pmms-twitch-target,
 .pmms-twitch-embed iframe,
@@ -70,6 +72,7 @@ mediaelementwrapper > video,
 
 .pmms-youtube-embed iframe,
 .pmms-youtube-external-frame,
+.pmms-hosted-player-frame,
 .pmms-twitch-embed iframe {
 	display: block;
 	border: 0;

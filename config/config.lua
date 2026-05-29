@@ -28,6 +28,13 @@ Config.autoDisableStaticEmitters       = true
 Config.autoDisableIdleCam              = true
 Config.autoDisableVehicleRadio         = true
 
+Config.player                          = {
+    -- URL for the hosted React Player page. Deploy your own copy or keep the project default.
+    hostedPlayerUrl = "https://pmms-player.pages.dev",
+    -- Enables the hosted iframe for HTTP(S) playback before falling back to local DUI providers.
+    useHostedPlayer = true,
+}
+
 Config.debug                           = {
     -- Master switch. Leave false unless you are diagnosing an issue
     enabled = false,

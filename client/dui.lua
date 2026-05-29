@@ -377,6 +377,7 @@ RegisterNUICallback("duiStartup", function(data, cb)
         hlsCanvasMaxHeight = math.max(180, tonumber(Config.dui.hlsCanvasMaxHeight) or 1080),
         hlsCanvasMaxFps = math.max(1, math.min(60, tonumber(Config.dui.hlsCanvasMaxFps) or 30)),
         audioLanguagePriority = Config.resolver and Config.resolver.audioLanguagePriority or { "original", "en", "en-US", "und" },
+        player = Config.player or {},
         youtube = Config.dui and Config.dui.youtube or nil,
         debug = Config.debug,
     })
