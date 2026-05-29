@@ -935,7 +935,7 @@ Citizen.CreateThread(function()
 
     while true do
         local selectedHandle = type(GetSelectedUiHandle) == "function" and GetSelectedUiHandle() or nil
-        local waitTime = IsUiOpen() and (selectedHandle ~= nil and 170 or 240) or 1000
+        local waitTime = IsUiOpen() and (selectedHandle ~= nil and 250 or 500) or 1000
         local playerPos = GetEntityCoords(PlayerPedId())
         local maxRange = Config.maxRange or 60.0
         local rangeBuffer = 5.0
@@ -962,7 +962,7 @@ Citizen.CreateThread(function()
             local exitThreshold = maxRange + rangeBuffer
 
             if distance >= 0 and distance <= enterThreshold then
-                waitTime = math.min(waitTime, 170)
+                waitTime = math.min(waitTime, 500)
                 if not player and info.url then
                     if not failRetryAt or (failToken and infoToken and failToken ~= infoToken) or nowMs >= failRetryAt then
                         InitMediaPlayer(handle, info, entity, model, entityType, nil, infoToken)
@@ -1057,7 +1057,7 @@ Citizen.CreateThread(function()
         Citizen.Wait(waitTime)
         local uiNow = GetGameTimer()
 
-        if IsUiOpen() and (uiNow - lastUpdateUi) >= 220 then
+        if IsUiOpen() and (uiNow - lastUpdateUi) >= 250 then
             lastUpdateUi = uiNow
             local uiPlayerPos = GetEntityCoords(PlayerPedId())
             local usableMediaPlayers = cachedUsableMediaPlayers

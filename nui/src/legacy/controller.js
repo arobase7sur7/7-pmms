@@ -771,8 +771,40 @@ function requestSocial(force) {
     }
 }
 
+var THROTTLED_NUI_MESSAGES = {
+    seekToTime: 250,
+    seekBackward: 250,
+    seekForward: 250,
+    setBaseVolume: 150,
+    setVolume: 150,
+    setRange: 400,
+    setAttenuation: 400,
+    setDiffRoomVolume: 400,
+    setTransition: 400,
+    setEqAnalyserActive: 250
+};
+var lastNuiMessageAt = {};
+
+function getMessageThrottleKey(name, data) {
+    return name + ':' + String(data && data.handle != null ? data.handle : 'global');
+}
+
+function canSendNuiMessage(name, data) {
+    var throttleMs = THROTTLED_NUI_MESSAGES[name];
+    if (!throttleMs) return true;
+
+    var now = Date.now();
+    var key = getMessageThrottleKey(name, data);
+    var lastSentAt = lastNuiMessageAt[key] || 0;
+    if (now - lastSentAt < throttleMs) return false;
+
+    lastNuiMessageAt[key] = now;
+    return true;
+}
+
 function sendMessage(name, data) {
     if (typeof GetParentResourceName !== 'function') return;
+    if (!canSendNuiMessage(name, data)) return;
     var resourceName = GetParentResourceName();
     fetch('https://' + resourceName + '/' + name, {
         method: 'POST',
@@ -784,6 +816,9 @@ function sendMessage(name, data) {
 function sendRequest(name, data) {
     if (typeof GetParentResourceName !== 'function') {
         return Promise.resolve({});
+    }
+    if (!canSendNuiMessage(name, data)) {
+        return Promise.resolve({ throttled: true });
     }
     var resourceName = GetParentResourceName();
     return fetch('https://' + resourceName + '/' + name, {

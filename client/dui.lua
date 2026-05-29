@@ -324,7 +324,7 @@ Citizen.CreateThread(function()
             duiRenderStats.lastTickAt = now
 
             local fps = #renderable > 0
-                and getConfiguredDuiFps("renderMaxFps", 60, 5, 60)
+                and getConfiguredDuiFps("renderMaxFps", 30, 5, 30)
                 or getConfiguredDuiFps("renderIdleFps", 5, 1, 15)
             local interval = math.floor(1000 / fps)
             local drawEveryFrame = #renderable > 0 and fps >= 55
@@ -337,7 +337,7 @@ Citizen.CreateThread(function()
                 duiRenderStats.rendered = #renderable
                 duiRenderStats.lastFrameMs = GetGameTimer() - frameStart
                 nextRenderAt = drawEveryFrame and now or (now + interval)
-                wait = 0
+                wait = drawEveryFrame and 0 or interval
             else
                 duiRenderStats.rendered = 0
                 wait = math.max(0, math.min(250, nextRenderAt - now))

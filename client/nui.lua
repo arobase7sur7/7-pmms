@@ -6,6 +6,36 @@ local permissions = {}
 local localEqProfile = nil
 local selectedUiHandle = nil
 local selectedUiDeviceType = nil
+local throttledNuiCallbacks = {
+    seekToTime = 250,
+    seekBackward = 250,
+    seekForward = 250,
+    setVolume = 150,
+    setRange = 400,
+    setAttenuation = 400,
+    setDiffRoomVolume = 400,
+    setTransition = 400,
+    setEqAnalyserActive = 250,
+}
+local nuiCallbackLastRunAt = {}
+
+local function canRunNuiCallback(name, data)
+    local throttleMs = throttledNuiCallbacks[name]
+    if not throttleMs then
+        return true
+    end
+
+    local now = GetGameTimer()
+    local handle = type(data) == "table" and data.handle or "global"
+    local key = name .. ":" .. tostring(handle or "global")
+    local lastRunAt = nuiCallbackLastRunAt[key] or 0
+    if now - lastRunAt < throttleMs then
+        return false
+    end
+
+    nuiCallbackLastRunAt[key] = now
+    return true
+end
 
 local function setBaseVolume(value)
     baseVolume = Clamp(value, 0, 100, 100)
@@ -473,31 +503,37 @@ RegisterNUICallback("authorizeSessionPin", function(data, cb)
 end)
 
 RegisterNUICallback("seekToTime", function(data, cb)
-    local mediaPlayers = GetMediaPlayerStates()
-    local mp = mediaPlayers and mediaPlayers[data.handle]
-    if mp and mp.duration then
-        local offset = tonumber(data.offset) or 0
-        TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+    if canRunNuiCallback("seekToTime", data) then
+        local mediaPlayers = GetMediaPlayerStates()
+        local mp = mediaPlayers and mediaPlayers[data.handle]
+        if mp and mp.duration then
+            local offset = tonumber(data.offset) or 0
+            TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+        end
     end
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("seekBackward", function(data, cb)
-    local mediaPlayers = GetMediaPlayerStates()
-    local mp = mediaPlayers and mediaPlayers[data.handle]
-    if mp then
-        local offset = math.max(0, (tonumber(mp.offset) or 0) - 10)
-        TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+    if canRunNuiCallback("seekBackward", data) then
+        local mediaPlayers = GetMediaPlayerStates()
+        local mp = mediaPlayers and mediaPlayers[data.handle]
+        if mp then
+            local offset = math.max(0, (tonumber(mp.offset) or 0) - 10)
+            TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+        end
     end
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("seekForward", function(data, cb)
-    local mediaPlayers = GetMediaPlayerStates()
-    local mp = mediaPlayers and mediaPlayers[data.handle]
-    if mp then
-        local offset = (tonumber(mp.offset) or 0) + 10
-        TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+    if canRunNuiCallback("seekForward", data) then
+        local mediaPlayers = GetMediaPlayerStates()
+        local mp = mediaPlayers and mediaPlayers[data.handle]
+        if mp then
+            local offset = (tonumber(mp.offset) or 0) + 10
+            TriggerServerEvent("pmms:seekToTime", data.handle, offset)
+        end
     end
     cb(json.encode({}))
 end)
@@ -523,7 +559,9 @@ RegisterNUICallback("setBaseVolume", function(data, cb)
 end)
 
 RegisterNUICallback("setVolume", function(data, cb)
-    TriggerServerEvent("pmms:setVolume", data.handle, data.volume)
+    if canRunNuiCallback("setVolume", data) then
+        TriggerServerEvent("pmms:setVolume", data.handle, data.volume)
+    end
     cb(json.encode({}))
 end)
 
@@ -533,7 +571,9 @@ RegisterNUICallback("setAudioTrack", function(data, cb)
 end)
 
 RegisterNUICallback("setRange", function(data, cb)
-    TriggerServerEvent("pmms:setRange", data.handle, data.range)
+    if canRunNuiCallback("setRange", data) then
+        TriggerServerEvent("pmms:setRange", data.handle, data.range)
+    end
     cb(json.encode({}))
 end)
 
@@ -651,10 +691,12 @@ RegisterNUICallback("loadDeviceEqProfile", function(data, cb)
 end)
 
 RegisterNUICallback("setEqAnalyserActive", function(data, cb)
-    if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
-        for _, browser in pairs(DuiBrowser.pool) do
-            if type(browser.sendMessage) == "function" then
-                browser:sendMessage({ type = "setEqAnalyserActive", active = data.active == true })
+    if canRunNuiCallback("setEqAnalyserActive", data) then
+        if type(DuiBrowser) == "table" and type(DuiBrowser.pool) == "table" then
+            for _, browser in pairs(DuiBrowser.pool) do
+                if type(browser.sendMessage) == "function" then
+                    browser:sendMessage({ type = "setEqAnalyserActive", active = data.active == true })
+                end
             end
         end
     end
@@ -673,17 +715,23 @@ RegisterNUICallback("adminRemovePersistentDevice", function(data, cb)
 end)
 
 RegisterNUICallback("setAttenuation", function(data, cb)
-    TriggerServerEvent("pmms:setAttenuation", data.handle, data.sameRoom, data.diffRoom)
+    if canRunNuiCallback("setAttenuation", data) then
+        TriggerServerEvent("pmms:setAttenuation", data.handle, data.sameRoom, data.diffRoom)
+    end
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("setDiffRoomVolume", function(data, cb)
-    TriggerServerEvent("pmms:setDiffRoomVolume", data.handle, data.diffRoomVolume)
+    if canRunNuiCallback("setDiffRoomVolume", data) then
+        TriggerServerEvent("pmms:setDiffRoomVolume", data.handle, data.diffRoomVolume)
+    end
     cb(json.encode({}))
 end)
 
 RegisterNUICallback("setTransition", function(data, cb)
-    TriggerServerEvent("pmms:setTransition", data.handle, data.transitionSeconds)
+    if canRunNuiCallback("setTransition", data) then
+        TriggerServerEvent("pmms:setTransition", data.handle, data.transitionSeconds)
+    end
     cb(json.encode({}))
 end)
 
