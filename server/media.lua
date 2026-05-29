@@ -1503,7 +1503,10 @@ local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, c
                 warning = warning,
             })
             if notifyOnFailure then
-                TriggerClientEvent("pmms:error", src, warning or "Unable to resolve media URL.")
+                TriggerPmmsError(src, "resolver_unplayable", {
+                    detail = warning or "Unable to resolve media URL.",
+                    source = "resolver",
+                })
             end
             callback(false, nil, warning)
             return
@@ -1833,7 +1836,7 @@ function CleanupPendingStarts(now)
                 retryCount = tonumber(context.retries) or 0,
             }, 8)
             if src and GetPlayerName(src) then
-                TriggerClientEvent("pmms:error", src, "Playback startup timed out.")
+                TriggerPmmsError(src, "playback_start_timeout")
             end
         end
     end
@@ -2439,7 +2442,9 @@ local function failPlaybackStart(handle, src, message, details)
     end
 
     expireStartupState(handle, "failed", finalMessage, stateDetails, 8)
-    TriggerClientEvent("pmms:error", src, finalMessage)
+    TriggerPmmsError(src, "playback_start_failed", {
+        detail = finalMessage,
+    })
 end
 
 local function playbackUrlMatches(options, failedUrl)
@@ -2527,7 +2532,9 @@ local function failActiveLocalPlayback(handle, src, message, details)
     end
     ClearRestricted(handle)
     expireStartupState(handle, "failed", finalMessage, stateDetails, 8)
-    TriggerClientEvent("pmms:error", src, finalMessage)
+    TriggerPmmsError(src, "local_playback_failed", {
+        detail = finalMessage,
+    })
     if pushImmediateSync then
         pushImmediateSync()
     end
@@ -2823,7 +2830,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             optionsType = type(intentOptions),
             url = redactUrlForDebug(intentOptions and intentOptions.url or nil),
         })
-        TriggerClientEvent("pmms:error", src, "Invalid playback options.")
+        TriggerPmmsError(src, "invalid_playback_options")
         ClearRestricted(handle)
         return
     end

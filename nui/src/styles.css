@@ -2210,6 +2210,18 @@ input[type="text"]::placeholder {
     opacity var(--motion-fast);
 }
 
+.toast-error .toast-icon {
+  color: var(--red);
+}
+
+.toast-warning .toast-icon {
+  color: var(--warning);
+}
+
+.toast-info .toast-icon {
+  color: var(--accent);
+}
+
 .toast-icon {
   color: var(--accent);
   flex-shrink: 0;

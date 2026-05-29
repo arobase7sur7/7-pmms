@@ -926,6 +926,20 @@ function ShowNotification(text, title, color, duration)
     })
 end
 
+function ShowPmmsError(payload)
+    local errorPayload = type(BuildPmmsErrorPayload) == "function" and BuildPmmsErrorPayload(payload) or {
+        code = "action_failed",
+        title = "7-PMMS",
+        message = tostring(payload or "The action failed. Please try again."),
+        type = "error",
+        duration = Config.notificationDuration or 6000,
+    }
+    SendNUIMessage({
+        type = "pmmsError",
+        payload = errorPayload,
+    })
+end
+
 RegisterNetEvent("pmms:showControls", function()
     ShowUi()
 end)
@@ -957,8 +971,8 @@ RegisterNetEvent("pmms:refreshPermissions", function()
     TriggerServerEvent("pmms:loadPermissions")
 end)
 
-RegisterNetEvent("pmms:error", function(msg)
-    ShowNotification(msg, nil, "#ff4444")
+RegisterNetEvent("pmms:error", function(payload)
+    ShowPmmsError(payload)
 end)
 
 RegisterNetEvent("pmms:notify", function(data)

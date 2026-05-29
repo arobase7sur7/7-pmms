@@ -1745,26 +1745,215 @@ function showPropModelPicker(title, actionLabel, onPick, sourceModels) {
 
 'use strict';
 
+var ERROR_TOAST_MAX = 3;
+var ERROR_DEFAULT_DURATION = 6000;
+var ERROR_MESSAGE_MAP = {
+    invalid_playback_options: {
+        title: 'Playback',
+        message: 'Enter a playable media URL.',
+        duration: 6500,
+        type: 'error'
+    },
+    invalid_url: {
+        title: 'Playback',
+        message: 'Enter a valid http or https media URL.',
+        duration: 6500,
+        type: 'error'
+    },
+    resolver_timeout: {
+        title: 'Playback',
+        message: 'The media resolver timed out. Try again or choose another source.',
+        duration: 7000,
+        type: 'error'
+    },
+    resolver_unplayable: {
+        title: 'Playback',
+        message: 'No fallback provider returned a playable stream.',
+        duration: 7000,
+        type: 'error'
+    },
+    resolver_cancelled: {
+        title: 'Playback',
+        message: 'Media resolution was cancelled.',
+        duration: 5000,
+        type: 'warning'
+    },
+    playback_start_timeout: {
+        title: 'Playback',
+        message: 'Playback startup timed out. Try another source.',
+        duration: 7000,
+        type: 'error'
+    },
+    playback_start_failed: {
+        title: 'Playback',
+        message: 'Playback failed after retries. Try another source.',
+        duration: 7000,
+        type: 'error'
+    },
+    local_playback_failed: {
+        title: 'Playback',
+        message: 'This client could not play the media source.',
+        duration: 7000,
+        type: 'error'
+    },
+    player_busy: {
+        title: 'Playback',
+        message: 'This media player is busy. Wait for the current action to finish.',
+        duration: 5000,
+        type: 'warning'
+    },
+    no_permission: {
+        title: 'Permission',
+        message: 'You do not have permission for this action.',
+        duration: 6000,
+        type: 'error'
+    },
+    device_restricted: {
+        title: 'Device',
+        message: 'This device is restricted by staff.',
+        duration: 6000,
+        type: 'error'
+    },
+    device_locked: {
+        title: 'Device',
+        message: 'This media player is locked.',
+        duration: 6000,
+        type: 'error'
+    },
+    live_seek: {
+        title: 'Playback',
+        message: 'Live streams cannot be seeked.',
+        duration: 5000,
+        type: 'warning'
+    },
+    playlist_empty: {
+        title: 'Library',
+        message: 'This playlist has no playable tracks.',
+        duration: 5000,
+        type: 'warning'
+    },
+    action_failed: {
+        title: '7-PMMS',
+        message: 'The action failed. Please try again.',
+        duration: 6000,
+        type: 'error'
+    }
+};
+var ERROR_MESSAGE_PATTERNS = [
+    { pattern: 'resolver timed out', code: 'resolver_timeout' },
+    { pattern: 'timed out', code: 'playback_start_timeout' },
+    { pattern: 'resolver cancelled', code: 'resolver_cancelled' },
+    { pattern: 'cancelled', code: 'resolver_cancelled' },
+    { pattern: 'no fallback provider returned', code: 'resolver_unplayable' },
+    { pattern: 'no fallback provider is available', code: 'resolver_unplayable' },
+    { pattern: 'unable to resolve', code: 'resolver_unplayable' },
+    { pattern: 'invalid playback', code: 'invalid_playback_options' },
+    { pattern: 'invalid playback url', code: 'invalid_url' },
+    { pattern: 'must specify a url', code: 'invalid_url' },
+    { pattern: 'busy', code: 'player_busy' },
+    { pattern: 'permission', code: 'no_permission' },
+    { pattern: 'restricted', code: 'device_restricted' },
+    { pattern: 'locked', code: 'device_locked' },
+    { pattern: 'live streams', code: 'live_seek' },
+    { pattern: 'no playable tracks', code: 'playlist_empty' }
+];
+
+function stripErrorStack(text) {
+    var lines = String(text || '').replace(/\r/g, '\n').split('\n');
+    var kept = [];
+    for (var i = 0; i < lines.length; i++) {
+        var line = String(lines[i] || '').trim();
+        if (!line) continue;
+        if (/^at\s+/.test(line) || /^stack traceback/i.test(line) || /^traceback/i.test(line)) break;
+        if (/^[A-Za-z]:\\/.test(line) && line.indexOf(':') !== -1) break;
+        kept.push(line);
+        if (kept.length >= 2) break;
+    }
+    return (kept.join(' ') || String(text || '')).replace(/\s+/g, ' ').trim();
+}
+
+function classifyErrorCode(message, fallbackCode) {
+    var text = String(message || '').toLowerCase();
+    for (var i = 0; i < ERROR_MESSAGE_PATTERNS.length; i++) {
+        if (text.indexOf(ERROR_MESSAGE_PATTERNS[i].pattern) !== -1) {
+            return ERROR_MESSAGE_PATTERNS[i].code;
+        }
+    }
+    return fallbackCode || 'action_failed';
+}
+
+function getErrorDefinition(code) {
+    return ERROR_MESSAGE_MAP[String(code || '')] || ERROR_MESSAGE_MAP.action_failed;
+}
+
+function normalizeErrorPayload(input, title, color, duration, type) {
+    var payload = input && typeof input === 'object' ? input : { message: input };
+    var rawMessage = stripErrorStack(payload.message || payload.detail || '');
+    var code = payload.code || classifyErrorCode(rawMessage, 'action_failed');
+    var definition = getErrorDefinition(code);
+    var isKnownCode = code !== 'action_failed' && ERROR_MESSAGE_MAP[code];
+    var resolvedMessage = payload.friendlyMessage || (isKnownCode ? definition.message : rawMessage || definition.message);
+    return {
+        code: code,
+        title: payload.title || title || definition.title,
+        message: stripErrorStack(resolvedMessage),
+        type: payload.type || type || definition.type || 'error',
+        duration: Number(payload.duration || duration || definition.duration || ERROR_DEFAULT_DURATION),
+        color: color || payload.color || (payload.type === 'warning' || definition.type === 'warning' ? 'var(--warning)' : '#ff4444')
+    };
+}
+
+function limitToasts(container) {
+    var toasts = Array.prototype.slice.call(container.querySelectorAll('.toast'));
+    while (toasts.length >= ERROR_TOAST_MAX) {
+        var firstToast = toasts.shift();
+        if (firstToast && firstToast.parentNode) firstToast.parentNode.removeChild(firstToast);
+    }
+}
+
+function dismissToast(toast) {
+    toast.classList.remove('toast-in');
+    toast.classList.add('toast-out');
+    setTimeout(function() { if (toast.parentNode) toast.remove(); }, 350);
+}
+
 function showNotification(text, title, color, dur) {
     var c = document.getElementById('notification-container');
     if (!c) return;
 
+    var isErrorToast = (text && typeof text === 'object') || color === '#ff4444' || color === 'var(--red)';
+    var payload = isErrorToast
+        ? normalizeErrorPayload(text, title, color, dur)
+        : {
+            title: typeof title !== 'undefined' ? title : '7-PMMS',
+            message: String(typeof text !== 'undefined' ? text : ''),
+            type: 'info',
+            duration: Number(dur || 4000),
+            color: color
+        };
+    var toastType = String(payload.type || 'info');
+
+    limitToasts(c);
+
     var toast = document.createElement('div');
-    toast.className = 'toast';
-    if (color) toast.style.borderLeftColor = color;
+    toast.className = 'toast toast-' + toastType;
+    if (payload.color) toast.style.borderLeftColor = payload.color;
+    if (payload.code) toast.setAttribute('data-error-code', payload.code);
 
     toast.innerHTML =
         '<div class="toast-icon">' +
-            (color === '#ff4444' || color === 'var(--red)'
+            (toastType === 'error'
                 ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
-                : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
+                : toastType === 'warning'
+                    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+                    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
             ) +
         '</div>' +
         '<div class="toast-body">' +
-            '<div class="toast-title">' + safeText(typeof title !== 'undefined' ? title : '7-PMMS') + '</div>' +
-            '<div class="toast-text">'  + safeText(typeof text !== 'undefined' ? text : '') + '</div>' +
+            '<div class="toast-title">' + safeText(payload.title) + '</div>' +
+            '<div class="toast-text">'  + safeText(payload.message) + '</div>' +
         '</div>' +
-        '<button class="toast-close" onclick="this.parentElement.remove()">' +
+        '<button class="toast-close" aria-label="Dismiss notification">' +
             '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
         '</button>';
 
@@ -1773,17 +1962,12 @@ function showNotification(text, title, color, dur) {
     requestAnimationFrame(function() { toast.classList.add('toast-in'); });
 
     var timeout = setTimeout(function() {
-        toast.classList.remove('toast-in');
-        toast.classList.add('toast-out');
-        setTimeout(function() { if (toast.parentNode) toast.remove(); }, 350);
-    }, dur || 4000);
+        dismissToast(toast);
+    }, payload.duration || 4000);
 
     toast.addEventListener('click', function(e) {
-        if (e.target.classList.contains('toast-close')) return;
         clearTimeout(timeout);
-        toast.classList.remove('toast-in');
-        toast.classList.add('toast-out');
-        setTimeout(function() { if (toast.parentNode) toast.remove(); }, 350);
+        dismissToast(toast);
     });
 }
 
@@ -6397,6 +6581,10 @@ window.addEventListener('message', function(event) {
 
         case 'showNotification':
             if (d.args) showNotification(d.args.text, d.args.title, d.args.color, d.args.duration);
+            break;
+
+        case 'pmmsError':
+            showNotification(d.payload || d.error || d);
             break;
 
         case 'searchResults':

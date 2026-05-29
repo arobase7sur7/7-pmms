@@ -10,6 +10,7 @@ version "0.1.1"
 shared_scripts {
     "config/config.lua",
     "shared/utils.lua",
+    "shared/errors.lua",
 }
 
 server_scripts {
