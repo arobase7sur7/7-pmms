@@ -4203,17 +4203,16 @@ function initPlayer(id, handle, options, startupAttemptId, playbackToken, startu
                     resetVideoHealthState(media);
                 }
 
+                if (!media.pmms.eqAdded) {
+                    media.pmms.eqAdded = !!eqGraph.initAudioGraph(getMediaElementNode(media) || media);
+                }
+
                 if (options.filter && !media.pmms.filterAdded) {
                     applyRadioFilter(media);
                 }
 
                 if (options.visualization && !media.pmms.visualizationAdded) {
                     createAudioVisualization(media, options.visualization);
-                }
-
-                if (!media.pmms.eqAdded) {
-                    eqGraph.connectMedia(getMediaElementNode(media) || media);
-                    media.pmms.eqAdded = true;
                 }
             });
 
@@ -4626,6 +4625,9 @@ var eqGraph = (function () {
     var analyser = null;
     var analyserActive = false;
     var analyserFrameId = null;
+    var activationBound = false;
+    var sourceMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+    var sourceList = [];
     var BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
     var RAMP_TIME = 0.05; // seconds for smooth param changes
 
@@ -4638,9 +4640,33 @@ var eqGraph = (function () {
         return ctx;
     }
 
+    function resumeAudioContext() {
+        var actx = getCtx();
+        if (!actx || typeof actx.resume !== 'function' || actx.state !== 'suspended') {
+            return;
+        }
+        try {
+            var result = actx.resume();
+            if (result && typeof result.catch === 'function') {
+                result.catch(function() {});
+            }
+        } catch (_) {}
+    }
+
+    function bindAudioActivation() {
+        if (activationBound) {
+            return;
+        }
+        activationBound = true;
+        window.addEventListener('pointerdown', resumeAudioContext, { passive: true });
+        window.addEventListener('keydown', resumeAudioContext, { passive: true });
+        document.addEventListener('pointerdown', resumeAudioContext, { passive: true });
+    }
+
     function ensureGraph() {
         var actx = getCtx();
         if (!actx || preamp) return;
+        bindAudioActivation();
         preamp = actx.createGain();
         preamp.gain.value = 1.0;
 
@@ -4648,10 +4674,6 @@ var eqGraph = (function () {
         highpass.type = 'highpass';
         highpass.frequency.value = 80;
         highpass.Q.value = 0.7;
-
-        var prev = preamp;
-        // bypass highpass initially – connect directly
-        prev.connect(actx.destination); // placeholder, rewired below
 
         for (var i = 0; i < 10; i++) {
             var f = actx.createBiquadFilter();
@@ -4677,16 +4699,24 @@ var eqGraph = (function () {
         rebuildChain(false, false);
     }
 
+    function disconnectNode(node) {
+        if (node && typeof node.disconnect === 'function') {
+            try {
+                node.disconnect();
+            } catch (_) {}
+        }
+    }
+
     function rebuildChain(hpEnabled, compEnabled) {
         var actx = getCtx();
         if (!actx || !preamp) return;
-        // Disconnect all
-        try { preamp.disconnect(); } catch (_) {}
-        try { if (highpass) highpass.disconnect(); } catch (_) {}
+        disconnectNode(preamp);
+        disconnectNode(highpass);
         for (var i = 0; i < bands.length; i++) {
-            try { bands[i].disconnect(); } catch (_) {}
+            disconnectNode(bands[i]);
         }
-        try { if (compressor) compressor.disconnect(); } catch (_) {}
+        disconnectNode(compressor);
+        disconnectNode(analyser);
 
         var chain = [preamp];
         if (hpEnabled && highpass) chain.push(highpass);
@@ -4694,10 +4724,11 @@ var eqGraph = (function () {
         if (compEnabled && compressor) chain.push(compressor);
         chain.push(analyser);
 
-        for (var k = 0; k < chain.length - 1; k++) {
-            chain[k].connect(chain[k + 1]);
-        }
-        analyser.connect(actx.destination);
+        chain.reduce(function(previous, current) {
+            previous.connect(current);
+            return current;
+        });
+        chain[chain.length - 1].connect(actx.destination);
     }
 
     function dbToGain(db) {
@@ -4717,11 +4748,11 @@ var eqGraph = (function () {
         if (!actx || !preamp) return;
 
         if (!profile || !profile.enabled) {
-            // Neutral: flat preamp, flat bands
             ramp(preamp.gain, 1.0, actx);
             for (var i = 0; i < bands.length; i++) {
                 ramp(bands[i].gain, 0, actx);
             }
+            rebuildChain(false, false);
             return;
         }
 
@@ -4736,13 +4767,43 @@ var eqGraph = (function () {
         rebuildChain(profile.highpassEnabled === true, profile.compressorEnabled === true);
     }
 
-    function connectMedia(mediaEl) {
+    function getStoredSource(mediaEl) {
+        if (!mediaEl) {
+            return null;
+        }
+        if (sourceMap) {
+            return sourceMap.get(mediaEl) || null;
+        }
+        for (var i = 0; i < sourceList.length; i++) {
+            if (sourceList[i].media === mediaEl) {
+                return sourceList[i].source;
+            }
+        }
+        return null;
+    }
+
+    function storeSource(mediaEl, source) {
+        if (sourceMap) {
+            sourceMap.set(mediaEl, source);
+            return;
+        }
+        sourceList.push({ media: mediaEl, source: source });
+    }
+
+    function initAudioGraph(mediaEl) {
         ensureGraph();
         var actx = getCtx();
-        if (!actx || !preamp) return null;
+        if (!mediaEl || !actx || !preamp) return null;
+        var existingSource = getStoredSource(mediaEl);
+        if (existingSource) {
+            resumeAudioContext();
+            return existingSource;
+        }
         try {
             var src = actx.createMediaElementSource(mediaEl);
             src.connect(preamp);
+            storeSource(mediaEl, src);
+            resumeAudioContext();
             return src;
         } catch (_) {
             return null;
@@ -4776,10 +4837,15 @@ var eqGraph = (function () {
 
     return {
         applyProfile: applyProfile,
-        connectMedia: connectMedia,
+        connectMedia: initAudioGraph,
+        initAudioGraph: initAudioGraph,
         setAnalyserActive: function (active) {
             analyserActive = !!active;
-            if (analyserActive) startAnalyserStream();
+            if (analyserActive) {
+                ensureGraph();
+                resumeAudioContext();
+                startAnalyserStream();
+            }
             else stopAnalyserStream();
         },
     };
