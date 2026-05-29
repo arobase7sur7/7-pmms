@@ -20,6 +20,60 @@ function closeModal(id: string) {
   }
 }
 
+function EmptyState({
+  title,
+  detail,
+  compact = false,
+}: {
+  title: string;
+  detail?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`empty-state ${compact ? "empty-state-compact" : ""}`}>
+      <div className="empty-state-mark" />
+      <p>{title}</p>
+      {detail && <span>{detail}</span>}
+    </div>
+  );
+}
+
+function UnifiedModal({
+  id,
+  title,
+  titleId,
+  children,
+  onClose,
+  modalClassName = "",
+  bodyClassName = "",
+  showCloseButton = true,
+}: {
+  id: string;
+  title: string;
+  titleId?: string;
+  children: React.ReactNode;
+  onClose?: () => void;
+  modalClassName?: string;
+  bodyClassName?: string;
+  showCloseButton?: boolean;
+}) {
+  return (
+    <div id={id} className="modal-backdrop" style={{ display: "none" }}>
+      <div className={`modal ${modalClassName}`.trim()}>
+        <div className="modal-header">
+          <h3 id={titleId}>{title}</h3>
+          {showCloseButton && onClose && (
+            <button className="btn-icon btn-sm" onClick={onClose}>
+              <XIcon />
+            </button>
+          )}
+        </div>
+        <div className={`modal-body ${bodyClassName}`.trim()}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function MusicLogoIcon() {
   return (
     <svg
@@ -420,7 +474,7 @@ function Sidebar() {
   const handleCloseMenu = useCallback(() => void sendNuiMessage("closeUi"), []);
 
   return (
-    <aside id="sidebar">
+    <aside id="sidebar" className="pmms-zone pmms-zone-nav">
       <motion.div
         className="sidebar-logo"
         initial={motionConfig.reducedMotion ? false : { opacity: 0, y: -8 }}
@@ -497,40 +551,50 @@ function Sidebar() {
 function HomeView() {
   return (
     <div id="view-home" className="view active">
-      <div id="search-bar">
-        <SearchIcon />
-        <select id="search-source" />
-        <button
-          id="youtube-provider-btn"
-          type="button"
-          title="YouTube source provider"
-        >
-          Auto
-        </button>
-        <input
-          type="text"
-          id="search-input"
-          placeholder="Search or paste a URL..."
-          autoComplete="off"
+      <div className="workspace-command-zone">
+        <div id="search-bar">
+          <SearchIcon />
+          <select id="search-source" />
+          <button
+            id="youtube-provider-btn"
+            type="button"
+            title="YouTube source provider"
+          >
+            Auto
+          </button>
+          <input
+            type="text"
+            id="search-input"
+            placeholder="Search or paste a URL..."
+            autoComplete="off"
+          />
+          <button id="search-btn">Search</button>
+        </div>
+        <div
+          id="search-status"
+          className="search-status"
+          style={{ display: "none" }}
         />
-        <button id="search-btn">Search</button>
+        <div id="search-results" style={{ display: "none" }} />
       </div>
-      <div
-        id="search-status"
-        className="search-status"
-        style={{ display: "none" }}
-      />
-      <div id="search-results" style={{ display: "none" }} />
 
-      <div className="section-row">
-        <span className="section-title">Nearby Devices</span>
-        <span className="section-count" id="devices-count">
-          None found
-        </span>
+      <div className="workspace-content-zone">
+        <div className="section-row">
+          <span className="section-title">Nearby Devices</span>
+          <span className="section-count" id="devices-count">
+            None found
+          </span>
+        </div>
+        <div id="devices-grid">
+          <EmptyState title="No nearby devices" compact />
+        </div>
       </div>
-      <div id="devices-grid" />
 
-      <div id="now-playing-panel" />
+      <div className="workspace-detail-zone">
+        <div id="now-playing-panel">
+          <EmptyState title="No device selected" detail="Select a nearby device to begin playback." compact />
+        </div>
+      </div>
     </div>
   );
 }
@@ -553,14 +617,18 @@ function LibraryView() {
       <div className="section-row" style={{ marginBottom: 12 }}>
         <span className="section-title">Your Playlists</span>
       </div>
-      <div id="playlists-grid" className="playlists-grid" />
+      <div id="playlists-grid" className="playlists-grid">
+        <EmptyState title="No playlists yet" compact />
+      </div>
 
       <div className="separator" style={{ margin: "24px 0" }} />
 
       <div className="section-row" style={{ marginBottom: 12 }}>
         <span className="section-title">Shared With You</span>
       </div>
-      <div id="shared-playlists-grid" className="playlists-grid" />
+      <div id="shared-playlists-grid" className="playlists-grid">
+        <EmptyState title="No shared playlists" compact />
+      </div>
     </div>
   );
 }
@@ -593,7 +661,9 @@ function PlaylistView() {
           </button>
         </div>
       </div>
-      <div id="tracks-list" />
+      <div id="tracks-list">
+        <EmptyState title="This playlist is empty" compact />
+      </div>
     </div>
   );
 }
@@ -624,13 +694,17 @@ function SocialView() {
           <div className="section-row" style={{ marginBottom: 12 }}>
             <span className="section-title">Friends</span>
           </div>
-          <div id="friends-list" />
+          <div id="friends-list" className="social-list">
+            <EmptyState title="No friends yet" compact />
+          </div>
         </div>
         <div>
           <div className="section-row" style={{ marginBottom: 12 }}>
             <span className="section-title">Pending Requests</span>
           </div>
-          <div id="requests-list" />
+          <div id="requests-list" className="social-list">
+            <EmptyState title="No pending requests" compact />
+          </div>
         </div>
       </div>
     </div>
@@ -645,7 +719,7 @@ function MainContent({
   analyserData: Float32Array | null;
 }) {
   return (
-    <main id="main-content">
+    <main id="main-content" className="pmms-zone pmms-zone-main">
       <HomeView />
       <LibraryView />
       <PlaylistView />
@@ -663,7 +737,7 @@ function NowPlayingBar() {
   }, []);
 
   return (
-    <footer id="now-playing-bar">
+    <footer id="now-playing-bar" className="pmms-zone pmms-zone-player">
       <div className="player-left">
         <div className="player-left-icon">
           <PlayerMusicIcon />
@@ -749,206 +823,149 @@ function NowPlayingBar() {
 
 function AdminModal() {
   return (
-    <div
+    <UnifiedModal
       id="admin-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Device Settings"
+      modalClassName="modal-wide"
+      onClose={() => legacyActions.closeAdminModal()}
     >
-      <div className="modal modal-wide">
-        <div className="modal-header">
-          <h3>Device Settings</h3>
-          <button
-            className="btn-icon btn-sm"
-            onClick={() => legacyActions.closeAdminModal()}
-          >
-            <XIcon />
-          </button>
-        </div>
-        <div className="modal-body" id="admin-body" />
-      </div>
-    </div>
+      <div id="admin-body" />
+    </UnifiedModal>
   );
 }
 
 function ShareModal() {
   return (
-    <div
+    <UnifiedModal
       id="share-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Share Playlist"
+      onClose={() => closeModal("share-modal")}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h3>Share Playlist</h3>
-          <button
-            className="btn-icon btn-sm"
-            onClick={() => closeModal("share-modal")}
-          >
-            <XIcon />
-          </button>
-        </div>
-        <div className="modal-body">
-          <p
-            style={{
-              fontSize: 13,
-              color: "var(--text-muted)",
-              marginBottom: 14,
-            }}
-          >
-            Select a friend to share with:
-          </p>
-          <div id="share-friends-list" className="list-container" />
-        </div>
+      <p
+        style={{
+          fontSize: 13,
+          color: "var(--text-muted)",
+          marginBottom: 14,
+        }}
+      >
+        Select a friend to share with:
+      </p>
+      <div id="share-friends-list" className="list-container">
+        <EmptyState title="No friends available" compact />
       </div>
-    </div>
+    </UnifiedModal>
   );
 }
 
 function AddToPlaylistModal() {
   return (
-    <div
+    <UnifiedModal
       id="add-to-playlist-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Add to Playlist"
+      onClose={() => closeModal("add-to-playlist-modal")}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h3>Add to Playlist</h3>
-          <button
-            className="btn-icon btn-sm"
-            onClick={() => closeModal("add-to-playlist-modal")}
-          >
-            <XIcon />
-          </button>
-        </div>
-        <div className="modal-body">
-          <div id="atp-list" className="list-container" />
-        </div>
+      <div id="atp-list" className="list-container">
+        <EmptyState title="No playlists available" compact />
       </div>
-    </div>
+    </UnifiedModal>
   );
 }
 
 function PromptModal() {
   return (
-    <div
+    <UnifiedModal
       id="prompt-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Input"
+      titleId="prompt-title"
+      showCloseButton={false}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h3 id="prompt-title">Input</h3>
-        </div>
-        <div className="modal-body">
-          <input type="text" id="prompt-input" style={{ marginBottom: 16 }} />
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <button className="btn-outline" id="prompt-cancel">
-              Cancel
-            </button>
-            <button className="btn-accent" id="prompt-confirm">
-              Confirm
-            </button>
-          </div>
-        </div>
+      <input type="text" id="prompt-input" style={{ marginBottom: 16 }} />
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button className="btn-outline" id="prompt-cancel">
+          Cancel
+        </button>
+        <button className="btn-accent" id="prompt-confirm">
+          Confirm
+        </button>
       </div>
-    </div>
+    </UnifiedModal>
   );
 }
 
 function ConfirmModal() {
   return (
-    <div
+    <UnifiedModal
       id="confirm-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Are you sure?"
+      titleId="confirm-title"
+      showCloseButton={false}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h3 id="confirm-title">Are you sure?</h3>
-        </div>
-        <div className="modal-body">
-          <p
-            id="confirm-message"
-            style={{
-              fontSize: 13.5,
-              color: "var(--text-muted)",
-              lineHeight: 1.6,
-              marginBottom: 20,
-            }}
-          />
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <button className="btn-outline" id="confirm-cancel">
-              Cancel
-            </button>
-            <button className="btn-danger" id="confirm-ok">
-              Confirm
-            </button>
-          </div>
-        </div>
+      <p
+        id="confirm-message"
+        style={{
+          fontSize: 13.5,
+          color: "var(--text-muted)",
+          lineHeight: 1.6,
+          marginBottom: 20,
+        }}
+      />
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button className="btn-outline" id="confirm-cancel">
+          Cancel
+        </button>
+        <button className="btn-danger" id="confirm-ok">
+          Confirm
+        </button>
       </div>
-    </div>
+    </UnifiedModal>
   );
 }
 
 function LoopHelpModal() {
   return (
-    <div
+    <UnifiedModal
       id="loop-help-modal"
-      className="modal-backdrop"
-      style={{ display: "none" }}
+      title="Playback Modes"
+      onClose={() => closeModal("loop-help-modal")}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h3>Playback Modes</h3>
-          <button
-            className="btn-icon btn-sm"
-            onClick={() => closeModal("loop-help-modal")}
-          >
-            <XIcon />
-          </button>
+      <div className="loop-mode-help-list">
+        <div className="loop-mode-help-item">
+          <strong>Loop Off</strong>
+          <span>
+            Play the current media once. If the manual queue has tracks, the
+            next queued item still plays.
+          </span>
         </div>
-        <div className="modal-body">
-          <div className="loop-mode-help-list">
-            <div className="loop-mode-help-item">
-              <strong>Loop Off</strong>
-              <span>
-                Play the current media once. If the manual queue has tracks, the
-                next queued item still plays.
-              </span>
-            </div>
-            <div className="loop-mode-help-item">
-              <strong>Loop Track</strong>
-              <span>
-                Repeat the current media only. Manual queue items wait until you
-                change mode or press Next.
-              </span>
-            </div>
-            <div className="loop-mode-help-item">
-              <strong>Loop Queue</strong>
-              <span>
-                Play the queue in order and recycle the current track to the
-                back of the queue.
-              </span>
-            </div>
-            <div className="loop-mode-help-item">
-              <strong>Shuffle 1x</strong>
-              <span>
-                Play queued tracks once in a shuffled order, then stop when the
-                queue is empty.
-              </span>
-            </div>
-            <div className="loop-mode-help-item">
-              <strong>Shuffle Loop</strong>
-              <span>
-                Shuffle queued tracks and keep recycling playback so the queue
-                keeps going.
-              </span>
-            </div>
-          </div>
+        <div className="loop-mode-help-item">
+          <strong>Loop Track</strong>
+          <span>
+            Repeat the current media only. Manual queue items wait until you
+            change mode or press Next.
+          </span>
+        </div>
+        <div className="loop-mode-help-item">
+          <strong>Loop Queue</strong>
+          <span>
+            Play the queue in order and recycle the current track to the
+            back of the queue.
+          </span>
+        </div>
+        <div className="loop-mode-help-item">
+          <strong>Shuffle 1x</strong>
+          <span>
+            Play queued tracks once in a shuffled order, then stop when the
+            queue is empty.
+          </span>
+        </div>
+        <div className="loop-mode-help-item">
+          <strong>Shuffle Loop</strong>
+          <span>
+            Shuffle queued tracks and keep recycling playback so the queue
+            keeps going.
+          </span>
         </div>
       </div>
-    </div>
+    </UnifiedModal>
   );
 }
 
@@ -1024,7 +1041,7 @@ function AppShell() {
   }, []);
 
   return (
-    <div id="app-container">
+    <div id="app-container" className="pmms-shell">
       <LegacyTooltipHost />
       <div className="app-body">
         <Sidebar />
