@@ -4,18 +4,18 @@
 
 Originally based on PMMS by kibook, but heavily rewritten and expanded over time.
 
-# ✨ Features
+# Features
 
-### 🎵 Playback
+### Playback
 
-- Synced audio & video playback between players
+- Synced audio and video playback between players
 - Supports props, world positions, scaleforms, and compatible vehicles
 - Queue system with autoplay, loop modes, previous/next, and history
 - Runtime sessions that keep device state alive temporarily after playback stops
 - Nearby discovery based on actual audible range
 - Built-in equalizer with presets and custom profiles
 
-### 🌐 Sources
+### Sources
 
 - YouTube
 - SoundCloud
@@ -24,12 +24,11 @@ Originally based on PMMS by kibook, but heavily rewritten and expanded over time
 - Direct media links
 - HLS (`.m3u8`) support
 
-### ⚙️ Resolver System
+### Resolver System
 
 Supports multiple playback backends:
 
-- local `yt-dlp`
-- extractor APIs
+- hosted player page
 - Cobalt
 - Invidious
 - Piped
@@ -37,7 +36,7 @@ Supports multiple playback backends:
 
 Includes caching, retries, failover handling, adaptive provider ranking, and concurrency limits.
 
-### 📚 Playlists & Social
+### Playlists and Social
 
 - Favorites
 - Shared playlists
@@ -45,15 +44,15 @@ Includes caching, retries, failover handling, adaptive provider ranking, and con
 - Playlist persistence with SQL storage
 - Player suggestions/search
 
-### 🔒 Permissions & Admin Tools
+### Permissions and Admin Tools
 
-- Device locking & request mode
+- Device locking and request mode
 - Persistent admin settings
 - Staff/admin overrides
 - Device profiles
 - Linked speakers
 
-# 📦 Installation
+# Installation
 
 ### Requirements
 
@@ -66,7 +65,6 @@ Optional:
 - `qb-core`
 - `qb-target`
 - `ox_target`
-- local `yt-dlp`
 
 ### Setup
 
@@ -80,7 +78,7 @@ ensure 7-pmms
 
 ---
 
-# ⚙️ Configuration
+# Configuration
 
 Main config:
 
@@ -103,50 +101,24 @@ Config.permissions
 Config.searchSources
 ```
 
-# ▶️ YouTube / Resolver Setup
+# YouTube and Resolver Setup
 
-The default config already works using public providers, but for better reliability it's recommended to use either:
+The default config works with the hosted player and public fallback providers. For better reliability at scale, use the hosted player plus a private or community Cobalt endpoint when available.
 
-- local `yt-dlp`
-- your own extractor API
-- a private Cobalt instance
+No local downloader or paid API key is required.
 
 Default provider order:
 
 ```lua
-Config.resolver.extractor.providerOrder = {
-    "yt_dlp_local",
-    "extractor_http",
-    "cobalt",
+Config.resolver.providerOrder = {
     "invidious",
     "piped",
+    "page_scrape",
+    "cobalt",
 }
 ```
 
-## Local yt-dlp
-
-Test it from the same terminal/user running FXServer:
-
-```sh
-yt-dlp --version
-```
-
-Windows example:
-
-```lua
-Config.resolver.extractor.ytDlpPath = "C:/tools/yt-dlp.exe"
-```
-
-Linux example:
-
-```lua
-Config.resolver.extractor.ytDlpCommand = {
-    "yt-dlp",
-    "python3 -m yt_dlp",
-}
-```
-
-# 🔗 Direct Links
+# Direct Links
 
 Supported formats:
 
@@ -173,7 +145,7 @@ HLS playback is handled through the bundled `hls.js` runtime.
 
 ---
 
-# 👮 Permissions
+# Permissions
 
 Default mode:
 
@@ -197,7 +169,7 @@ Config.permissions.qbcore.adminPermissions = {
 
 Admins can override devices, bypass locks, approve requests, manage hidden devices, linked speakers, and persistent settings.
 
-# 🖥️ NUI Development
+# NUI Development
 
 The UI is built with:
 
@@ -219,7 +191,7 @@ Production files are generated into:
 ui/
 ```
 
-# 💻 Commands
+# Commands
 
 Default commands:
 
@@ -236,7 +208,7 @@ Default commands:
 /pmmsperf
 ```
 
-# 📤 Exports
+# Exports
 
 ### Playback
 
@@ -269,14 +241,14 @@ exports["7-pmms"]:SearchYouTube(query, callback)
 exports["7-pmms"]:SearchMedia(query, source, callback)
 ```
 
-# ⚠️ Limitations
+# Limitations
 
 - Runtime sessions are temporary
 - Playback depends on browser-compatible codecs
 - Public providers can fail/rate-limit
 - Some YouTube/Twitch content may not be playable depending on the resolver used
 
-# ❤️ Credits
+# Credits
 
-- Original PMMS project → kibook
-- Rework & expansion → arobase7sur7
+- Original PMMS project -> kibook
+- Rework and expansion -> arobase7sur7

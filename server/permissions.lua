@@ -282,7 +282,6 @@ local function hasCommonAdminPermission(src)
         return true
     end
 
-    -- ACE 
     for _, aceName in ipairs({
         "admin",
         "god",
@@ -297,7 +296,6 @@ local function hasCommonAdminPermission(src)
         end
     end
 
-    -- QBCore
     local core = getQBCore()
     if core and core.Functions then
         for _, perm in ipairs({ "admin", "god" }) do

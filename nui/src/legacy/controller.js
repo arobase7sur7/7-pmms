@@ -5871,11 +5871,11 @@ function openAdminModal(forcedHandle) {
                     '<div class="admin-speaker-row" data-speaker-id="' + safeText(String(spk.id || '')) + '">' +
                         '<div class="admin-speaker-info">' +
                             '<span class="admin-speaker-name">' + safeText(spk.propModel || 'Speaker') + '</span>' +
-                            '<span class="admin-speaker-meta">' + safeText(spk.createdByName || '') + (spk.persistent ? ' Â· persistent' : '') + '</span>' +
+                            '<span class="admin-speaker-meta">' + safeText(spk.createdByName || '') + (spk.persistent ? ' - persistent' : '') + '</span>' +
                         '</div>' +
                         (canDeleteSpk
                             ? '<button class="btn-danger btn-xs admin-speaker-remove" data-speaker-id="' + safeText(String(spk.id || '')) + '">Remove</button>'
-                            : '<span class="admin-speaker-locked">ðŸ”’</span>') +
+                            : '<span class=\"admin-speaker-locked\">Locked</span>') +
                     '</div>';
             });
             speakerHtml += '</div>';
@@ -6731,5 +6731,4 @@ window.addEventListener('message', function(event) {
             break;
     }
 });
-
 

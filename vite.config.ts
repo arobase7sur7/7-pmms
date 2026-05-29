@@ -6,6 +6,9 @@ export default defineConfig({
   base: './',
   publicDir: 'public',
   plugins: [react()],
+  esbuild: {
+    legalComments: 'none'
+  },
   build: {
     outDir: '../ui',
     emptyOutDir: true,

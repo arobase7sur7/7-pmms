@@ -4615,7 +4615,6 @@ function update(data) {
     setMediaDisplay(player, data.options.video !== false);
 }
 
-// ── EQ Audio Graph ─────────────────────────────────────────────────────────────
 var eqGraph = (function () {
     var ctx = null;
     var preamp = null;
@@ -4629,7 +4628,7 @@ var eqGraph = (function () {
     var sourceMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
     var sourceList = [];
     var BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-    var RAMP_TIME = 0.05; // seconds for smooth param changes
+    var RAMP_TIME = 0.05;
 
     function getCtx() {
         if (!ctx) {
@@ -4695,7 +4694,6 @@ var eqGraph = (function () {
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.8;
 
-        // Connect: preamp → (optional highpass) → bands[0..9] → (optional compressor) → analyser → destination
         rebuildChain(false, false);
     }
 
@@ -4819,7 +4817,6 @@ var eqGraph = (function () {
                 buf = new Float32Array(analyser.frequencyBinCount);
             }
             analyser.getFloatFrequencyData(buf);
-            // Post to parent window (NUI) via fetch postMessage bridge
             try {
                 window.parent.postMessage({ type: 'eqAnalyserFrame', bins: Array.from(buf) }, '*');
             } catch (_) {}
@@ -4850,7 +4847,6 @@ var eqGraph = (function () {
         },
     };
 })();
-// ──────────────────────────────────────────────────────────────────────────────
 
 window.addEventListener('message', function (event) {
     var data = event.data;

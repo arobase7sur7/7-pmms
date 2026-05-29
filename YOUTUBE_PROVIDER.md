@@ -6,7 +6,7 @@
 
 No extra setup is required for public releases:
 
-- no yt-dlp
+- no local downloader
 - no ffmpeg
 - no Python
 - no Cobalt or extractor server
