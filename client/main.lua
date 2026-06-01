@@ -1046,7 +1046,7 @@ Citizen.CreateThread(function()
                     type = "update",
                     handle = handle,
                     distance = distance,
-                    volume = getEffectivePlaybackVolume(info),
+                    volume = LocalPlayerVolumes[handle] or getEffectivePlaybackVolume(info),
                     offset = currentOffset,
                     options = info,
                     sameRoom = isSameRoom(playerPos, entity, entityType, info.isVehicle),
@@ -1078,21 +1078,23 @@ Citizen.CreateThread(function()
                             local resolvedKey = tostring(resolvedHandle)
                             local label = resolveEntityLabel(modelConfig, defaultMp, entry.model, entry.type)
 
-                            usableMediaPlayers[#usableMediaPlayers + 1] = {
-                                handle = resolvedHandle,
-                                label = label,
-                                type = entry.type,
-                                distance = entry.distance,
-                                active = mediaPlayerStates[resolvedHandle] ~= nil or mediaPlayerStates[resolvedKey] ~= nil or startupStates[resolvedHandle] ~= nil or startupStates[resolvedKey] ~= nil,
-                                hasVideo = modelConfig and modelConfig.renderTarget ~= nil or false,
-                                visibleBecause = "nearby",
-                                coords = {
-                                    x = entry.coords.x,
-                                    y = entry.coords.y,
-                                    z = entry.coords.z,
-                                },
-                            }
-                            visibleHandles[resolvedKey] = true
+                            if not visibleHandles[resolvedKey] then
+                                usableMediaPlayers[#usableMediaPlayers + 1] = {
+                                    handle = resolvedHandle,
+                                    label = label,
+                                    type = entry.type,
+                                    distance = entry.distance,
+                                    active = mediaPlayerStates[resolvedHandle] ~= nil or mediaPlayerStates[resolvedKey] ~= nil or startupStates[resolvedHandle] ~= nil or startupStates[resolvedKey] ~= nil,
+                                    hasVideo = modelConfig and modelConfig.renderTarget ~= nil or false,
+                                    visibleBecause = "nearby",
+                                    coords = {
+                                        x = entry.coords.x,
+                                        y = entry.coords.y,
+                                        z = entry.coords.z,
+                                    },
+                                }
+                                visibleHandles[resolvedKey] = true
+                            end
                         end
                     end
                 end
@@ -1221,9 +1223,17 @@ Citizen.CreateThread(function()
                     or (distance >= 0 and distance <= discoveryDistance)
                     or audibleVisible
 
+                local uiInfo = info
+                local localVol = LocalPlayerVolumes[handle]
+                if localVol then
+                    uiInfo = {}
+                    for k,v in pairs(info) do uiInfo[k] = v end
+                    uiInfo.volume = localVol
+                end
+
                 activeMediaPlayersUI[tostring(handle)] = {
                     handle = handle,
-                    info = info,
+                    info = uiInfo,
                     offset = currentOffset,
                     distance = distance,
                     label = resolveActiveLabel(handle, info, player),

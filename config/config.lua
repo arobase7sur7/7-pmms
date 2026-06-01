@@ -49,7 +49,7 @@ Config.autoDisableVehicleRadio         = true
 -- Hosted player settings; use a table.
 Config.player                          = {
     -- Backward-compatible alias for Config.dui.urls.https; use the hosted DUI runtime URL.
-    hostedPlayerUrl = "https://arobase7sur7.github.io/7-pmms-dui/",
+    hostedPlayerUrl = "https://kibook.github.io/pmms-dui/",
     -- Enables hosted DUI playback when selected by the resolver; true or false.
     useHostedPlayer = true,
 }
@@ -376,7 +376,7 @@ Config.dui                             = {
     -- DUI startup timeout; use milliseconds.
     timeout              = 30000,
     -- Maximum active DUI render FPS; use 1 to 60.
-    renderMaxFps         = 30,
+    renderMaxFps         = 144,
     -- Idle DUI render FPS; use 0 or more.
     renderIdleFps        = 5,
     -- Extra render distance beyond audible range; use meters.
@@ -395,7 +395,7 @@ Config.dui                             = {
     -- DUI YouTube-specific settings; use a table.
     youtube              = {
         -- Optional HTTPS URL for a separate YouTube player page; use empty string or URL.
-        externalPlayerUrl = "",
+        externalPlayerUrl = "https://cdpn.io/pen/debug/oNPzxKo",
         -- Uses external player before local DUI YouTube; true or false.
         preferExternalPlayer = true,
 
@@ -414,7 +414,7 @@ Config.dui                             = {
     -- Additional runtime URLs; use strings.
     urls                 = {
         -- Public HTTPS URL for the hosted DUI runtime; deploy http/dui_runtime here.
-        https = "https://arobase7sur7.github.io/7-pmms-dui/",
+        https = "",
     },
 
     -- DUI runtime probe settings; use a table.

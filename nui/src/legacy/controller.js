@@ -4307,12 +4307,12 @@ function addPendingPlaylistCreate(name) {
         timeoutId: setTimeout(function() {
             if (!pendingPlaylistCreates[key]) return;
             delete pendingPlaylistCreates[key];
-            refreshPlaylistsDisplay({ quiet: false });
+            refreshDisplayedPlaylists({ quiet: false });
             showNotification('Playlist creation was not confirmed. Refreshed library state.', 'Library', '#ff4444');
             requestPlaylists(true);
         }, 8000)
     };
-    refreshPlaylistsDisplay({ quiet: true });
+    refreshDisplayedPlaylists({ quiet: true });
     return pendingPlaylistCreates[key];
 }
 
@@ -4334,7 +4334,7 @@ function handlePlaylistCreateResult(payload) {
         return;
     }
 
-    refreshPlaylistsDisplay({ quiet: false });
+    refreshDisplayedPlaylists({ quiet: false });
     showNotification(payload.message || 'Playlist could not be created.', 'Library', '#ff4444');
     requestPlaylists(true);
 }

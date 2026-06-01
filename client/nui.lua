@@ -558,9 +558,12 @@ RegisterNUICallback("setBaseVolume", function(data, cb)
     cb(json.encode({}))
 end)
 
+LocalPlayerVolumes = {}
+
 RegisterNUICallback("setVolume", function(data, cb)
-    if canRunNuiCallback("setVolume", data) then
-        TriggerServerEvent("pmms:setVolume", data.handle, data.volume)
+    if data and data.handle and data.volume then
+        local handle = tonumber(data.handle) or data.handle
+        LocalPlayerVolumes[handle] = tonumber(data.volume)
     end
     cb(json.encode({}))
 end)

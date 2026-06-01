@@ -3051,6 +3051,7 @@ function buildExternalYoutubePlayerUrl(videoId, options) {
     try {
         var url = new URL(config.externalPlayerUrl, window.location.href);
         url.searchParams.set('videoId', videoId);
+        url.searchParams.set('v', videoId);
         url.searchParams.set('autoplay', '1');
         url.searchParams.set('muted', '1');
         url.searchParams.set('start', String(Math.max(0, Math.floor(getYouTubeStartSeconds(options)))));
@@ -3246,6 +3247,16 @@ function initExternalYouTubePlayer(id, handle, options, startupAttemptId, playba
         }
     };
     window.addEventListener('message', player.externalYoutube.messageHandler);
+    setTimeout(function() {
+        if (!player.pmms.initialized) {
+            player.pmms.externalYoutubeReady = true;
+            if (player.externalYoutube.state) {
+                player.externalYoutube.state.paused = false;
+            }
+            schedulePlaybackMetadataUpdate(player, options, 'external_youtube_playing');
+            complete('external_youtube_playing');
+        }
+    }, 1500);
 
     iframe.addEventListener('load', function() {
         player.externalYoutube.post({

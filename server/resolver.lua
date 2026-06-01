@@ -970,9 +970,22 @@ local function resolvePageScrape(url, options, resolverOptions, callback)
 	end)
 end
 
+local function resolveCdpnYoutube(url, options, resolverOptions, callback)
+	local videoId = extractYoutubeId(url)
+	if not videoId then
+		callback(nil, "not_youtube")
+		return
+	end
+	callback(makePayload("cdpn_youtube", "cdpn", "https://cdpn.io/pen/debug/oNPzxKo?v=" .. urlEncode(videoId), options, {
+		status = "browser",
+		reason = "cdpn_youtube",
+	}))
+end
+
 local providerFunctions = {
 	direct = resolveDirect,
 	hosted_player = resolveHosted,
+	cdpn_youtube = resolveCdpnYoutube,
 	browser = resolveBrowserPage,
 	chromium_youtube = resolveBrowserYoutube,
 	embed = resolveBrowserYoutube,
@@ -994,7 +1007,7 @@ local function providerOrder(resolverOptions, url)
 	end
 	if type(configured) ~= "table" then
 		configured = isYoutubeUrl(url)
-			and { "hosted_player", "chromium_youtube", "browser", "invidious", "piped", "page_scrape", "cobalt" }
+			and { "hosted_player", "cdpn_youtube", "chromium_youtube", "browser", "invidious", "piped", "page_scrape", "cobalt" }
 			or { "hosted_player", "browser", "direct" }
 	end
 	local order = {}
