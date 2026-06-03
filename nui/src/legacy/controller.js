@@ -132,6 +132,7 @@ var debugConfig = { enabled: false };
 var localBaseVolume = 100;
 var MAX_RENDERED_HISTORY_ITEMS = 30;
 var selectedDeviceTheme = 'none';
+var _progressSnapshot = null;
 
 function setUiVisible(visible) {
     _uiVisible = visible === true;
@@ -2782,6 +2783,11 @@ function updateBottomPlayer() {
     if (hasDuration && offset > duration) {
         offset = duration;
     }
+    if (hasInfo && hasDuration && !isLiveStream) {
+        _progressSnapshot = { offset: offset, duration: duration, receivedAt: Date.now(), paused: isPaused };
+    } else if (!hasInfo) {
+        _progressSnapshot = null;
+    }
     var currentVol = clampPercent(localBaseVolume, 100);
     var canCancelStartup = canCancelStartupForHandle(currentHandle);
     var titleText = hasInfo && info.title ? info.title : (startupPending ? getStartupDisplayTitle(startupState) : (startupFailed ? 'Playback Failed' : 'Nothing Playing'));
@@ -4043,6 +4049,7 @@ function renderSearchResults(results, requestId) {
 
             var sourceBadge = res.source ? '<span class="badge badge-source">' + safeText(res.source) + '</span>' : '';
             var liveBadge = (res.live === true || isRadioResult) ? '<span class="badge badge-live">LIVE</span>' : '';
+            var offlineBadge = res.twitchOffline === true ? '<span class="badge badge-offline">OFFLINE</span>' : '';
 
             item.innerHTML =
                 thumbHtml +
@@ -4051,7 +4058,7 @@ function renderSearchResults(results, requestId) {
                     '<div class="sr-meta">' +
                         safeText(res.author || 'Unknown') +
                         (res.duration ? ' - ' + timeToString(res.duration) : '') +
-                        ' ' + sourceBadge + liveBadge +
+                        ' ' + sourceBadge + liveBadge + offlineBadge +
                     '</div>' +
                 '</div>' +
                 '<div class="sr-actions">' +
@@ -4075,6 +4082,10 @@ function renderSearchResults(results, requestId) {
 
             function playThis(e) {
                 if (e && e.target.closest('.sr-add-btn')) return;
+                if (res.twitchOffline === true) {
+                    showNotification(safeText(res.title || 'This channel') + ' is currently offline.', 'Twitch', '#9147ff');
+                    return;
+                }
                 if (!activePlayerHandle) {
                     showNotification('Please select a nearby device first!', 'Play', '#ff4444');
                     return;
@@ -6507,6 +6518,20 @@ function initSocialAutocomplete() {
 
 var pmmsLegacyInitialized = false;
 
+function _tickProgress() {
+    if (!_progressSnapshot || _isScrubbing) return;
+    var snap = _progressSnapshot;
+    var elapsed = snap.paused ? 0 : (Date.now() - snap.receivedAt) / 1000;
+    var displayOffset = Math.min(snap.offset + elapsed, snap.duration);
+    var progress = document.getElementById('np-progress');
+    var timeCur = document.getElementById('np-time-current');
+    if (timeCur) timeCur.textContent = timeToString(displayOffset);
+    if (progress && !progress.disabled) {
+        progress.value = Math.max(0, Math.min(displayOffset, snap.duration));
+        _updateProgressFill(progress);
+    }
+}
+
 export function initLegacyUi() {
     if (pmmsLegacyInitialized) return;
     pmmsLegacyInitialized = true;
@@ -6518,6 +6543,7 @@ export function initLegacyUi() {
     initSocialAutocomplete();
     renderSidebarFavorites();
     setUiVisible(false);
+    setInterval(_tickProgress, 250);
 
     document.addEventListener('keydown', function(e) {
         if (e.key !== 'Escape') return;

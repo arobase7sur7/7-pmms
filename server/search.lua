@@ -168,6 +168,8 @@ local function youtubeThumbnailUrl(videoId)
     return ("https://i.ytimg.com/vi/%s/hqdefault.jpg"):format(videoId)
 end
 
+local TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+
 local function normalizeTwitchChannel(query)
     local value = trimText(query)
     if not value then
@@ -190,6 +192,148 @@ local function normalizeTwitchChannel(query)
     end
 
     return parsed
+end
+
+local function getTwitchClientId()
+    local twitch = type(Config.searchSources) == "table" and Config.searchSources["twitch"] or nil
+    local configured = type(twitch) == "table" and trimText(twitch.clientId) or nil
+    if configured and configured ~= "" then
+        return configured
+    end
+    return TWITCH_GQL_CLIENT_ID
+end
+
+local function performTwitchGqlRequest(body, callback)
+    local clientId = getTwitchClientId()
+    PerformHttpRequest(
+        "https://gql.twitch.tv/gql",
+        function(status, responseBody)
+            callback(status, responseBody)
+        end,
+        "POST",
+        body,
+        {
+            ["Client-ID"] = clientId,
+            ["Content-Type"] = "application/json",
+        }
+    )
+end
+
+local function buildTwitchResult(login, displayName, title, game, viewers, isLive, thumb)
+    local channelLogin = tostring(login or ""):lower()
+    local channelLabel = tostring(displayName or login or "")
+    local streamTitle = type(title) == "string" and title ~= "" and title or (channelLabel .. " (Twitch)")
+    local gameName = type(game) == "string" and game ~= "" and game or nil
+    local viewerText = isLive and (type(viewers) == "number" and viewers > 0 and tostring(viewers) .. " viewers" or "Live") or "Offline"
+    local author = gameName and (viewerText .. " · " .. gameName) or viewerText
+    local defaultThumb = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" .. channelLogin .. "-320x180.jpg"
+    local fallbackThumb = "https://static-cdn.jtvnw.net/ttv-boxart/Twitch-285x380.jpg"
+    local resolvedThumb = normalizeRemoteAssetUrl(thumb) or (isLive and defaultThumb or fallbackThumb)
+    return {
+        title = streamTitle,
+        url = "https://www.twitch.tv/" .. channelLogin,
+        duration = 0,
+        author = author,
+        thumbnail = resolvedThumb,
+        thumbnailCandidates = { resolvedThumb, isLive and defaultThumb or fallbackThumb },
+        source = "twitch",
+        live = isLive == true,
+        twitchOffline = isLive ~= true,
+    }
+end
+
+local GQL_QUERY_USER = "query GetUser($login:String!)"
+    .. "{user(login:$login){"
+    .. "login displayName profileImageURL(width:300)"
+    .. " stream{title viewersCount game{name}"
+    .. " previewImageURL(width:320,height:180)}}}"
+
+local GQL_QUERY_SEARCH = "query SearchChannels($query:String!,$first:Int!)"
+    .. "{searchChannels(query:$query,first:$first)"
+    .. "{nodes{login displayName profileImageURL(width:300)"
+    .. " stream{title viewersCount game{name}"
+    .. " previewImageURL(width:320,height:180)}}}}"
+
+local function searchTwitchGql(query, maxResults, callback)
+    local isExactChannel = normalizeTwitchChannel(query) ~= nil
+    local gqlBody
+
+    if isExactChannel then
+        local channel = normalizeTwitchChannel(query)
+        gqlBody = json.encode({
+            { query = GQL_QUERY_USER, variables = { login = channel } }
+        })
+    else
+        gqlBody = json.encode({
+            {
+                query = GQL_QUERY_SEARCH,
+                variables = { query = query, first = math.max(1, math.min(maxResults, 20)) },
+            }
+        })
+    end
+
+    performTwitchGqlRequest(gqlBody, function(status, body)
+        if status ~= 200 or not body then
+            callback(false, "Twitch search is unavailable. Try again later.")
+            return
+        end
+
+        local ok, decoded = pcall(json.decode, body)
+        if not ok or type(decoded) ~= "table" or not decoded[1] then
+            callback(false, "Twitch search returned an unexpected response.")
+            return
+        end
+
+        local data = type(decoded[1]) == "table" and decoded[1].data or nil
+        local results = {}
+
+        if isExactChannel then
+            local user = data and data.user
+            if not user or type(user) ~= "table" then
+                callback(false, "Channel not found on Twitch.")
+                return
+            end
+            local stream = type(user.stream) == "table" and user.stream or nil
+            local isLive = stream ~= nil
+            local result = buildTwitchResult(
+                user.login,
+                user.displayName,
+                stream and stream.title,
+                stream and type(stream.game) == "table" and stream.game.name or nil,
+                stream and stream.viewersCount,
+                isLive,
+                (isLive and stream.previewImageURL) or user.profileImageURL
+            )
+            results[1] = result
+        else
+            local nodes = data and data.searchChannels and data.searchChannels.nodes
+            if type(nodes) ~= "table" or #nodes == 0 then
+                callback(false, "No Twitch channels found for that query.")
+                return
+            end
+            for _, node in ipairs(nodes) do
+                if type(node) == "table" and type(node.login) == "string" then
+                    local stream = type(node.stream) == "table" and node.stream or nil
+                    local isLive = stream ~= nil
+                    results[#results + 1] = buildTwitchResult(
+                        node.login,
+                        node.displayName,
+                        stream and stream.title,
+                        stream and type(stream.game) == "table" and stream.game.name or nil,
+                        stream and stream.viewersCount,
+                        isLive,
+                        (isLive and stream.previewImageURL) or node.profileImageURL
+                    )
+                end
+            end
+            if #results == 0 then
+                callback(false, "No Twitch channels found for that query.")
+                return
+            end
+        end
+
+        callback(true, results)
+    end)
 end
 
 local function normalizeSearchThumbnailUrl(instance, rawUrl, videoId)
@@ -838,26 +982,11 @@ function SearchMedia(query, searchSource, maxResults, callback)
     end
 
     if searchSource == "twitch" then
-        local channel = normalizeTwitchChannel(query)
-        if not channel then
-            callback(false, "Enter a Twitch channel name.")
+        if not query or trimText(query) == nil then
+            callback(false, "Enter a Twitch channel name or search term.")
             return
         end
-
-        local thumb = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" .. channel .. "-320x180.jpg"
-        local fallbackThumb = "https://static-cdn.jtvnw.net/ttv-boxart/Twitch-285x380.jpg"
-        callback(true, {
-            {
-                title = channel .. " (Twitch Stream)",
-                url = "https://www.twitch.tv/" .. channel,
-                duration = 0,
-                author = channel,
-                thumbnail = thumb,
-                thumbnailCandidates = { thumb, fallbackThumb },
-                source = "twitch",
-                live = true,
-            },
-        })
+        searchTwitchGql(trimText(query), maxResults, callback)
         return
     end
 
@@ -867,14 +996,22 @@ function SearchMedia(query, searchSource, maxResults, callback)
     end
 
     if searchSource == "soundcloud" then
-        searchYoutube(query .. " soundcloud", maxResults, function(success, results)
-            if success and type(results) == "table" then
-                for _, row in ipairs(results) do
-                    row.source = "soundcloud"
-                end
-            end
-            callback(success, results)
-        end)
+        local value = trimText(query)
+        if type(value) == "string" and value:match("^https?://") and value:find("soundcloud%.com", 1, false) then
+            callback(true, {
+                {
+                    title = value,
+                    url = value,
+                    duration = 0,
+                    author = "SoundCloud",
+                    thumbnail = "",
+                    source = "soundcloud",
+                    direct = false,
+                },
+            })
+        else
+            callback(false, "Paste a SoundCloud track or playlist URL (soundcloud.com/...).")
+        end
         return
     end
 

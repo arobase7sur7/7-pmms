@@ -278,12 +278,15 @@ function SaveDeviceEqProfile(src, handle, data)
         MarkDirty()
     end
 
-    TriggerClientEvent("pmms:eqDeviceProfile", -1, handle, profile)
+    for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+        TriggerClientEvent("pmms:eqDeviceProfile", target, handle, profile)
+    end
     return true, nil
 end
 
 RegisterNetEvent("pmms:saveEqProfile", function(data)
     local src = source
+    if not CanTriggerEvent(src, "pmms:saveEqProfile", nil, 1000) then return end
     local ok, err = SavePlayerEqProfile(src, data)
     if not ok then
         TriggerClientEvent("pmms:error", src, err or "Failed to save EQ profile.")
@@ -292,11 +295,14 @@ end)
 
 RegisterNetEvent("pmms:loadEqProfile", function()
     local src = source
+    if not CanTriggerEvent(src, "pmms:loadEqProfile", nil, 500) then return end
     TriggerClientEvent("pmms:eqProfile", src, GetPlayerEqProfile(src))
 end)
 
 RegisterNetEvent("pmms:saveDeviceEqProfile", function(handle, data)
     local src = source
+    if not CanTriggerEvent(src, "pmms:saveDeviceEqProfile", handle, 1000) then return end
+    if not IsValidHandle(handle) or type(data) ~= "table" then return end
     local ok, err = SaveDeviceEqProfile(src, handle, data)
     if not ok then
         TriggerClientEvent("pmms:error", src, err or "Failed to save linked EQ profile.")
@@ -307,6 +313,8 @@ end)
 
 RegisterNetEvent("pmms:loadDeviceEqProfile", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:loadDeviceEqProfile", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     handle = normalizeHandle(handle)
     local allowed, message = canEditDeviceEq(src, handle)
     if not allowed then

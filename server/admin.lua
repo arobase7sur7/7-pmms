@@ -1195,7 +1195,9 @@ function RemovePmmsLinkedSpeaker(src, handle, speakerId)
         end
 
         LogPmmsAdminEvent("linked_speaker_removed", handle, src, { speakerId = speakerId, persistent = foundSpeaker and foundSpeaker.persistent == true })
-        TriggerClientEvent("pmms:speakerRemoved", -1, speakerId)
+        for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+            TriggerClientEvent("pmms:speakerRemoved", target, speakerId)
+        end
         return true, nil
     end
 
@@ -1221,7 +1223,9 @@ function ClearPmmsLinkedSpeakers(src, handle)
         persistEntry(entry)
     end
     LogPmmsAdminEvent("linked_speakers_cleared", handle, src, {})
-    TriggerClientEvent("pmms:speakersCleared", -1, handle)
+    for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+        TriggerClientEvent("pmms:speakersCleared", target, handle)
+    end
     return true, nil
 end
 
@@ -1337,6 +1341,8 @@ end
 
 RegisterNetEvent("pmms:adminApplyProfile", function(handle, profileKey)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminApplyProfile", handle, 500) then return end
+    if not IsValidHandle(handle) or type(profileKey) ~= "string" then return end
     if not HasPmmsPermission(src, "staff") then
         TriggerClientEvent("pmms:error", src, "No permission to apply device profiles.")
         return
@@ -1347,6 +1353,8 @@ end)
 
 RegisterNetEvent("pmms:adminSetRequestMode", function(handle, mode)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminSetRequestMode", handle, 500) then return end
+    if not IsValidHandle(handle) or type(mode) ~= "string" then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to change request mode.")
         return
@@ -1357,6 +1365,8 @@ end)
 
 RegisterNetEvent("pmms:adminSetLock", function(handle, lock, plate)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminSetLock", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to change admin locks.")
         return
@@ -1367,6 +1377,8 @@ end)
 
 RegisterNetEvent("pmms:adminSetDeviceSettings", function(handle, settings)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminSetDeviceSettings", handle, 500) then return end
+    if not IsValidHandle(handle) or type(settings) ~= "table" then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to change admin settings.")
         return
@@ -1377,6 +1389,7 @@ end)
 
 RegisterNetEvent("pmms:adminRenameDevice", function(handle, name)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminRenameDevice", handle, 500) then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to rename devices.")
         return
@@ -1426,6 +1439,7 @@ end)
 
 RegisterNetEvent("pmms:adminAddPersistentDevice", function(data)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminAddPersistentDevice", nil, 2000) then return end
     if not HasPmmsPermission(src, "manage") then
         failPersistentPlacement(src, "No permission to add persistent devices.")
         return
@@ -1511,6 +1525,8 @@ end)
 
 RegisterNetEvent("pmms:adminRemovePersistentDevice", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminRemovePersistentDevice", handle, 2000) then return end
+    if not IsValidHandle(handle) then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to remove persistent devices.")
         return
@@ -1535,7 +1551,9 @@ RegisterNetEvent("pmms:adminRemovePersistentDevice", function(handle)
         })
     else
         RemoveEntityPermanently(coords)
-        TriggerClientEvent("pmms:speakersCleared", -1, handle)
+        for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+            TriggerClientEvent("pmms:speakersCleared", target, handle)
+        end
         TriggerClientEvent("pmms:refreshPersistentEntities", -1)
     end
     pushSyncToPlayer(src)
@@ -1544,42 +1562,56 @@ end)
 
 RegisterNetEvent("pmms:adminApproveRequest", function(handle, requestId, playNext)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminApproveRequest", handle, 500) then return end
+    if not IsValidHandle(handle) or (requestId ~= nil and type(requestId) ~= "number" and type(requestId) ~= "string") then return end
     local ok, message = ApprovePmmsPendingRequest(src, handle, requestId, playNext == true)
     notifyActionResult(src, ok, ok and "Request approved." or message, "Requests")
 end)
 
 RegisterNetEvent("pmms:adminRejectRequest", function(handle, requestId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminRejectRequest", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     local ok, message = RejectPmmsPendingRequest(src, handle, requestId)
     notifyActionResult(src, ok, ok and "Request rejected." or message, "Requests")
 end)
 
 RegisterNetEvent("pmms:adminClearRequests", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminClearRequests", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     local ok, message = ClearPmmsPendingRequests(src, handle)
     notifyActionResult(src, ok, ok and "Pending requests cleared." or message, "Requests")
 end)
 
 RegisterNetEvent("pmms:addLinkedSpeaker", function(handle, coords, heading, propModel, persistent, anchor)
     local src = source
+    if not CanTriggerEvent(src, "pmms:addLinkedSpeaker", handle, 1000) then return end
+    if not IsValidHandle(handle) then return end
     local ok, message = AddPmmsLinkedSpeaker(src, handle, coords, heading, propModel, persistent == true, anchor)
     notifyActionResult(src, ok, ok and "Speaker linked." or message, "Speakers")
 end)
 
 RegisterNetEvent("pmms:removeLinkedSpeaker", function(handle, speakerId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:removeLinkedSpeaker", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     local ok, message = RemovePmmsLinkedSpeaker(src, handle, speakerId)
     notifyActionResult(src, ok, ok and "Speaker removed." or message, "Speakers")
 end)
 
 RegisterNetEvent("pmms:adminClearLinkedSpeakers", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminClearLinkedSpeakers", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     local ok, message = ClearPmmsLinkedSpeakers(src, handle)
     notifyActionResult(src, ok, ok and "Linked speakers cleared." or message, "Speakers")
 end)
 
 RegisterNetEvent("pmms:adminClearSessionLock", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminClearSessionLock", handle, 500) then return end
+    if not IsValidHandle(handle) then return end
     if not HasPmmsPermission(src, "staff") then
         TriggerClientEvent("pmms:error", src, "No permission to clear device locks.")
         return
@@ -1595,6 +1627,7 @@ end)
 
 RegisterNetEvent("pmms:adminResetProfile", function(handle)
     local src = source
+    if not CanTriggerEvent(src, "pmms:adminResetProfile", handle, 500) then return end
     if not HasPmmsPermission(src, "manage") then
         TriggerClientEvent("pmms:error", src, "No permission to reset device profile.")
         return

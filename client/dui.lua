@@ -56,29 +56,6 @@ function GetDuiBrowserPerfStats()
     }
 end
 
-local function redactUrlForDebug(url)
-    if type(url) ~= "string" then
-        return url
-    end
-
-    local redacted = url
-    local queryStart = redacted:find("?", 1, true)
-    if queryStart then
-        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
-    end
-
-    local hashStart = redacted:find("#", 1, true)
-    if hashStart then
-        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
-    end
-
-    if #redacted > 180 then
-        redacted = redacted:sub(1, 177) .. "..."
-    end
-
-    return redacted
-end
-
 local function printDuiWarning(key, message, cooldownMs)
     local now = GetGameTimer()
     local cooldown = tonumber(cooldownMs) or 10000
@@ -137,6 +114,9 @@ end
 function DuiBrowser:new(mediaPlayerHandle, model, renderTarget, scaleform, url, options, w, h, timeout)
     local self = Class.new(self)
 
+    if DuiBrowser.pool[mediaPlayerHandle] then
+        return DuiBrowser.pool[mediaPlayerHandle]
+    end
     if DuiBrowser.initQueue[mediaPlayerHandle] then
         return DuiBrowser.initQueue[mediaPlayerHandle]
     end
@@ -164,6 +144,11 @@ function DuiBrowser:new(mediaPlayerHandle, model, renderTarget, scaleform, url, 
         fullUrl = fullUrl .. "&resourceName=" .. thisResource .. "&duiVersion=" .. cacheBuster
     end
 
+    local maxBrowsers = math.max(1, tonumber(Config.dui and Config.dui.maxBrowsers) or 8)
+    if countDuiBrowsers() >= maxBrowsers then
+        return nil
+    end
+
     self.duiObject = CreateDui(fullUrl, math.floor(self.w), math.floor(self.h))
     self.duiHandle = GetDuiHandle(self.duiObject)
 
@@ -175,9 +160,7 @@ function DuiBrowser:new(mediaPlayerHandle, model, renderTarget, scaleform, url, 
         DuiBrowser.pool[self.mediaPlayerHandle] = self
         return self
     else
-        if self.duiObject then
-            DestroyDui(self.duiObject)
-        end
+        self:destroy()
         return nil
     end
 end
@@ -431,7 +414,7 @@ RegisterNUICallback("pmmsDuiStartupError", function(data, cb)
             handle = data and data.handle or nil,
             attemptId = data and data.attemptId or nil,
             playbackToken = data and data.playbackToken or nil,
-            url = redactUrlForDebug(data and data.url or nil),
+            url = RedactUrlForDebug(data and data.url or nil),
             message = data and data.message or nil,
             handled = handled,
         })
@@ -453,7 +436,7 @@ RegisterNUICallback("pmmsDuiLocalError", function(data, cb)
         PMMSDebug("dui", "DUI local playback error callback", {
             handle = data and data.handle or nil,
             playbackToken = data and data.playbackToken or nil,
-            url = redactUrlForDebug(data and data.url or nil),
+            url = RedactUrlForDebug(data and data.url or nil),
             message = data and data.message or nil,
             handled = handled,
         })

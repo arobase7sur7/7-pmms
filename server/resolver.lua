@@ -93,17 +93,6 @@ local function extractYoutubeId(url)
 	return nil
 end
 
-local function redactUrlForDebug(url)
-	if type(url) ~= "string" then
-		return url
-	end
-	local redacted = url:gsub("[?#].*$", "?<redacted>")
-	if #redacted > 180 then
-		return redacted:sub(1, 177) .. "..."
-	end
-	return redacted
-end
-
 local function getCacheTtlSeconds()
 	return math.max(30, tonumber(resolverConfig.cacheTtlSeconds) or 3300)
 end

@@ -219,7 +219,7 @@ function GetModelTargetKeys()
     return targetModels
 end
 
-function getEntityNetworkId(entity)
+function GetEntityNetworkId(entity)
     if not DoesEntityExist(entity) then return nil end
     if not NetworkGetEntityIsNetworked(entity) then
         NetworkRegisterEntityAsNetworked(entity)
@@ -227,7 +227,7 @@ function getEntityNetworkId(entity)
     return NetworkGetNetworkIdFromEntity(entity)
 end
 
-function getExistingEntityNetworkId(entity)
+function GetExistingEntityNetworkId(entity)
     if not DoesEntityExist(entity) or not NetworkGetEntityIsNetworked(entity) then return nil end
     return NetworkGetNetworkIdFromEntity(entity)
 end
@@ -244,6 +244,29 @@ function Base64Encode(data)
         for i=1,6 do c=c+(x:sub(i,i)=='1' and 2^(6-i) or 0) end
         return b:sub(c+1,c+1)
     end)..({ '', '==', '=' })[#data%3+1])
+end
+
+function RedactUrlForDebug(url)
+    if type(url) ~= "string" then
+        return url
+    end
+
+    local redacted = url
+    local queryStart = redacted:find("?", 1, true)
+    if queryStart then
+        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
+    end
+
+    local hashStart = redacted:find("#", 1, true)
+    if hashStart then
+        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
+    end
+
+    if #redacted > 180 then
+        redacted = redacted:sub(1, 177) .. "..."
+    end
+
+    return redacted
 end
 
 function Base64Decode(data)

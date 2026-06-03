@@ -1,7 +1,6 @@
 local uiIsOpen = false
 local baseVolume = 100
 local baseVolumeKvpKey = "pmms:baseVolume:v1"
-local tooltipsEnabled = true
 local permissions = {}
 local localEqProfile = nil
 local selectedUiHandle = nil
@@ -56,29 +55,6 @@ local function shouldShowYoutubeProviderSelector()
     local resolver = type(Config.resolver) == "table" and Config.resolver or {}
     local browser = type(resolver.browserYoutube) == "table" and resolver.browserYoutube or {}
     return browser.hideProviderSelector == false
-end
-
-local function redactUrlForDebug(url)
-    if type(url) ~= "string" then
-        return url
-    end
-
-    local redacted = url
-    local queryStart = redacted:find("?", 1, true)
-    if queryStart then
-        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
-    end
-
-    local hashStart = redacted:find("#", 1, true)
-    if hashStart then
-        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
-    end
-
-    if #redacted > 180 then
-        redacted = redacted:sub(1, 177) .. "..."
-    end
-
-    return redacted
 end
 
 function IsUiOpen()
@@ -344,42 +320,6 @@ local function buildMediaPlayerDefaultsPayload(handle)
     return response
 end
 
-RegisterNUICallback("startup", function(_, cb)
-    cb(json.encode({
-        defaultSameRoomAttenuation = Config.defaultSameRoomAttenuation,
-        defaultDiffRoomAttenuation = Config.defaultDiffRoomAttenuation,
-        defaultDiffRoomVolume      = Config.defaultDiffRoomVolume,
-        defaultRange               = Config.defaultRange,
-        defaultVolume              = Config.defaultVolume,
-        defaultVehicleMode         = Config.defaultVehicleMode,
-        defaultTransitionSeconds   = Config.defaultTransitionSeconds,
-        maxTransitionSeconds       = Config.maxTransitionSeconds,
-        defaultSearchSource        = Config.defaultSearchSource or "youtube",
-        maxRange                   = Config.maxRange,
-        adminMaxRange              = Config.adminMaxRange or Config.maxRange,
-        defaultScaleformName       = Config.defaultScaleformName,
-        audioVisualizations        = Config.audioVisualizations,
-        enableFilterByDefault      = Config.enableFilterByDefault,
-        currentServerEndpoint      = GetCurrentServerEndpoint(),
-        tooltipsEnabled            = tooltipsEnabled,
-        searchSources              = Config.searchSources,
-        searchMinimumBusyMs        = (Config.search and Config.search.minimumBusyMs) or 500,
-        searchProxyThumbnails      = not (Config.search and Config.search.proxyThumbnails == false),
-        showYoutubeProviderSelector = shouldShowYoutubeProviderSelector(),
-        deviceDefaults             = buildGlobalDeviceDefaults(),
-        baseVolume                 = GetBaseVolume(),
-        debug                      = Config.debug,
-        permissions                = permissions,
-        deviceProfiles             = BuildDeviceProfilesForClient(),
-        propModels                 = BuildPropModelsForClient(),
-        speakerModels              = BuildSpeakerModelsForClient(),
-        adminQuickActions          = Config.admin and Config.admin.quickActions or {},
-        requestConfig              = Config.requests,
-        speakerConfig              = Config.speakers,
-        equalizerConfig            = Config.equalizer,
-    }))
-end)
-
 RegisterNUICallback("closeUi", function(_, cb)
     HideUi()
     cb(json.encode({}))
@@ -388,7 +328,7 @@ end)
 RegisterNUICallback("play", function(data, cb)
     PMMSDebug("nui", "NUI play callback", {
         handle = data and data.handle or nil,
-        url = redactUrlForDebug(data and data.options and data.options.url or nil),
+        url = RedactUrlForDebug(data and data.options and data.options.url or nil),
         title = data and data.options and data.options.title or nil,
         youtubeProvider = data and data.options and (data.options.youtubeProvider or data.options.resolverProvider) or nil,
     })
@@ -469,11 +409,6 @@ end)
 
 RegisterNUICallback("copy", function(data, cb)
     TriggerServerEvent("pmms:copy", data.oldHandle, data.newHandle)
-    cb(json.encode({}))
-end)
-
-RegisterNUICallback("setLoop", function(data, cb)
-    TriggerServerEvent("pmms:setLoop", data.handle, data.loop)
     cb(json.encode({}))
 end)
 
@@ -636,12 +571,6 @@ RegisterNUICallback("addLinkedSpeakerHere", function(data, cb)
     cb(json.encode({}))
 end)
 
-RegisterNUICallback("adminAddSpeaker", function(data, cb)
-    HideUi()
-    StartSpeakerPlacementMode(data.handle, false, data.propModel, buildDeviceAnchorPayload(data.handle))
-    cb(json.encode({}))
-end)
-
 RegisterNUICallback("adminAddPersistentSpeaker", function(data, cb)
     HideUi()
     StartSpeakerPlacementMode(data.handle, true, data.propModel, buildDeviceAnchorPayload(data.handle))
@@ -752,10 +681,6 @@ RegisterNUICallback("getMediaPlayerDefaults", function(data, cb)
     cb(json.encode(buildMediaPlayerDefaultsPayload(data and data.handle)))
 end)
 
-RegisterNUICallback("setMediaPlayerDefaults", function(data, cb)
-    cb(json.encode(buildMediaPlayerDefaultsPayload(data and data.handle)))
-end)
-
 RegisterNUICallback("getScaleformSettingsFromMyPosition", function(_, cb)
     local ped = PlayerPedId()
     local pos = GetEntityCoords(ped)
@@ -832,11 +757,6 @@ end)
 
 RegisterNUICallback("toggleStatus", function(_, cb)
     TriggerServerEvent("pmms:toggleStatus")
-    cb(json.encode({}))
-end)
-
-RegisterNUICallback("toggleTips", function(data, cb)
-    tooltipsEnabled = data.enabled
     cb(json.encode({}))
 end)
 
@@ -1195,22 +1115,15 @@ RegisterNetEvent("pmms:refreshPlaylist", function(playlistId)
     SendNUIMessage({ type = "refreshPlaylist", playlistId = playlistId })
 end)
 
-local function debugPayloadField(payload, key)
-    if payload == nil then
-        return nil
-    end
-    return payload[key]
-end
-
 RegisterNetEvent("pmms:playlistFavoriteUpdated", function(payload)
     PMMSDebug("favorites", "favorite update forwarded to NUI", {
-        playlistId = debugPayloadField(payload, "playlistId"),
-        requestId = debugPayloadField(payload, "requestId"),
-        mutationId = debugPayloadField(payload, "mutationId"),
-        success = debugPayloadField(payload, "success"),
-        isFavorite = debugPayloadField(payload, "isFavorite"),
-        message = debugPayloadField(payload, "message"),
-        libraryRevision = debugPayloadField(payload, "libraryRevision"),
+        playlistId = payload and payload.playlistId,
+        requestId = payload and payload.requestId,
+        mutationId = payload and payload.mutationId,
+        success = payload and payload.success,
+        isFavorite = payload and payload.isFavorite,
+        message = payload and payload.message,
+        libraryRevision = payload and payload.libraryRevision,
     })
     SendNUIMessage({ type = "playlistFavoriteUpdated", payload = payload })
 end)

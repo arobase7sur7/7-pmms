@@ -88,19 +88,6 @@ Config.ui                              = {
     maxHistorySyncItems = 30,
 }
 
--- Network synchronization timing settings; use a table.
-Config.sync                            = {
-    -- Minimum delay between normal state syncs; use milliseconds.
-    throttleMs = 500,
-    -- Interval for full state snapshots; use milliseconds.
-    fullSyncIntervalMs = 30000,
-    -- Interval for playback drift correction checks; use seconds.
-    driftCheckIntervalS = 30,
-    -- Maximum accepted playback drift before correction; use seconds.
-    maxDriftSeconds = 2.0,
-    -- Random join offset to avoid synchronized spikes; use milliseconds.
-    joinJitterMs = 500,
-}
 
 -- Admin UI and control settings; use a table.
 Config.admin                           = {
@@ -166,6 +153,8 @@ Config.directLinks                     = {
 Config.queue                           = {
     -- Number of upcoming queue items sent to clients; use 0 or more.
     lookaheadCount = 1,
+    -- Maximum tracks allowed in a device queue; use 1 or more.
+    maxSize = 100,
 }
 
 -- Friend and suggestion settings; use a table.
@@ -381,6 +370,8 @@ Config.dui                             = {
     renderIdleFps        = 5,
     -- Extra render distance beyond audible range; use meters.
     renderDistanceBuffer = 5.0,
+    -- Maximum simultaneous DUI browsers per client; use 1 or more.
+    maxBrowsers          = 8,
     -- Caches DUI runtime assets locally; true or false.
     cacheRuntimeAssets   = true,
     -- Downscales HLS canvas rendering when possible; true or false.
@@ -414,20 +405,9 @@ Config.dui                             = {
     -- Additional runtime URLs; use strings.
     urls                 = {
         -- Public HTTPS URL for the hosted DUI runtime; deploy http/dui_runtime here.
-        https = "",
+        https = "https://arobase7sur7.github.io/7-pmms-dui/",
     },
 
-    -- DUI runtime probe settings; use a table.
-    probe                = {
-        -- Sets enabled for this section. Use true or false.
-        enabled = false,
-        -- DUI startup timeout; use milliseconds.
-        timeout = 4500,
-        -- Provider order for this section; use provider key strings.
-        order = { "local" },
-        -- Prioritizes the last successful probe target; true or false.
-        rememberLastGood = false,
-    }
 }
 
 -- Resolver debug or resolver configuration section depending on scope; use a table or boolean.
@@ -593,10 +573,6 @@ Config.resolver                        = {
         saveDebounceMs = 5000,
     },
 }
-
-
--- Default scaleform renderer name; use a string.
-Config.defaultScaleformName            = "pmms_texture_renderer"
 
 
 -- Optional URL allowlist; leave empty to allow configured direct links.
@@ -803,11 +779,11 @@ Config.searchSources                   = {
         -- Font Awesome icon class shown by target systems; use a string.
         icon = "music",
         -- Input placeholder shown in the UI; use a short English string.
-        placeholder = "Search SoundCloud...",
+        placeholder = "Paste a SoundCloud URL...",
         -- Maximum results returned for this search source; use 1 or more.
-        maxResults = 10,
+        maxResults = 1,
         -- Cooldown between searches for this source; use seconds.
-        cooldown = 2,
+        cooldown = 1,
     },
     ["twitch"] = {
         -- Display label shown in UI; use a short English string.
@@ -817,9 +793,9 @@ Config.searchSources                   = {
         -- Font Awesome icon class shown by target systems; use a string.
         icon = "twitch",
         -- Input placeholder shown in the UI; use a short English string.
-        placeholder = "Enter Twitch Username...",
+        placeholder = "Search channels or enter a username...",
         -- Maximum results returned for this search source; use 1 or more.
-        maxResults = 10,
+        maxResults = 8,
         -- Cooldown between searches for this source; use seconds.
         cooldown = 2,
         -- Optional Twitch client ID; leave empty to use direct channel handling.

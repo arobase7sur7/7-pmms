@@ -3,7 +3,6 @@ local startupStates = {}
 local deviceSessions = {}
 local adminSyncState = nil
 local modelSettings = {}
-local defaultMediaPlayers = {}
 local disabledStaticEmitters = {}
 local syncSnapshots = {}
 local isInitialized = false
@@ -175,29 +174,6 @@ function InvalidateUiUpdateSignature()
     lastUiOpenSendAt = 0
     lastUiClosedSendAt = 0
     lastUpdateUi = 0
-end
-
-local function redactUrlForDebug(url)
-    if type(url) ~= "string" then
-        return url
-    end
-
-    local redacted = url
-    local queryStart = redacted:find("?", 1, true)
-    if queryStart then
-        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
-    end
-
-    local hashStart = redacted:find("#", 1, true)
-    if hashStart then
-        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
-    end
-
-    if #redacted > 180 then
-        redacted = redacted:sub(1, 177) .. "..."
-    end
-
-    return redacted
 end
 
 function GetMediaPlayerStates()
@@ -628,8 +604,8 @@ RegisterNetEvent("pmms:startupAttempt", function(payload)
         playbackToken = payload.playbackToken,
         phase = payload.phase,
         startupTimeoutMs = payload.startupTimeoutMs,
-        url = redactUrlForDebug(payload.resolvedOptions.originalUrl or payload.resolvedOptions.url),
-        resolvedUrl = redactUrlForDebug(payload.resolvedOptions.resolvedUrl or payload.resolvedOptions.url),
+        url = RedactUrlForDebug(payload.resolvedOptions.originalUrl or payload.resolvedOptions.url),
+        resolvedUrl = RedactUrlForDebug(payload.resolvedOptions.resolvedUrl or payload.resolvedOptions.url),
         provider = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.provider or nil,
         instance = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.instance or nil,
         resolverStatus = payload.resolvedOptions.resolver and payload.resolvedOptions.resolver.status or nil,
@@ -879,7 +855,6 @@ RegisterNetEvent("pmms:loadSettings", function(models, defaultMPs)
     end
 
     if defaultMPs then
-        defaultMediaPlayers = defaultMPs
         Config.defaultMediaPlayers = defaultMPs
     end
 
@@ -897,7 +872,7 @@ RegisterNetEvent("pmms:startClosestMediaPlayer", function(options)
         return
     end
 
-    local netId = getEntityNetworkId(closest.entity)
+    local netId = GetEntityNetworkId(closest.entity)
     if not netId then
         ShowNotification("No media player in range", nil, "#ff4444")
         return
@@ -1070,7 +1045,7 @@ Citizen.CreateThread(function()
 
                 for _, entry in ipairs(entities) do
                     if entry.distance <= discoveryDistance then
-                        local netId = getEntityNetworkId(entry.entity)
+                        local netId = GetEntityNetworkId(entry.entity)
                         if netId then
                             local modelConfig = GetModelConfig(entry.model)
                             local persistentHandle, defaultMp = getPersistentDeviceForEntity(entry.entity)

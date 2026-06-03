@@ -96,7 +96,7 @@ function GetMediaPlayerEntities()
                 }
                 entities[#entities + 1] = entry
 
-                local netId = getExistingEntityNetworkId(object)
+                local netId = GetExistingEntityNetworkId(object)
                 if netId then
                     handleIndex[netId] = entry
                     entityCacheStats.networkedCount = entityCacheStats.networkedCount + 1
@@ -115,7 +115,7 @@ function GetMediaPlayerEntities()
                 }
                 entities[#entities + 1] = entry
 
-                local netId = getExistingEntityNetworkId(vehicle)
+                local netId = GetExistingEntityNetworkId(vehicle)
                 if netId then
                     handleIndex[netId] = entry
                     entityCacheStats.networkedCount = entityCacheStats.networkedCount + 1

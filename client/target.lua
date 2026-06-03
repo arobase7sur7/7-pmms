@@ -36,7 +36,7 @@ local function getNetworkHandle(entity)
     if not entity or not DoesEntityExist(entity) then
         return nil
     end
-    return getEntityNetworkId(entity)
+    return GetEntityNetworkId(entity)
 end
 
 local function getPersistentHandleForEntity(entity)

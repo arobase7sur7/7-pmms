@@ -30,6 +30,11 @@ local function getQueueLookaheadCount()
     return math.max(0, tonumber(queueConfig.lookaheadCount) or 1)
 end
 
+local function getQueueMaxSize()
+    local queueConfig = Config.queue or {}
+    return math.max(1, tonumber(queueConfig.maxSize) or 100)
+end
+
 local queueLocks = {}
 local queueLockQueues = {}
 
@@ -62,6 +67,9 @@ local function withQueueLock(handle, fn)
 
     if queueLocks[key] then
         queueLockQueues[key] = queueLockQueues[key] or {}
+        if #queueLockQueues[key] >= 8 then
+            return false
+        end
         queueLockQueues[key][#queueLockQueues[key] + 1] = run
         return false
     end
@@ -685,6 +693,10 @@ local function addToQueueUnlocked(handle, source, options, expectedRevision)
 
     ensureSessionQueueMetadata(session)
     local queue = session.queue or {}
+    if #queue >= getQueueMaxSize() then
+        requestQueueResync(source)
+        return false
+    end
     local queuedOptions = cloneTable(options)
     local queueEntry = {
         source = source,

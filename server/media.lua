@@ -746,29 +746,6 @@ local function stripUrlQuery(url)
     return (url:gsub("[?#].*$", ""))
 end
 
-local function redactUrlForDebug(url)
-    if type(url) ~= "string" then
-        return url
-    end
-
-    local redacted = url
-    local queryStart = redacted:find("?", 1, true)
-    if queryStart then
-        redacted = redacted:sub(1, queryStart - 1) .. "?<redacted>"
-    end
-
-    local hashStart = redacted:find("#", 1, true)
-    if hashStart then
-        redacted = redacted:sub(1, hashStart - 1) .. "#<redacted>"
-    end
-
-    if #redacted > 180 then
-        redacted = redacted:sub(1, 177) .. "..."
-    end
-
-    return redacted
-end
-
 local function getUrlExtension(url)
     local stripped = stripUrlQuery(url)
     if type(stripped) ~= "string" then
@@ -1464,7 +1441,7 @@ local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, c
     if type(ResolvePlaybackOptions) ~= "function" then
         PMMSDebug("resolver", "resolver function unavailable, using original options", {
             src = src,
-            url = redactUrlForDebug(options and options.url or nil),
+            url = RedactUrlForDebug(options and options.url or nil),
         })
         callback(true, cloneTable(options), nil)
         return
@@ -1489,8 +1466,8 @@ local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, c
     PMMSDebug("resolver", "resolve requested", {
         src = src,
         handle = handle,
-        url = redactUrlForDebug(options and options.url or nil),
-        originalUrl = redactUrlForDebug(options and options.originalUrl or nil),
+        url = RedactUrlForDebug(options and options.url or nil),
+        originalUrl = RedactUrlForDebug(options and options.originalUrl or nil),
         forceRefresh = resolverOptions and resolverOptions.forceRefresh == true,
         forceProvider = resolverOptions and resolverOptions.forceProvider or nil,
         avoidProvider = resolverOptions and resolverOptions.avoidProvider or nil,
@@ -1502,7 +1479,7 @@ local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, c
         if not ok or type(resolvedOptions) ~= "table" then
             PMMSDebug("resolver", "resolve failed", {
                 src = src,
-                url = redactUrlForDebug(options and options.url or nil),
+                url = RedactUrlForDebug(options and options.url or nil),
                 warning = warning,
             })
             if notifyOnFailure then
@@ -1518,8 +1495,8 @@ local function resolvePlaybackAndNotify(handle, src, options, resolverOptions, c
         local resolver = type(resolvedOptions.resolver) == "table" and resolvedOptions.resolver or {}
         PMMSDebug("resolver", "resolve succeeded", {
             src = src,
-            url = redactUrlForDebug(options and options.url or nil),
-            resolvedUrl = redactUrlForDebug(resolvedOptions.resolvedUrl or resolvedOptions.url),
+            url = RedactUrlForDebug(options and options.url or nil),
+            resolvedUrl = RedactUrlForDebug(resolvedOptions.resolvedUrl or resolvedOptions.url),
             status = resolver.status,
             provider = resolver.provider,
             instance = resolver.instance,
@@ -1671,8 +1648,8 @@ local function beginStartContext(handle, src, options, retries)
         src = src,
         attemptId = context.currentAttemptId,
         playbackToken = context.playbackToken,
-        url = redactUrlForDebug(initialOptions.url),
-        originalUrl = redactUrlForDebug(initialOptions.originalUrl),
+        url = RedactUrlForDebug(initialOptions.url),
+        originalUrl = RedactUrlForDebug(initialOptions.originalUrl),
         title = initialOptions.title,
         video = initialOptions.video,
     })
@@ -1698,8 +1675,8 @@ local function updateStartContextResolved(handle, resolvedOptions)
     PMMSDebug("player", "start context resolved", {
         handle = handle,
         attemptId = context.currentAttemptId,
-        url = redactUrlForDebug(resolved.originalUrl or resolved.url),
-        resolvedUrl = redactUrlForDebug(resolved.resolvedUrl or resolved.url),
+        url = RedactUrlForDebug(resolved.originalUrl or resolved.url),
+        resolvedUrl = RedactUrlForDebug(resolved.resolvedUrl or resolved.url),
         provider = context.lastProvider,
         instance = context.lastInstance,
         resolverStatus = context.lastResolverStatus,
@@ -2378,7 +2355,7 @@ function QuarantinePmmsSourceFailure(input, reason, mode)
     PMMSDebug("player", "source quarantined after playback failure", {
         key = key,
         mode = normalizedMode,
-        url = redactUrlForDebug(sourceUrl),
+        url = RedactUrlForDebug(sourceUrl),
         reason = reason,
         expiresAt = expiresAt,
     })
@@ -2674,7 +2651,9 @@ function AddMediaPlayer(handle, options)
     end
 
     EnqueueSync(function()
-        TriggerClientEvent("pmms:play", -1, handle)
+        for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+            TriggerClientEvent("pmms:play", target, handle)
+        end
     end)
 end
 
@@ -2702,7 +2681,9 @@ function RemoveMediaPlayer(handle, preserveSessionLock, removeOptions)
     end
 
     EnqueueSync(function()
-        TriggerClientEvent("pmms:stop", -1, handle)
+        for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+            TriggerClientEvent("pmms:stop", target, handle)
+        end
     end)
 end
 
@@ -2735,7 +2716,9 @@ function DestroyPmmsDeviceLifecycle(handle, options)
         clearSessionLock(handle)
         ResetDeviceSession(handle)
         EnqueueSync(function()
-            TriggerClientEvent("pmms:stop", -1, handle)
+            for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+                TriggerClientEvent("pmms:stop", target, handle)
+            end
         end)
     end
 
@@ -2748,7 +2731,9 @@ function DestroyPmmsDeviceLifecycle(handle, options)
                 label = persistentEntry.label or persistentEntry.name,
             })
         end
-        TriggerClientEvent("pmms:speakersCleared", -1, handle)
+        for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+            TriggerClientEvent("pmms:speakersCleared", target, handle)
+        end
         TriggerClientEvent("pmms:refreshPersistentEntities", -1)
     end
 
@@ -2806,8 +2791,8 @@ local function triggerStartOnClient(handle, src, resolvedOptions, intentOptions,
         attemptId = context.currentAttemptId,
         playbackToken = context.playbackToken,
         phase = resolvedPhase,
-        url = redactUrlForDebug(resolved.originalUrl or resolved.url),
-        resolvedUrl = redactUrlForDebug(resolved.resolvedUrl or resolved.url),
+        url = RedactUrlForDebug(resolved.originalUrl or resolved.url),
+        resolvedUrl = RedactUrlForDebug(resolved.resolvedUrl or resolved.url),
         provider = resolved.resolver and resolved.resolver.provider or nil,
         instance = resolved.resolver and resolved.resolver.instance or nil,
         resolverStatus = resolved.resolver and resolved.resolver.status or nil,
@@ -2831,7 +2816,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
             src = src,
             handle = handle,
             optionsType = type(intentOptions),
-            url = redactUrlForDebug(intentOptions and intentOptions.url or nil),
+            url = RedactUrlForDebug(intentOptions and intentOptions.url or nil),
         })
         TriggerPmmsError(src, "invalid_playback_options")
         ClearRestricted(handle)
@@ -2840,6 +2825,9 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
 
     resolverOptions = type(resolverOptions) == "table" and resolverOptions or {}
 
+    if startContexts[handle] then
+        clearStartContext(handle, true, true)
+    end
     local context = beginStartContext(handle, src, intentOptions, 0)
     context.replaceActiveOnReady = resolverOptions.replaceActiveOnReady == true
     startContexts[handle] = context
@@ -2858,7 +2846,7 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
                 src = src,
                 handle = handle,
                 attemptId = attemptId,
-                url = redactUrlForDebug(intentOptions.url),
+                url = RedactUrlForDebug(intentOptions.url),
                 error = directError,
             })
             failPlaybackStart(handle, src, directError or "This direct media link could not be verified.")
@@ -2879,8 +2867,8 @@ local function startMediaPlayerForClient(handle, src, intentOptions, resolverOpt
                 src = src,
                 handle = handle,
                 attemptId = attemptId,
-                url = redactUrlForDebug(finalIntent.originalUrl or finalIntent.url),
-                resolvedUrl = redactUrlForDebug(finalIntent.resolvedUrl),
+                url = RedactUrlForDebug(finalIntent.originalUrl or finalIntent.url),
+                resolvedUrl = RedactUrlForDebug(finalIntent.resolvedUrl),
                 provider = finalIntent.resolver and finalIntent.resolver.provider or nil,
                 instance = finalIntent.resolver and finalIntent.resolver.instance or nil,
             })
@@ -3052,8 +3040,8 @@ local function attemptStartupAudioOnlyFallback(handle, src, context, failedUrl, 
         src = src,
         handle = handle,
         attemptId = audioContext.currentAttemptId,
-        sourceUrl = redactUrlForDebug(sourceUrl),
-        failedUrl = redactUrlForDebug(failedUrl),
+        sourceUrl = RedactUrlForDebug(sourceUrl),
+        failedUrl = RedactUrlForDebug(failedUrl),
         previousProvider = currentResolver and currentResolver.provider or nil,
         previousInstance = currentResolver and currentResolver.instance or nil,
     })
@@ -3118,8 +3106,8 @@ local function attemptActiveAudioOnlyFallback(handle, src, mp, failedUrl, failed
     PMMSDebug("player", "active audio-only fallback scheduled", {
         src = src,
         handle = handle,
-        sourceUrl = redactUrlForDebug(sourceUrl),
-        failedUrl = redactUrlForDebug(failedUrl),
+        sourceUrl = RedactUrlForDebug(sourceUrl),
+        failedUrl = RedactUrlForDebug(failedUrl),
         previousProvider = currentResolver and currentResolver.provider or nil,
         previousInstance = currentResolver and currentResolver.instance or nil,
     })
@@ -3294,7 +3282,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
     PMMSDebug("player", "start event received", {
         src = src,
         handle = handle,
-        url = redactUrlForDebug(type(options) == "table" and options.url or nil),
+        url = RedactUrlForDebug(type(options) == "table" and options.url or nil),
         title = type(options) == "table" and options.title or nil,
         video = type(options) == "table" and options.video or nil,
     })
@@ -3344,13 +3332,13 @@ RegisterNetEvent("pmms:start", function(handle, options)
         PMMSDebug("player", "start rejected: validation failed", {
             src = src,
             handle = handle,
-            url = redactUrlForDebug(type(options) == "table" and options.url or nil),
+            url = RedactUrlForDebug(type(options) == "table" and options.url or nil),
             error = errorMessage,
         })
         if type(LogPmmsAdminEvent) == "function" then
             LogPmmsAdminEvent("playback_start_rejected", handle, src, {
                 reason = errorMessage,
-                url = redactUrlForDebug(type(options) == "table" and options.url or nil),
+                url = RedactUrlForDebug(type(options) == "table" and options.url or nil),
             })
         end
         TriggerClientEvent("pmms:error", src, errorMessage)
@@ -3386,7 +3374,7 @@ RegisterNetEvent("pmms:start", function(handle, options)
         PMMSDebug("player", "active media player found, queueing request", {
             src = src,
             handle = handle,
-            url = redactUrlForDebug(preparedOptions.url),
+            url = RedactUrlForDebug(preparedOptions.url),
             title = preparedOptions.title,
         })
         AddToQueue(handle, src, preparedOptions)
@@ -3590,8 +3578,8 @@ RegisterNetEvent("pmms:startupReady", function(handle, attemptId, metadata, play
         handle = handle,
         attemptId = attemptId,
         playbackToken = context.playbackToken,
-        url = redactUrlForDebug(merged.originalUrl or merged.url),
-        resolvedUrl = redactUrlForDebug(merged.resolvedUrl or merged.url),
+        url = RedactUrlForDebug(merged.originalUrl or merged.url),
+        resolvedUrl = RedactUrlForDebug(merged.resolvedUrl or merged.url),
         provider = merged.resolver and merged.resolver.provider or nil,
         instance = merged.resolver and merged.resolver.instance or nil,
         resolverStatus = merged.resolver and merged.resolver.status or nil,
@@ -3820,7 +3808,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
             handle = handle,
             attemptId = attemptId,
             playbackToken = playbackToken,
-            failedUrl = redactUrlForDebug(failedUrl),
+            failedUrl = RedactUrlForDebug(failedUrl),
             message = failedMessage,
             currentSource = context and context.source or nil,
             currentAttemptId = context and context.currentAttemptId or nil,
@@ -3858,7 +3846,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         src = src,
         handle = handle,
         attemptId = attemptId,
-        failedUrl = redactUrlForDebug(failedUrl),
+        failedUrl = RedactUrlForDebug(failedUrl),
         message = failedMessage,
         reason = context.errorHistory[#context.errorHistory].reason,
         resolverStatus = currentResolver.status,
@@ -3913,7 +3901,7 @@ RegisterNetEvent("pmms:startupError", function(handle, attemptId, failedUrl, fai
         retryCount = retryContext.retries,
         avoidProvider = retryContext.lastProvider,
         avoidInstance = retryContext.lastInstance,
-        avoidResolvedUrl = redactUrlForDebug(failedUrl),
+        avoidResolvedUrl = RedactUrlForDebug(failedUrl),
     })
 
     if previousAttemptId and previousAttemptId ~= retryContext.currentAttemptId then
@@ -3990,7 +3978,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback error ignored: stale playback token", {
             src = src,
             handle = handle,
-            failedUrl = redactUrlForDebug(failedUrl),
+            failedUrl = RedactUrlForDebug(failedUrl),
             message = failedMessage,
             requestedToken = playbackToken,
             currentToken = currentToken,
@@ -4002,10 +3990,10 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback error ignored: url mismatch", {
             src = src,
             handle = handle,
-            failedUrl = redactUrlForDebug(failedUrl),
-            currentUrl = redactUrlForDebug(mp.url),
-            originalUrl = redactUrlForDebug(mp.originalUrl),
-            resolvedUrl = redactUrlForDebug(mp.resolvedUrl),
+            failedUrl = RedactUrlForDebug(failedUrl),
+            currentUrl = RedactUrlForDebug(mp.url),
+            originalUrl = RedactUrlForDebug(mp.originalUrl),
+            resolvedUrl = RedactUrlForDebug(mp.resolvedUrl),
             message = failedMessage,
         })
         return
@@ -4017,7 +4005,7 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
             src = src,
             handle = handle,
             owner = lastSource,
-            failedUrl = redactUrlForDebug(failedUrl),
+            failedUrl = RedactUrlForDebug(failedUrl),
             message = failedMessage,
         })
         return
@@ -4049,8 +4037,8 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
         PMMSDebug("player", "local playback retry skipped", {
             src = src,
             handle = handle,
-            sourceUrl = redactUrlForDebug(sourceUrl),
-            failedUrl = redactUrlForDebug(failedUrl),
+            sourceUrl = RedactUrlForDebug(sourceUrl),
+            failedUrl = RedactUrlForDebug(failedUrl),
             message = failedMessage,
             retryOnPlaybackError = resolverConfig.retryOnPlaybackError ~= false,
             isYoutubeLike = isYoutubeLikeUrl(sourceUrl),
@@ -4102,13 +4090,13 @@ RegisterNetEvent("pmms:localPlaybackError", function(handle, failedUrl, failedMe
     PMMSDebug("player", "local playback retry scheduled", {
         src = src,
         handle = handle,
-        sourceUrl = redactUrlForDebug(sourceUrl),
-        failedUrl = redactUrlForDebug(failedUrl),
+        sourceUrl = RedactUrlForDebug(sourceUrl),
+        failedUrl = RedactUrlForDebug(failedUrl),
         message = failedMessage,
         retryCount = retryOptions.localPlaybackRetryCount,
         avoidProvider = currentResolver.provider,
         avoidInstance = currentResolver.instance,
-        avoidResolvedUrl = redactUrlForDebug(failedUrl),
+        avoidResolvedUrl = RedactUrlForDebug(failedUrl),
     })
 
     startMediaPlayerForClient(handle, src, retryOptions, {
@@ -4128,6 +4116,7 @@ end)
 
 RegisterNetEvent("pmms:pause", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:pause", handle) then
         return
     end
@@ -4147,6 +4136,7 @@ end)
 
 RegisterNetEvent("pmms:play", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:play", handle) then
         return
     end
@@ -4213,6 +4203,7 @@ RegisterNetEvent("pmms:stop", function(handle)
 end)
 
 RegisterNetEvent("pmms:cancelStartup", function(handle, attemptId, playbackToken)
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(source, "pmms:cancelStartup", handle) then
         return
     end
@@ -4399,7 +4390,9 @@ RegisterNetEvent("pmms:forceResetDevice", function(handle)
             clearSessionLock(handle)
             ResetDeviceSession(handle)
             EnqueueSync(function()
-                TriggerClientEvent("pmms:stop", -1, handle)
+                for _, target in ipairs(GetConnectedPlayersWithHandle(handle)) do
+                    TriggerClientEvent("pmms:stop", target, handle)
+                end
             end)
         end
 
@@ -4526,6 +4519,7 @@ end)
 
 RegisterNetEvent("pmms:seekToTime", function(handle, offset)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:seekToTime", handle) then
         return
     end
@@ -4730,6 +4724,7 @@ end)
 
 RegisterNetEvent("pmms:enableVideo", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:enableVideo", handle) then
         return
     end
@@ -4745,6 +4740,7 @@ end)
 
 RegisterNetEvent("pmms:disableVideo", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:disableVideo", handle) then
         return
     end
@@ -4778,6 +4774,7 @@ end)
 
 RegisterNetEvent("pmms:mute", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:mute", handle) then
         return
     end
@@ -4793,6 +4790,7 @@ end)
 
 RegisterNetEvent("pmms:unmute", function(handle)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:unmute", handle) then
         return
     end
@@ -4822,6 +4820,7 @@ end)
 
 RegisterNetEvent("pmms:setLoop", function(handle, loop)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:setLoop", handle) then
         return
     end
@@ -4841,6 +4840,7 @@ end)
 
 RegisterNetEvent("pmms:setLoopMode", function(handle, loopMode)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:setLoopMode", handle) then
         return
     end
@@ -4863,6 +4863,7 @@ end)
 
 RegisterNetEvent("pmms:next", function(handle, expectedRevision)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:next", handle) then
         return
     end
@@ -4877,6 +4878,7 @@ end)
 
 RegisterNetEvent("pmms:previous", function(handle, expectedRevision)
     local src = source
+    handle = tonumber(handle) or handle
     if not canTriggerEvent(src, "pmms:previous", handle) then
         return
     end
@@ -4947,6 +4949,13 @@ AddEventHandler("playerDropped", function()
         end
         if lock.ownerSource == src then
             lock.ownerSource = nil
+        end
+    end
+
+    local prefix = tostring(src) .. ":"
+    for key in pairs(eventCooldowns) do
+        if key:sub(1, #prefix) == prefix then
+            eventCooldowns[key] = nil
         end
     end
 end)

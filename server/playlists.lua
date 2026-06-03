@@ -592,6 +592,7 @@ end
 RegisterNetEvent('pmms:getPlaylists')
 AddEventHandler('pmms:getPlaylists', function(requestId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:getPlaylists", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier then
         return
@@ -603,6 +604,7 @@ end)
 RegisterNetEvent('pmms:getSharedPlaylists')
 AddEventHandler('pmms:getSharedPlaylists', function(requestId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:getSharedPlaylists", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier then
         return
@@ -614,6 +616,7 @@ end)
 RegisterNetEvent('pmms:createPlaylist')
 AddEventHandler('pmms:createPlaylist', function(name, requestId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:createPlaylist", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier then
         emitPlaylistCreateResult(src, nil, requestId, false, "Could not identify you for this playlist.", nil, name)
@@ -660,6 +663,7 @@ end)
 RegisterNetEvent('pmms:setPlaylistFavorite')
 AddEventHandler('pmms:setPlaylistFavorite', function(playlistId, favorite, requestId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:setPlaylistFavorite", nil, 500) then return end
     local identifier = GetUserIdentifier(src)
     local id = tonumber(playlistId)
     local targetFavorite = normalizeFavoriteFlag(favorite)
@@ -710,6 +714,7 @@ end)
 RegisterNetEvent('pmms:deletePlaylist')
 AddEventHandler('pmms:deletePlaylist', function(playlistId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:deletePlaylist", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier or not playlistId then
         return
@@ -739,6 +744,7 @@ end)
 RegisterNetEvent('pmms:getPlaylistTracks')
 AddEventHandler('pmms:getPlaylistTracks', function(playlistId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:getPlaylistTracks", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier or not playlistId then
         return
@@ -782,6 +788,7 @@ end)
 RegisterNetEvent('pmms:addTrack')
 AddEventHandler('pmms:addTrack', function(playlistId, trackData)
     local src = source
+    if not CanTriggerEvent(src, "pmms:addTrack", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier
         or type(playlistId) ~= "number"
@@ -843,6 +850,7 @@ end)
 RegisterNetEvent('pmms:removeTrack')
 AddEventHandler('pmms:removeTrack', function(playlistId, trackId)
     local src = source
+    if not CanTriggerEvent(src, "pmms:removeTrack", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier or not playlistId or not trackId then
         return
@@ -870,6 +878,7 @@ end)
 RegisterNetEvent('pmms:sharePlaylist')
 AddEventHandler('pmms:sharePlaylist', function(playlistId, friendLicense)
     local src = source
+    if not CanTriggerEvent(src, "pmms:sharePlaylist", nil, 1000) then return end
     local identifier = GetUserIdentifier(src)
     if not identifier or not playlistId or type(friendLicense) ~= "string" or friendLicense == "" then
         return

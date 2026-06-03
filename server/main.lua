@@ -10,10 +10,10 @@ local lastBroadcast = 0
 local lastFullBroadcast = 0
 local syncStateByTarget = {}
 
-local SYNC_THROTTLE_MS = 1000
-local PERIODIC_FULL_SYNC_MS = 10000
+local SYNC_THROTTLE_MS = 1500
+local PERIODIC_FULL_SYNC_MS = 30000
 local LARGE_SYNC_THRESHOLD_BYTES = 800
-local NORMAL_SYNC_BPS = 131072
+local NORMAL_SYNC_BPS = 196608
 local FULL_SYNC_BPS = 524288
 
 local function cloneDeepTable(source, seen)
@@ -338,6 +338,9 @@ local function cleanupRestrictedHandles()
     end
 end
 
+local _rateCooldowns = {}
+local _rateLastCleanup = 0
+
 AddEventHandler("playerDropped", function()
     local src = source
     local key = getSyncTargetKey(src)
@@ -352,7 +355,50 @@ AddEventHandler("playerDropped", function()
             restrictedTimestamps[handle] = nil
         end
     end
+
+    local prefix = tostring(src) .. ":"
+    for rateKey in pairs(_rateCooldowns) do
+        if rateKey:sub(1, #prefix) == prefix then
+            _rateCooldowns[rateKey] = nil
+        end
+    end
 end)
+
+function IsValidHandle(handle)
+    local t = type(handle)
+    if t == "number" then return handle > 0 end
+    if t == "string" then return handle ~= "" end
+    return false
+end
+
+function CanTriggerEvent(src, eventName, handle, cooldownMs)
+    local now = type(GetGameTimer) == "function" and GetGameTimer() or math.floor(os.clock() * 1000)
+    local cooldown = math.max(0, tonumber(cooldownMs) or 500)
+    if now - _rateLastCleanup > 30000 then
+        for key, ts in pairs(_rateCooldowns) do
+            if now - ts > 30000 then _rateCooldowns[key] = nil end
+        end
+        _rateLastCleanup = now
+    end
+    local key = ("%s:%s:%s"):format(tostring(src or "server"), tostring(eventName or ""), tostring(handle or "global"))
+    local prev = _rateCooldowns[key]
+    if prev and now - prev < cooldown then return false end
+    _rateCooldowns[key] = now
+    return true
+end
+
+function GetConnectedPlayersWithHandle(handle)
+    local results = {}
+    local handleKey = tostring(handle)
+    for playerKey, state in pairs(syncStateByTarget) do
+        if type(state) == "table" and type(state.mediaPlayers) == "table" then
+            if state.mediaPlayers[handle] ~= nil or state.mediaPlayers[handleKey] ~= nil then
+                results[#results + 1] = tonumber(playerKey) or playerKey
+            end
+        end
+    end
+    return results
+end
 
 local function resolveLoopMode(info)
     if type(NormalizeLoopMode) == "function" then
@@ -364,6 +410,15 @@ local function resolveLoopMode(info)
     end
 
     return "off"
+end
+
+local function playerHasActiveMediaInState(playerKey)
+    local state = syncStateByTarget[playerKey]
+    if type(state) ~= "table" then
+        return false
+    end
+    local mp = state.mediaPlayers
+    return type(mp) == "table" and next(mp) ~= nil
 end
 
 local function syncMediaPlayers()
@@ -409,6 +464,7 @@ local function syncMediaPlayers()
         if cb then cb() end
     end
 
+    local hasActiveMedia = next(mediaPlayers) ~= nil
     local fullSyncDue = (nowMs - lastFullBroadcast) >= PERIODIC_FULL_SYNC_MS
     local shouldFlush = fullSyncDue
         or fullSyncAllRequested
@@ -422,7 +478,18 @@ local function syncMediaPlayers()
         if dirty or syncAllRequested or sendFull then
             for _, playerId in ipairs(players) do
                 local target = tonumber(playerId) or playerId
-                sendSyncToTarget(target, sendFull)
+                local key = getSyncTargetKey(target)
+
+                if sendFull then
+                    local hasPriorState = key and syncStateByTarget[key] ~= nil
+                    if hasPriorState or playerHasActiveMediaInState(key) or hasActiveMedia then
+                        sendSyncToTarget(target, true)
+                    end
+                else
+                    if not key or syncStateByTarget[key] ~= nil or hasActiveMedia then
+                        sendSyncToTarget(target, false)
+                    end
+                end
             end
         end
 
